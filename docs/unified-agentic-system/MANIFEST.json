@@ -1,0 +1,190 @@
+{
+  "title": "Unified Agentic Intelligence Platform \u2014 Fully Illustrated Architecture Manual",
+  "version": "2026-11-06",
+  "files": {
+    "README.txt": {
+      "bytes": 1304,
+      "sha256": "d94898e99630b83b95c113d6c2078360f3ecb1e2196b03679a305a639a842761"
+    },
+    "Unified_Agentic_System_Manual.html": {
+      "bytes": 1926152,
+      "sha256": "44b15b85d434651cb2953173d66c85855eaf1dffebf4079c6d96ab8b4ab99169"
+    },
+    "Unified_Agentic_System_Manual.md": {
+      "bytes": 95253,
+      "sha256": "5594aa85d2e7fa4b56159a83af611f67e85631c655d5e38e448ddd0a8d70709f"
+    },
+    "diagrams/00_unified_overview.mmd": {
+      "bytes": 1086,
+      "sha256": "0369d70e7f7012d9423bc4599daa998ad413bacb433f2586e88216a473457c90"
+    },
+    "diagrams/00_unified_overview.png": {
+      "bytes": 409742,
+      "sha256": "828121df1b3751ef00ee29af67c9ba6020865235f7f42698a4e9c133c6c29ed2"
+    },
+    "diagrams/00_unified_overview.svg": {
+      "bytes": 18914,
+      "sha256": "de6efef3d3f645ff04cb82d5001f38592f13d041ea25bbf90f90cc7fb7f06502"
+    },
+    "diagrams/01_agenticseek.dot": {
+      "bytes": 4052,
+      "sha256": "06c75f9f5d2f814ac1f8e665dceac03a55ed6db4b343d3b4b526a421fe5755ca"
+    },
+    "diagrams/01_agenticseek.mmd": {
+      "bytes": 2051,
+      "sha256": "8e4262c4e631616fbe0fa2485a7f7da8d3de664bafc7f64853c08b48ea6a18d7"
+    },
+    "diagrams/01_agenticseek.png": {
+      "bytes": 324849,
+      "sha256": "1a9b9dde098a672fb0f1100da5e3ce7fa3f203b496d5b66fc13a84b9f93dfd46"
+    },
+    "diagrams/01_agenticseek.svg": {
+      "bytes": 28642,
+      "sha256": "bf5a463c04dd2bdf7ff8fa48fb19532a87f70f8f6bf0ed63b0a592c746384d63"
+    },
+    "diagrams/02_scrapling.dot": {
+      "bytes": 4353,
+      "sha256": "db442e950ee69e193d4b455ca2bee1d130af72db5ea5f9a96b9dd7a964fe09fc"
+    },
+    "diagrams/02_scrapling.mmd": {
+      "bytes": 2201,
+      "sha256": "3bc86442f737a5209950da96d066883309e60efc9c2118286b46268b0dd56ef4"
+    },
+    "diagrams/02_scrapling.png": {
+      "bytes": 353758,
+      "sha256": "db3eaecfaeb8f433d73e6f8baa19aedd2daa9d3d9c07ac58b4c3fa644b0d16fa"
+    },
+    "diagrams/02_scrapling.svg": {
+      "bytes": 30094,
+      "sha256": "75cd2d17dd8e548d37a5b568b94e28cfb78a75922e5dddd30fe9ca16c23bc80f"
+    },
+    "diagrams/03_openbb.dot": {
+      "bytes": 3842,
+      "sha256": "c16202a47915e9bb9c5f4f572b5704a7d0f8fcb34a4e17f6ad4ec48ca845ddfd"
+    },
+    "diagrams/03_openbb.mmd": {
+      "bytes": 1847,
+      "sha256": "669b0c11a4dc9020852f5a2ab2ab9e1d56975b1ea7355562cb56323e01ed2884"
+    },
+    "diagrams/03_openbb.png": {
+      "bytes": 306652,
+      "sha256": "ca60abf7c30749d3834a7cec15ca601d5a2e5cc69685c303cfa5be1a71d7ad69"
+    },
+    "diagrams/03_openbb.svg": {
+      "bytes": 26023,
+      "sha256": "68cc3f4c7d4950b7c1a862b68e818dc2eac4f866d77925cb89cda624a01bf824"
+    },
+    "diagrams/04_n8n.dot": {
+      "bytes": 4058,
+      "sha256": "187de32ec0e696097baa68b900c76e1add16dc184803c9f859d7678a3f55267a"
+    },
+    "diagrams/04_n8n.mmd": {
+      "bytes": 1925,
+      "sha256": "c939a2d349fef2e2a948f7544d930cf9f18463984f9073f3ed6a010f275f5b75"
+    },
+    "diagrams/04_n8n.png": {
+      "bytes": 311767,
+      "sha256": "a147b95007d058595b48663e9d1b7f50792267c55d8676ce835b8b435d009b2a"
+    },
+    "diagrams/04_n8n.svg": {
+      "bytes": 25739,
+      "sha256": "8f2e6ddba9f6874a15fcef136f379892c2e288fec15f0484bcf1dd7456091104"
+    },
+    "diagrams/05_agency_agents.dot": {
+      "bytes": 2862,
+      "sha256": "5db44aa4a67a54b1d562d75413c9bb44e73c0b13c635a7d87f15fbb512b07822"
+    },
+    "diagrams/05_agency_agents.mmd": {
+      "bytes": 1223,
+      "sha256": "628514581d150365f6ee57296ec899b57a2af0038e3bca7d8018e23d2fd05cb4"
+    },
+    "diagrams/05_agency_agents.png": {
+      "bytes": 236560,
+      "sha256": "5d21c3fdc0951515c985a04547c719b75fe19b6e257a1cf198d189b2ff522575"
+    },
+    "diagrams/05_agency_agents.svg": {
+      "bytes": 16767,
+      "sha256": "6e55402fc77f92dd381f3ce82eca5e3fdb3dfe700ed64d782fa6d1dd2a3db0dd"
+    },
+    "diagrams/06_codebase_memory.dot": {
+      "bytes": 3578,
+      "sha256": "a33ee34a9097e8f424f429ddc502aff8219141e8aefe45ce1f17c60b91eda12c"
+    },
+    "diagrams/06_codebase_memory.mmd": {
+      "bytes": 1715,
+      "sha256": "9d4e469007fd32d17125dcedff321e701d9bf64070caa9d27131caf46de1330a"
+    },
+    "diagrams/06_codebase_memory.png": {
+      "bytes": 313835,
+      "sha256": "d020a3ce7a8bc672537cf262d5dfbe1aac33606b69670286cd7a707e13fc2e60"
+    },
+    "diagrams/06_codebase_memory.svg": {
+      "bytes": 23672,
+      "sha256": "c79c2e231a1749c7263e734db1b6b47a6c5ffe4491d1672689bea9d75f82c163"
+    },
+    "diagrams/07_rea.dot": {
+      "bytes": 4391,
+      "sha256": "3af9f2d016b3316e20a676882463b4bb3dfffd0e438c5839c0e76790e945c48c"
+    },
+    "diagrams/07_rea.mmd": {
+      "bytes": 2209,
+      "sha256": "6c28cc21bf53abbea620b36d785540a5e176238ae5e301d4da53ca45930e67ca"
+    },
+    "diagrams/07_rea.png": {
+      "bytes": 356601,
+      "sha256": "afc3cafb8c3c2c17a359553579a1efe3ecfce566ab9db91c30cc2c7fe3fe941f"
+    },
+    "diagrams/07_rea.svg": {
+      "bytes": 30272,
+      "sha256": "9c8dcfe870465b42442b816d9aa0eabde555d5e0beb2ed48f41ac497c66e5d7b"
+    },
+    "diagrams/08_integration_control_plane.dot": {
+      "bytes": 3111,
+      "sha256": "9d67d17fe2230dfa6e9c590e2f45308a22c70e45b16d56998a44e9ebe0106735"
+    },
+    "diagrams/08_integration_control_plane.mmd": {
+      "bytes": 622,
+      "sha256": "0b5bd17204c5467ebd91973b1c64196f9eac639171bdba67d51552a60be13bf5"
+    },
+    "diagrams/08_integration_control_plane.png": {
+      "bytes": 496337,
+      "sha256": "7a0c7d9383aec6763f0c5f8e641b62e532afd7e66007e4c0d09e3cfb32e14a5a"
+    },
+    "diagrams/08_integration_control_plane.svg": {
+      "bytes": 23694,
+      "sha256": "f6d407a9bc796f86210a8f7ae371e13982758321e403fbbc1f5cd8bf9af4eb3c"
+    },
+    "originals/AgencyAgents.png": {
+      "bytes": 95733,
+      "sha256": "de59c132fa990580596f8ab17ea517c72906be7b7fd8f7f7980103f7169294a1"
+    },
+    "originals/AgenticSeek.png": {
+      "bytes": 176513,
+      "sha256": "93992e8b83a865a9b525174d456085d633e27867a6d36a7cb1a5b3fab152a8b0"
+    },
+    "originals/MemoryMCP.png": {
+      "bytes": 190479,
+      "sha256": "7ae97db4bc61076dca8dd41caa86593f147344f91d3ea1a94ff21718ee47528a"
+    },
+    "originals/OpenBB.png": {
+      "bytes": 248736,
+      "sha256": "296ea647ab61b35e640e3c4cc92c325d57cb72e6d60114c9fa7c37ab855dc08d"
+    },
+    "originals/REA.png": {
+      "bytes": 112339,
+      "sha256": "11b4aea5d7a842f95f01ada36d6a7e806d827161f3a6da9505314ec983fab668"
+    },
+    "originals/Scrapling.png": {
+      "bytes": 171743,
+      "sha256": "7fc13fd53446434791f05b3f52f2dd277c1e1f6e06132039bbf14c405eea13c3"
+    },
+    "originals/n8n.png": {
+      "bytes": 168882,
+      "sha256": "0aa3b51e7300b998c8738431cdbb881be5f8bdd345556a9432d803eae12233a3"
+    },
+    "style.css": {
+      "bytes": 4184,
+      "sha256": "ec65f3c139b391a295bb498d896585701d2b93c947909227abdeb618f6de406b"
+    }
+  }
+}

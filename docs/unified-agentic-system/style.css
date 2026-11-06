@@ -1,0 +1,26 @@
+:root{--ink:#17253b;--muted:#5e718b;--rule:#d9e2ee;--accent:#2254a8;--page:#f5f8fc;--paper:#fff}
+html{scroll-behavior:smooth}body{font-family:Inter,'DejaVu Sans',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.56;color:var(--ink);background:var(--page);margin:0;max-width:none}
+main,body>header,body>nav{box-sizing:border-box}
+body>header{margin:0 auto;max-width:1120px;padding:55px 52px 15px;background:var(--paper)}
+body>nav#TOC{background:#e9f0ff;border:1px solid #d1dffc;padding:22px 30px;border-radius:12px;margin:20px auto;max-width:1080px}
+body>nav#TOC ul{columns:2;margin:4px 0;padding-left:18px}
+body>nav#TOC li{break-inside:avoid;margin:3px 0}
+body>nav#TOC a{color:#194b99;text-decoration:none}
+body>nav#TOC a:hover{text-decoration:underline}
+body>section,body>h1,body>h2,body>h3,body>p,body>blockquote,body>table,body>pre,body>div,body>ul,body>ol,body>details,body>hr{max-width:1080px;margin-left:auto;margin-right:auto;box-sizing:border-box}
+body>h1,body>h2,body>h3,body>p,body>blockquote,body>table,body>pre,body>ul,body>ol,body>details{padding-left:22px;padding-right:22px}
+body>h1:first-of-type{font-size:2.2rem;padding-top:38px}
+h1,h2,h3,h4{line-height:1.22;color:#10213d}h1{margin-top:2.8rem;padding-bottom:.36em;border-bottom:3px solid #b3c9ed;font-size:2rem}h2{margin-top:2.5rem;padding-bottom:.25em;border-bottom:1px solid var(--rule)}h3{margin-top:1.7rem;color:#214772}
+h1,h2,h3,p,blockquote,ol,ul,details{background:var(--paper)}p,li{font-size:0.97rem}p:has(img){background:#fff;margin-top:1.2rem;margin-bottom:1.5rem;text-align:center;padding:18px;border:1px solid var(--rule);border-radius:12px}
+img{display:block;max-width:100%;width:auto;height:auto;margin:10px auto;object-fit:contain}p img{max-height:none}a{color:var(--accent)}
+blockquote{border-left:4px solid #316fc3;padding-top:14px;padding-bottom:14px;background:#edf4ff;color:#344e71}
+table{border-collapse:collapse;width:100%;font-size:0.84rem;background:white;margin-top:1rem;margin-bottom:1.5rem;table-layout:fixed}th{background:#e8f0fc;color:#17385f;text-align:left}th,td{border:1px solid #d7dfeb;padding:9px 12px;vertical-align:top;overflow-wrap:anywhere}tbody tr:nth-child(even){background:#f9fbff}
+code{background:#f0f4fc;color:#163f7c;padding:.1em .25em;border-radius:3px;font-size:.92em}pre{background:#14243b;color:#ecf4ff;border-radius:9px;padding:18px 22px;overflow:auto;line-height:1.4;font-size:0.8rem}pre code{color:inherit;background:transparent;padding:0}
+details{margin-top:20px;margin-bottom:24px;padding-top:13px;padding-bottom:13px;border:1px solid #cad8ec;border-radius:9px}summary{cursor:pointer;font-weight:700;color:#214772}hr{border:0;border-top:1px solid var(--rule);margin-top:34px;margin-bottom:34px}
+@media(max-width:850px){body>nav#TOC ul{columns:1}body>nav#TOC{margin:10px}table{font-size:.74rem}th,td{padding:6px}body>h1,body>h2,body>h3,body>p,body>blockquote,body>table,body>pre,body>ul,body>ol,body>details{padding-left:10px;padding-right:10px}}
+@page{size:A4;margin:16mm 12mm 15mm}
+@media print{body{background:white;font-family:'DejaVu Sans',sans-serif;font-size:9pt;line-height:1.4}body>nav#TOC{page-break-after:always;max-width:none}body>nav#TOC ul{columns:2}body>h1,body>h2,body>h3,body>p,body>table,body>pre,body>ul,body>ol,body>details{max-width:none}h1{page-break-before:always;font-size:17pt}h1:first-of-type{page-break-before:auto}h2{font-size:13pt;page-break-after:avoid}h3{font-size:11pt;page-break-after:avoid}table{table-layout:auto;font-size:7pt}th,td{padding:5px}thead{display:table-header-group}tr{break-inside:avoid}p:has(img){break-inside:avoid;padding:0;border:0}img{max-height:225mm}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:6.6pt}details{display:none!important}a{text-decoration:none;color:#24518b}}
+/* Make embedded Graphviz diagrams responsive in the standalone manual. */
+p svg{display:block;width:100%;height:auto;max-width:100%;margin:10px auto}
+p:has(svg){background:#fff;margin-top:1.3rem;margin-bottom:1.4rem;padding:16px;border:1px solid var(--rule);border-radius:12px}
+@media print{p:has(svg){break-inside:avoid;padding:0;border:0}p svg{width:100%;max-height:225mm;object-fit:contain}}
