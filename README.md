@@ -1,9 +1,45 @@
 # Arena.AI
 
+## Unified Agentic Intelligence Platform — core build
+
+A working implementation of the Phase 1–2 vertical slice from the architecture
+manual in [`docs/unified-agentic-system/`](docs/unified-agentic-system/):
+
+```
+unified/
+  contracts.py   # canonical task envelope, tool call/receipt, state machine (manual 5.1-5.4)
+  ledger.py      # durable SQLite task ledger: tasks, steps, attempts, committed receipts
+  policy.py      # grant-based admission + pre-execution authorization (manual 3.3)
+  broker.py      # capability broker + native tool adapters (sandboxed fs, echo)
+  planner.py     # plan(TaskEnvelope) -> StepDAG (AgenticSeek adapter stand-in)
+  engine.py      # canonical path: gateway -> ledger -> plan -> broker -> evidence -> verifier
+  verifier.py    # evidence-based result assembly with conflicts/failures surfaced
+  gateway.py     # HTTP API: POST /v1/tasks, GET task/events/artifacts, approve, cancel
+  server.py      # entry point
+tests/
+  test_acceptance.py  # 9 tests from the manual's section 5.10 acceptance suite
+```
+
+### Run
+
+```bash
+python3 -m unified.server --port 8080        # gateway on 0.0.0.0:8080
+python3 -m unittest discover -s tests -v     # acceptance suite
+```
+
+### Try it
+
+```bash
+curl -X POST localhost:8080/v1/tasks -d '{"project_id":"demo","idempotency_key":"k1","request":{"intent":"echo","instructions":"hello"},"permissions":[]}'
+curl localhost:8080/v1/tools
+```
+
+Idempotent submission, policy denial, dependency ordering, restart/receipt
+recovery, cancellation, artifact hashing, prompt-injection resistance,
+conflict surfacing and typed tool failures are all covered by the tests.
+
 ## Documentation
 
 - **Unified Agentic Intelligence Platform — Architecture Manual** in
   [`docs/unified-agentic-system/`](docs/unified-agentic-system/). Start with
-  `Unified_Agentic_System_Manual.html` (fully self-contained, works offline) or
-  `Unified_Agentic_System_Manual.md` for the editable text version. The overview
-  diagram is `Unified_Agentic_System_Overview.png`.
+  `Unified_Agentic_System_Manual.html` (fully self-contained, works offline).
