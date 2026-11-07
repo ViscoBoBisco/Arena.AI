@@ -52,6 +52,8 @@ def make_handler(engine: Engine):
             parts = [p for p in path.split("/") if p]
             if path == "/v1/tools":
                 return self._send(200, {"tools": engine.broker.list_tools()})
+            if path == "/v1/roles":
+                return self._send(200, {"roles": engine.roles.list() if engine.roles else []})
             if len(parts) == 3 and parts[:2] == ["v1", "tasks"]:
                 task = engine.get_task(parts[2])
                 if task is None:
@@ -92,6 +94,22 @@ def make_handler(engine: Engine):
             if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] == "cancel":
                 engine.cancel(parts[2])
                 return self._send(200, {"task_id": parts[2], "cancel_requested": True})
+            if path == "/v1/automation/trigger":
+                b = self._body()
+                out = engine.automation.trigger(b.get("workflow_id", ""),
+                                                b.get("execution_id", ""),
+                                                b.get("request", {}),
+                                                b.get("permissions", []))
+                if not out.get("duplicate") and out.get("state") != "REJECTED":
+                    out["result"] = engine.run(out["task_id"], OPERATOR_GRANTS)
+                return self._send(200, out)
+            if path == "/v1/automation/callbacks":
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                out = engine.automation.callback(
+                    raw,
+                    self.headers.get("X-Signature-256", ""),
+                    self.headers.get("X-Timestamp", ""))
+                return self._send(200 if out.get("accepted") else 403, out)
             return self._send(404, {"error": "not found"})
 
     return GatewayHandler

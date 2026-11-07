@@ -23,10 +23,14 @@ from .verifier import verify
 
 
 class Engine:
-    def __init__(self, ledger: Ledger, broker: CapabilityBroker, evidence: EvidenceStore):
+    def __init__(self, ledger: Ledger, broker: CapabilityBroker, evidence: EvidenceStore,
+                 model_router=None, roles=None, automation=None):
         self.ledger = ledger
         self.broker = broker
         self.evidence = evidence
+        self.model_router = model_router
+        self.roles = roles
+        self.automation = automation
         self._cancel = set()
         self._lock = threading.RLock()
 

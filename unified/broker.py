@@ -68,9 +68,13 @@ class CapabilityBroker:
         start = time.monotonic()
         try:
             result = spec.handler(args)
+            # Adapters signal failure through the typed error channel; a
+            # transport-successful response with errors is NOT a success
+            # (manual 5.3: receipt status reflects the tool, not the transport).
+            status = "failed" if result.get("errors") else "succeeded"
             receipt = ToolReceipt(
                 task_id=task_id, step_id=step_id, attempt_id=attempt_id,
-                status="succeeded", result_type=result.get("result_type", "native.v1"),
+                status=status, result_type=result.get("result_type", "native.v1"),
                 summary=result.get("summary", ""), data=result.get("data", {}),
                 artifacts=result.get("artifacts", []), evidence=result.get("evidence", []),
                 errors=result.get("errors", []),
@@ -81,6 +85,23 @@ class CapabilityBroker:
             return ToolReceipt(task_id, step_id, attempt_id, "failed",
                                "error.v1", f"tool {tool} failed: {e}",
                                errors=[{"type": "tool_error", "detail": str(e)}])
+
+    def register_model_tool(self, router) -> None:
+        def model_complete(args):
+            out = router.complete(args.get("prompt", ""),
+                                  budget_tokens=args.get("budget_tokens", 4096))
+            if not out["ok"]:
+                return {"result_type": "error.resource.v1", "summary": out["error"],
+                        "errors": [{"type": "resource", "detail": out["error"]}],
+                        "usage": out.get("usage", {})}
+            return {"result_type": "model.complete.v1",
+                    "summary": "model completion",
+                    "data": {"completion": out["completion"]},
+                    "usage": out["usage"]}
+
+        self.register(ToolSpec("model.complete", ["model.infer"], "read_only",
+                               model_complete, "Shared model router (bounded queue).",
+                               read_only=True))
 
     # ---- native tools --------------------------------------------------
     def _sandbox_path(self, rel: str) -> str:

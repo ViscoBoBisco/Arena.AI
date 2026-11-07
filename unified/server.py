@@ -12,12 +12,30 @@ from .ledger import Ledger
 
 
 def build_engine(data_dir: str) -> Engine:
+    from .adapters import AdapterContext, register_adapters
+    from .automation import AutomationConnector
+    from .model_router import ModelRouter
+    from .role_registry import RoleRegistry
+
     os.makedirs(data_dir, exist_ok=True)
+    ws = os.path.join(data_dir, "workspace")
+    os.makedirs(ws, exist_ok=True)
+    os.makedirs(os.path.join(data_dir, "fixtures"), exist_ok=True)
     ledger = Ledger(os.path.join(data_dir, "ledger.db"))
     evidence = EvidenceStore(os.path.join(data_dir, "artifacts"))
-    broker = CapabilityBroker(evidence, workspace_root=data_dir + "/workspace")
-    os.makedirs(data_dir + "/workspace", exist_ok=True)
-    return Engine(ledger, broker, evidence)
+    broker = CapabilityBroker(evidence, workspace_root=ws)
+    router = ModelRouter(max_concurrent=1)
+    broker.register_model_tool(router)
+    register_adapters(broker, AdapterContext(
+        evidence=evidence, workspace_root=ws,
+        web_allowlist=(),  # fail closed until hosts are allowlisted (manual 5.8)
+        fixture_dir=os.path.join(data_dir, "fixtures"),
+        graph_db=os.path.join(data_dir, "codegraph.db")))
+    roles = RoleRegistry(os.path.join(data_dir, "roles.json")
+                         if os.path.exists(os.path.join(data_dir, "roles.json")) else None)
+    engine = Engine(ledger, broker, evidence, model_router=router, roles=roles)
+    engine.automation = AutomationConnector(engine, os.environ.get("CALLBACK_SECRET", "dev-secret"))
+    return engine
 
 
 def main() -> None:
