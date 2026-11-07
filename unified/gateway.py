@@ -423,8 +423,11 @@ def make_handler(engine: Engine):
                 task, scope_err = self._task_for_caller(parts[2])
                 if scope_err:
                     return scope_err
-                engine.cancel(parts[2])
-                return self._send(200, {"task_id": parts[2], "cancel_requested": True})
+                requested = engine.cancel(parts[2])
+                current = engine.get_task(parts[2])
+                return self._send(200 if requested else 409, {
+                    "task_id": parts[2], "cancel_requested": requested,
+                    "state": current["state"] if current else "UNKNOWN"})
             if path == "/v1/automation/trigger":
                 b = self._body()
                 out = engine.automation.trigger(b.get("workflow_id", ""),

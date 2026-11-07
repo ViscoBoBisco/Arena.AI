@@ -81,6 +81,16 @@ class Engine:
         steps = plan(env)
         self.ledger.save_steps(task_id, steps)
         cur = TaskState(task["state"])
+        if cur == TaskState.CANCELLING:
+            self.ledger.set_state(task_id, TaskState.CANCELLED)
+            result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
+                      "reason": "recovered cancellation"}
+            self.ledger.set_result(task_id, result)
+            with self._lock:
+                self._cancel.discard(task_id)
+            if self.model_router and hasattr(self.model_router, "forget_task"):
+                self.model_router.forget_task(task_id)
+            return result
         if cur == TaskState.ADMITTED:
             self.ledger.set_state(task_id, TaskState.PLANNED)
             self.ledger.set_state(task_id, TaskState.RUNNING)
@@ -92,6 +102,9 @@ class Engine:
         done: set[str] = {s.step_id for s in self.ledger.get_steps(task_id)
                           if s.state == StepState.SUCCEEDED}
         receipts: list[ToolReceipt] = self.ledger.get_receipts(task_id)
+        if self.model_router and hasattr(self.model_router, "restore_task_usage"):
+            persisted_tokens = sum(int(r.usage.get("model_tokens", 0)) for r in receipts)
+            self.model_router.restore_task_usage(task_id, persisted_tokens)
         import time as _time
         from concurrent.futures import ThreadPoolExecutor
         started = _time.monotonic()
@@ -124,11 +137,24 @@ class Engine:
                         pause = step
                         break
             if pause is not None:
-                self.ledger.set_state(task_id, TaskState.WAITING_APPROVAL)
-                result = {"task_id": task_id, "state": TaskState.WAITING_APPROVAL.value,
-                          "pending_step": pause.step_id, "tool": pause.tool}
-                self.ledger.set_result(task_id, result)
-                return result
+                with self._lock:
+                    if task_id in self._cancel:
+                        self.ledger.set_state(task_id, TaskState.CANCELLING)
+                        self.ledger.set_state(task_id, TaskState.CANCELLED)
+                        result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
+                                  "reason": "cancelled before approval"}
+                        for approval in self.ledger.pending_approvals(task_id):
+                            self.ledger.save_approval(task_id, approval["step_id"], "cancelled")
+                        self.ledger.set_result(task_id, result)
+                        self._cancel.discard(task_id)
+                        if self.model_router and hasattr(self.model_router, "forget_task"):
+                            self.model_router.forget_task(task_id)
+                        return result
+                    self.ledger.set_state(task_id, TaskState.WAITING_APPROVAL)
+                    result = {"task_id": task_id, "state": TaskState.WAITING_APPROVAL.value,
+                              "pending_step": pause.step_id, "tool": pause.tool}
+                    self.ledger.set_result(task_id, result)
+                    return result
             budget_hit = None
             if _time.monotonic() - started > budgets.get("time_seconds", 600):
                 budget_hit = "time_seconds"
@@ -177,31 +203,39 @@ class Engine:
                         done.add(step.step_id)
             remaining = [s for s in remaining if s.step_id not in done]
 
-        if task_id in self._cancel:
-            self.ledger.set_state(task_id, TaskState.CANCELLING)
-            self.ledger.set_state(task_id, TaskState.CANCELLED)
-            result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
-                      "receipts": [r.to_dict() for r in receipts]}
-        elif any(r.status == "failed" for r in receipts):
-            self.ledger.set_state(task_id, TaskState.FAILED)
-            result = verify(task_id, receipts)
-            result["state"] = TaskState.FAILED.value
-        else:
-            self.ledger.set_state(task_id, TaskState.VERIFYING)
-            result = verify(task_id, receipts)
-            result["state"] = TaskState.COMPLETED.value
-            self.ledger.set_state(task_id, TaskState.COMPLETED)
-            # Delivery channel: signed webhook if the task requested one.
-            if self.delivery and env.delivery.get("webhook_url"):
-                result["delivery"] = self.delivery.deliver(
-                    env.delivery["webhook_url"], result)
-        self.ledger.set_result(task_id, result)
+        with self._lock:
+            current = TaskState(self.ledger.get_task(task_id)["state"])
+            if task_id in self._cancel or current == TaskState.CANCELLING:
+                if current != TaskState.CANCELLING:
+                    self.ledger.set_state(task_id, TaskState.CANCELLING)
+                self.ledger.set_state(task_id, TaskState.CANCELLED)
+                result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
+                          "receipts": [r.to_dict() for r in receipts]}
+            elif any(r.status == "failed" for r in receipts):
+                self.ledger.set_state(task_id, TaskState.FAILED)
+                result = verify(task_id, receipts)
+                result["state"] = TaskState.FAILED.value
+            else:
+                self.ledger.set_state(task_id, TaskState.VERIFYING)
+                result = verify(task_id, receipts)
+                result["state"] = TaskState.COMPLETED.value
+                self.ledger.set_state(task_id, TaskState.COMPLETED)
+            self.ledger.set_result(task_id, result)
+            self._cancel.discard(task_id)
+
+        # Keep network delivery outside the engine lock; terminal state is
+        # durable before potentially slow callback attempts begin.
+        if result.get("state") == TaskState.COMPLETED.value and self.delivery \
+                and env.delivery.get("webhook_url"):
+            result["delivery"] = self.delivery.deliver(env.delivery["webhook_url"], result)
+            self.ledger.set_result(task_id, result)
+        if self.model_router and hasattr(self.model_router, "forget_task"):
+            self.model_router.forget_task(task_id)
         with self._lock:
             self.metrics["latencies_ms"].append(int((_time.monotonic() - started) * 1000))
-            st = task["state"] if result.get("state") is None else result.get("state")
-            self.metrics["tasks_by_state"][result.get("state", st)] = \
-                self.metrics["tasks_by_state"].get(result.get("state", st), 0) + 1
-            self._cancel.discard(task_id)
+            state = result.get("state", task["state"])
+            self.metrics["tasks_by_state"][state] = \
+                self.metrics["tasks_by_state"].get(state, 0) + 1
         return result
 
     def submit_async(self, task_id: str, grants: list[str]) -> threading.Thread:
@@ -225,9 +259,34 @@ class Engine:
                     pass
         return recovered
 
-    def cancel(self, task_id: str) -> None:
+    def cancel(self, task_id: str) -> bool:
+        """Request cancellation, or immediately cancel a paused approval task.
+
+        Returns False for unknown or terminal tasks instead of retaining stale
+        cancellation markers indefinitely.
+        """
         with self._lock:
+            task = self.ledger.get_task(task_id)
+            if task is None:
+                return False
+            state = TaskState(task["state"])
+            if state in {TaskState.COMPLETED, TaskState.FAILED,
+                         TaskState.CANCELLED, TaskState.REJECTED}:
+                self._cancel.discard(task_id)
+                return False
+            if state == TaskState.WAITING_APPROVAL:
+                for approval in self.ledger.pending_approvals(task_id):
+                    self.ledger.save_approval(task_id, approval["step_id"], "cancelled")
+                self.ledger.set_state(task_id, TaskState.CANCELLED)
+                result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
+                          "reason": "cancelled by caller"}
+                self.ledger.set_result(task_id, result)
+                self._cancel.discard(task_id)
+                if self.model_router and hasattr(self.model_router, "forget_task"):
+                    self.model_router.forget_task(task_id)
+                return True
             self._cancel.add(task_id)
+            return True
 
     def approve(self, task_id: str, decision: str = "approved", grants: list | None = None) -> dict:
         """Decide a pending approval durably, then resume the paused run from

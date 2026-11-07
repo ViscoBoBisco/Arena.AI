@@ -79,11 +79,24 @@ class AcceptanceTests(unittest.TestCase):
         ledger2.close()
 
     def test_05_cancellation(self):
-        self.engine.cancel("T-x")  # pre-mark
         out = self.engine.submit("p", "k5", {"intent": "echo", "instructions": "c"}, [], GRANTS)
         self.engine.cancel(out["task_id"])
         result = self.engine.run(out["task_id"], GRANTS)
         self.assertEqual(result["state"], TaskState.CANCELLED.value)
+
+    def test_recovery_finishes_cancellation_without_restarting_work(self):
+        out = self.engine.submit("p", "recover-cancel",
+                                 {"intent": "write_file", "path": "never.txt", "content": "x"},
+                                 ["workspace.write.sandbox"], GRANTS)
+        task_id = out["task_id"]
+        self.ledger.set_state(task_id, TaskState.PLANNED)
+        self.ledger.set_state(task_id, TaskState.RUNNING)
+        self.ledger.set_state(task_id, TaskState.CANCELLING)
+        recovered = self.engine.recover(GRANTS)
+        self.assertIn(task_id, recovered)
+        self.assertEqual(self.engine.get_task(task_id)["state"], TaskState.CANCELLED.value)
+        self.assertEqual(self.ledger.get_receipts(task_id), [])
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "workspace", "never.txt")))
 
     def test_06_artifacts_have_hashes(self):
         out = self.engine.submit("p", "k6", {"intent": "read_file", "path": "hello.txt"},

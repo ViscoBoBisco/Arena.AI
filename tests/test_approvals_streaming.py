@@ -2,6 +2,7 @@
 import os
 import sys
 import tempfile
+import threading
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -46,6 +47,45 @@ class ApprovalFlowTests(unittest.TestCase):
         # re-approving must not re-execute the side effect
         r3 = self.engine.approve(out["task_id"], "approved", GRANTS)
         self.assertNotEqual(r3.get("result", {}).get("state"), TaskState.RUNNING.value)
+
+    def test_cancel_waiting_approval_finishes_and_clears_pending_request(self):
+        out = self.engine.submit("p", "ap-cancel",
+                                 {"intent": "write_file", "path": "cancelled.txt", "content": "x"},
+                                 ["workspace.write.sandbox"], GRANTS)
+        waiting = self.engine.run(out["task_id"], GRANTS)
+        self.assertEqual(waiting["state"], TaskState.WAITING_APPROVAL.value)
+        self.assertTrue(self.engine.cancel(out["task_id"]))
+        task = self.engine.get_task(out["task_id"])
+        self.assertEqual(task["state"], TaskState.CANCELLED.value)
+        self.assertEqual(task["pending_approvals"], [])
+        self.assertFalse(os.path.exists(os.path.join(self.ws, "cancelled.txt")))
+        self.assertFalse(self.engine.cancel(out["task_id"]))
+
+    def test_cancel_during_active_tool_finishes_as_cancelled(self):
+        started = threading.Event()
+        release = threading.Event()
+        spec = self.broker.get("native.echo")
+
+        def slow_echo(args):
+            started.set()
+            self.assertTrue(release.wait(2))
+            return {"result_type": "native.echo.v1", "summary": "finished",
+                    "data": {"text": args.get("text", "")}}
+
+        spec.handler = slow_echo
+        out = self.engine.submit("p", "ap-running-cancel",
+                                 {"intent": "echo", "instructions": "work"}, [], GRANTS)
+        result_box = {}
+        worker = threading.Thread(
+            target=lambda: result_box.update(self.engine.run(out["task_id"], GRANTS)))
+        worker.start()
+        self.assertTrue(started.wait(2))
+        self.assertTrue(self.engine.cancel(out["task_id"]))
+        release.set()
+        worker.join(3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result_box["state"], TaskState.CANCELLED.value)
+        self.assertEqual(self.engine.get_task(out["task_id"])["state"], TaskState.CANCELLED.value)
 
     def test_rejection_cancels(self):
         out = self.engine.submit("p", "ap-2",

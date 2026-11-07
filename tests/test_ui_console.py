@@ -162,6 +162,18 @@ class ConsoleApiTests(unittest.TestCase):
         code, _ = self.request("/v1/tasks?limit=not-a-number")
         self.assertEqual(code, 400)
 
+    def test_cancel_endpoint_reports_terminal_task(self):
+        code, out = self.request("/v1/tasks?sync=1", method="POST", body={
+            "idempotency_key": "cancel-terminal",
+            "request": {"intent": "echo", "instructions": "done"},
+            "permissions": [],
+        })
+        self.assertEqual(code, 201)
+        code, result = self.request(f"/v1/tasks/{out['task_id']}/cancel", method="POST", body={})
+        self.assertEqual(code, 409)
+        self.assertFalse(result["cancel_requested"])
+        self.assertEqual(result["state"], "COMPLETED")
+
     def test_memory_scope_and_stream_auth(self):
         code, _ = self.request("/v1/memory/console-test", method="POST",
                                body={"key": "tone", "value": {"style": "concise"}})

@@ -115,6 +115,11 @@ class ExpansionTests(unittest.TestCase):
         self.assertEqual(first["usage"]["model_tokens"], other["usage"]["model_tokens"])
         self.assertFalse(repeated["ok"])
         self.assertEqual(repeated["usage"]["tokens_used"], first["usage"]["model_tokens"])
+        router.forget_task("task-a")
+        self.assertTrue(router.complete("hi", budget_tokens=5, task_id="task-a")["ok"])
+        router.restore_task_usage("task-recovered", 3)
+        self.assertFalse(router.complete("hi", budget_tokens=5,
+                                         task_id="task-recovered")["ok"])
 
     def test_model_tool(self):
         r = self._call("model.complete", {"prompt": "summarize", "budget_tokens": 100},

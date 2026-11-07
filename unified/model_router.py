@@ -20,6 +20,17 @@ class ModelRouter:
         self._tokens_used = 0
         self._task_tokens: dict[str, int] = {}
 
+    def restore_task_usage(self, task_id: str, tokens_used: int) -> None:
+        """Reconcile in-memory accounting from durable committed receipts."""
+        with self._lock:
+            self._task_tokens[task_id] = max(
+                self._task_tokens.get(task_id, 0), max(0, int(tokens_used)))
+
+    def forget_task(self, task_id: str) -> None:
+        """Release per-task budget state after a durable terminal outcome."""
+        with self._lock:
+            self._task_tokens.pop(task_id, None)
+
     def complete(self, prompt: str, budget_tokens: int = 4096,
                  task_id: str | None = None) -> dict:
         """Deterministic local stand-in for a model generation. Queues on the
