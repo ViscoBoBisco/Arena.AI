@@ -35,6 +35,13 @@ tests/
   test_tenant_workflows.py    # 2 tests: cross-project 403 isolation, ch.4.2 repo-change flow
   test_investigate_metrics.py # 3 tests: ch.4.3 static investigation, IOC extraction, metrics
   test_qualification.py       # Phase-6 qualification: all four ch.4 workflows + trace + typed dataset
+  test_health.py              # 2 tests: /healthz liveness, /readyz readiness
+```
+
+`demo.sh` runs a full live walkthrough (health → tools → async submit → poll →
+evidence citations → metrics → idempotent dedupe). `/healthz` and `/readyz`
+follow the liveness/readiness split; compose secrets come from `.env`
+(see `.env.example`).
 ```
 
 `codegraph.trace` gives cycle-safe transitive upstream callers (13 tools);

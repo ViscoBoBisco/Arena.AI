@@ -110,6 +110,17 @@ def make_handler(engine: Engine):
                 return self._send(200, {"tools": engine.broker.list_tools()})
             if path == "/v1/roles":
                 return self._send(200, {"roles": engine.roles.list() if engine.roles else []})
+            if path == "/healthz":  # liveness: cheap, local only
+                return self._send(200, {"status": "ok"})
+            if path == "/readyz":   # readiness: verify ledger + artifact store
+                import os
+                ok = True
+                try:
+                    engine.ledger.list_tasks()
+                    engine.evidence.put_artifact("_health", "_check", "ping", b"ok")
+                except Exception as e:
+                    ok = False
+                return self._send(200 if ok else 503, {"status": "ok" if ok else "not ready"})
             if path == "/v1/metrics":
                 return self._send(200, engine.metrics)
             if path == "/v1/metrics/summary":
