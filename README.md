@@ -30,6 +30,14 @@ tests/
   test_approvals_streaming.py # 6 tests: durable approvals, memory, metrics, hash checks
   test_workflows.py           # 4 e2e tests: ch.4 research flow, budget limits, impact trace
   test_scheduler.py           # 2 tests: wave-parallel DAG execution, crash recovery
+  test_async_api.py           # 3 tests: 202 async submit + poll, sync mode, artifact download
+```
+
+Tasks run asynchronously by default (`POST /v1/tasks` → `202 Accepted` +
+`status_url`; use `?sync=1` for synchronous execution). Artifacts download at
+`/v1/artifacts/{task}/{step}/{name}` with an `X-Sha256` integrity header.
+`Dockerfile` + `docker-compose.yml` provide the hardened single-host deployment
+(gateway is the only published port; state on a named volume).
 ```
 
 The scheduler executes independent ready DAG steps in parallel waves (tool

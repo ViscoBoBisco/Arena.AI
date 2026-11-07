@@ -118,6 +118,21 @@ def make_handler(engine: Engine):
                 if task and task.get("result"):
                     uris = [a["uri"] for a in task["result"].get("artifacts", [])]
                 return self._send(200, {"artifacts": uris})
+            if len(parts) >= 2 and parts[0] == "v1" and parts[1] == "artifacts":
+                # Download an artifact by URI path; verify hash (manual 5.5).
+                import hashlib
+                uri = "artifact://" + "/".join(parts[2:])
+                body = engine.get_artifact(uri)
+                if body is None:
+                    return self._send(404, {"error": "artifact not found"})
+                digest = hashlib.sha256(body).hexdigest()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("X-Sha256", digest)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             return self._send(404, {"error": "not found"})
 
         def do_POST(self):
@@ -136,9 +151,14 @@ def make_handler(engine: Engine):
                         budgets=b.get("budgets"))
                 except KeyError as e:
                     return self._send(400, {"error": f"missing field: {e}"})
-                code = 200 if out.get("duplicate") else 201
+                code = 200 if out.get("duplicate") else 202  # async accepted
                 if out.get("state") != "REJECTED" and not out.get("duplicate"):
-                    out["result"] = engine.run(out["task_id"], OPERATOR_GRANTS)
+                    if "sync=1" in urlparse(self.path).query:
+                        out["result"] = engine.run(out["task_id"], OPERATOR_GRANTS)
+                        code = 201
+                    else:
+                        engine.submit_async(out["task_id"], OPERATOR_GRANTS)
+                        out["status_url"] = f"/v1/tasks/{out['task_id']}"
                 return self._send(code, out)
             if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] == "approve":
                 b = self._body()

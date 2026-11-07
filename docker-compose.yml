@@ -1,0 +1,31 @@
+# Single-host deployment (manual 5.6): only the gateway is exposed; all
+# state stays on an internal network + named volume.
+services:
+  gateway:
+    build: .
+    ports:
+      - "8080:8080"          # the only public surface
+    environment:
+      - CALLBACK_SECRET=${CALLBACK_SECRET:?set CALLBACK_SECRET in .env}
+    volumes:
+      - arena-data:/data     # ledger, artifacts, memory, graph
+    networks:
+      - backend
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  arena-data:

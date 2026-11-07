@@ -194,6 +194,12 @@ class Engine:
             self._cancel.discard(task_id)
         return result
 
+    def submit_async(self, task_id: str, grants: list[str]) -> threading.Thread:
+        """Run a task on a background worker thread (202 Accepted pattern)."""
+        t = threading.Thread(target=self.run, args=(task_id, grants), daemon=True)
+        t.start()
+        return t
+
     def recover(self, grants: list[str]) -> list:
         """Startup recovery (manual 5.4): reconcile tasks left in non-terminal
         states by re-running them; committed receipts are reused, so side
