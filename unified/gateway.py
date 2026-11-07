@@ -19,26 +19,49 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from .engine import Engine
+from .policy import KNOWN_GRANTS
 from .ratelimit import TokenBucket
 
-# JSON map of bearer token -> permitted project IDs, injected by deployment.
-# The wildcard development key is retained only when no explicit key map is set.
-def _load_api_keys() -> dict[str, set[str]]:
+# Development operator grants. Production tokens should carry the smallest
+# grant set needed by their service identity.
+OPERATOR_GRANTS = [
+    "web.read.public", "data.market.read", "repo.read",
+    "workspace.write.sandbox", "binary.inspect.static", "model.infer",
+    "task.approve", "task.cancel",
+]
+
+
+def _load_api_keys() -> dict[str, dict[str, set[str]]]:
+    """Load token -> {projects, grants}; explicit keys default to no grants."""
     raw = os.environ.get("UNIFIED_API_KEYS", "").strip()
     if not raw:
-        return {"dev-key": {"*"}}
+        return {"dev-key": {"projects": {"*"}, "grants": set(OPERATOR_GRANTS)}}
     try:
         config = json.loads(raw)
         if not isinstance(config, dict):
             return {}
         keys = {}
-        for token, projects in config.items():
+        for token, profile in config.items():
             if not isinstance(token, str) or not token:
                 continue
+            # Legacy shorthand is still accepted for tenant identity, but
+            # intentionally grants no tools unless grants are declared.
+            if isinstance(profile, dict):
+                projects = profile.get("projects", [])
+                grants = profile.get("grants", [])
+            else:
+                projects, grants = profile, []
             if isinstance(projects, str):
                 projects = [projects]
-            if isinstance(projects, list) and all(isinstance(p, str) and p for p in projects):
-                keys[token] = set(projects)
+            if isinstance(grants, str):
+                grants = [grants]
+            if not (isinstance(projects, list) and projects
+                    and all(isinstance(p, str) and p for p in projects)):
+                continue
+            if not (isinstance(grants, list)
+                    and all(isinstance(g, str) and g in KNOWN_GRANTS for g in grants)):
+                continue
+            keys[token] = {"projects": set(projects), "grants": set(grants)}
         return keys
     except (json.JSONDecodeError, TypeError, ValueError):
         return {}
@@ -53,13 +76,6 @@ _RATE_LOCK = threading.Lock()
 def _rate_limit_for(key: str) -> TokenBucket:
     with _RATE_LOCK:
         return _RATE_LIMITS.setdefault(key, TokenBucket(capacity=120, refill_per_sec=25.0))
-
-# Demo grant set for the built-in operator; a real deployment issues these
-# per caller (manual 3.3).
-OPERATOR_GRANTS = [
-    "web.read.public", "data.market.read", "repo.read",
-    "workspace.write.sandbox", "binary.inspect.static", "model.infer",
-]
 
 
 class RequestBodyError(Exception):
@@ -146,8 +162,8 @@ def make_handler(engine: Engine):
             if not auth.startswith("Bearer "):
                 return None, self._send(401, {"error": "missing bearer token"})
             key = auth.split(" ", 1)[1].strip()
-            allowed = API_KEYS.get(key)
-            if allowed is None:
+            profile = API_KEYS.get(key)
+            if profile is None:
                 return None, self._send(403, {"error": "invalid api key"})
             ok, retry = _rate_limit_for(key).allow()
             if not ok:
@@ -157,7 +173,8 @@ def make_handler(engine: Engine):
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": "rate limited"}).encode())
                 return None, True
-            self._allowed = allowed
+            self._allowed = set(profile["projects"])
+            self._caller_grants = set(profile["grants"])
             return True, None
 
         def _caller_project(self) -> str:
@@ -205,6 +222,12 @@ def make_handler(engine: Engine):
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            if path == "/v1/session":
+                return self._send(200, {
+                    "project_id": self._caller_project(),
+                    "projects": sorted(self._allowed),
+                    "grants": sorted(self._caller_grants),
+                })
             if path == "/v1/tools":
                 return self._send(200, {"tools": engine.broker.list_tools()})
             if path == "/v1/roles":
@@ -393,28 +416,34 @@ def make_handler(engine: Engine):
                         idempotency_key=b["idempotency_key"],
                         request=b.get("request", {}),
                         permissions=b.get("permissions", []),
-                        grants=OPERATOR_GRANTS,
+                        grants=sorted(self._caller_grants),
                         inputs=b.get("inputs", []),
                         budgets=b.get("budgets"))
                 except KeyError as e:
                     return self._send(400, {"error": f"missing field: {e}"})
                 if out.get("conflict"):
                     return self._send(409, out)
+                if out.get("state") == "REJECTED":
+                    return self._send(403, out)
                 code = 200 if out.get("duplicate") else 202  # async accepted
                 if out.get("state") != "REJECTED" and not out.get("duplicate"):
                     if "sync=1" in urlparse(self.path).query:
-                        out["result"] = engine.run(out["task_id"], OPERATOR_GRANTS)
+                        out["result"] = engine.run(out["task_id"], sorted(self._caller_grants))
                         code = 201
                     else:
-                        engine.submit_async(out["task_id"], OPERATOR_GRANTS)
+                        engine.submit_async(out["task_id"], sorted(self._caller_grants))
                         out["status_url"] = f"/v1/tasks/{out['task_id']}"
                 return self._send(code, out)
             if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] in ("approve", "reject"):
                 task, scope_err = self._task_for_caller(parts[2])
                 if scope_err:
                     return scope_err
+                if "task.approve" not in self._caller_grants:
+                    return self._send(403, {"error": "API key lacks task.approve grant"})
                 decision = self._body().get("decision", "approved") if parts[3] == "approve" else "rejected"
-                return self._send(200, engine.approve(parts[2], decision, OPERATOR_GRANTS))
+                if decision not in ("approved", "rejected"):
+                    return self._send(400, {"error": "decision must be approved or rejected"})
+                return self._send(200, engine.approve(parts[2], decision, sorted(self._caller_grants)))
             if len(parts) == 3 and parts[:2] == ["v1", "memory"]:
                 if parts[2] != self._caller_project():
                     return self._send(403, {"error": "cross-project access denied"})
@@ -425,6 +454,8 @@ def make_handler(engine: Engine):
                 task, scope_err = self._task_for_caller(parts[2])
                 if scope_err:
                     return scope_err
+                if "task.cancel" not in self._caller_grants:
+                    return self._send(403, {"error": "API key lacks task.cancel grant"})
                 requested = engine.cancel(parts[2])
                 current = engine.get_task(parts[2])
                 return self._send(200 if requested else 409, {
@@ -436,11 +467,14 @@ def make_handler(engine: Engine):
                                                 b.get("execution_id", ""),
                                                 b.get("request", {}),
                                                 b.get("permissions", []),
-                                                project_id=self._caller_project())
+                                                project_id=self._caller_project(),
+                                                grants=sorted(self._caller_grants))
                 if out.get("conflict"):
                     return self._send(409, out)
-                if not out.get("duplicate") and out.get("state") != "REJECTED":
-                    out["result"] = engine.run(out["task_id"], OPERATOR_GRANTS)
+                if out.get("state") == "REJECTED":
+                    return self._send(403, out)
+                if not out.get("duplicate"):
+                    out["result"] = engine.run(out["task_id"], sorted(self._caller_grants))
                 return self._send(200, out)
             if path == "/v1/automation/callbacks":
                 raw = self._raw_body()

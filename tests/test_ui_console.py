@@ -134,14 +134,39 @@ class ConsoleApiTests(unittest.TestCase):
 
     def test_api_key_project_allowlist_and_request_size_validation(self):
         from unified.gateway import _load_api_keys
-        with patch.dict(os.environ, {"UNIFIED_API_KEYS": '{"tenant-key":["console-test"]}'}):
+        scoped = '{"tenant-key":{"projects":["console-test"],"grants":["repo.read"]}}'
+        with patch.dict(os.environ, {"UNIFIED_API_KEYS": scoped}):
             loaded = _load_api_keys()
-        self.assertEqual(loaded, {"tenant-key": {"console-test"}})
-        with patch("unified.gateway.API_KEYS", {"tenant-key": {"console-test"}}):
+        self.assertEqual(loaded, {"tenant-key": {
+            "projects": {"console-test"}, "grants": {"repo.read"}}})
+        code, pending = self.request("/v1/tasks?sync=1", method="POST", body={
+            "idempotency_key": "scoped-control-task",
+            "request": {"intent": "write_file", "path": "scope-check.txt", "content": "x"},
+            "permissions": ["workspace.write.sandbox"],
+        })
+        self.assertEqual(code, 201)
+        self.assertEqual(pending["result"]["state"], "WAITING_APPROVAL")
+        profile = {"projects": {"console-test"}, "grants": {"repo.read"}}
+        with patch("unified.gateway.API_KEYS", {"tenant-key": profile}):
             code, _ = self.request("/v1/tools", api_key="tenant-key")
             self.assertEqual(code, 200)
+            code, session = self.request("/v1/session", api_key="tenant-key")
+            self.assertEqual(session["grants"], ["repo.read"])
+            code, _ = self.request(f"/v1/tasks/{pending['task_id']}/approve", method="POST",
+                                   api_key="tenant-key", body={"decision": "approved"})
+            self.assertEqual(code, 403)
+            code, _ = self.request(f"/v1/tasks/{pending['task_id']}/cancel", method="POST",
+                                   api_key="tenant-key", body={})
+            self.assertEqual(code, 403)
             code, _ = self.request("/v1/tools", project="other-project", api_key="tenant-key")
             self.assertEqual(code, 403)
+            code, denied = self.request("/v1/tasks", method="POST", api_key="tenant-key", body={
+                "idempotency_key": "least-privilege-denied",
+                "request": {"intent": "model_complete", "instructions": "x"},
+                "permissions": ["model.infer"],
+            })
+            self.assertEqual(code, 403)
+            self.assertEqual(denied["state"], "REJECTED")
 
         malformed = urllib.request.Request(
             self.base + "/v1/tasks", data=b"{bad json",
@@ -175,6 +200,28 @@ class ConsoleApiTests(unittest.TestCase):
         self.assertEqual(code, 409)
         self.assertTrue(conflict["conflict"])
         self.assertEqual(first["task_id"], conflict["task_id"])
+
+    def test_approval_scope_is_separate_from_task_execution_scope(self):
+        code, pending = self.request("/v1/tasks?sync=1", method="POST", body={
+            "idempotency_key": "separate-approval-scope",
+            "request": {"intent": "write_file", "path": "approved-by-reviewer.txt",
+                        "content": "approved"},
+            "permissions": ["workspace.write.sandbox"],
+        })
+        self.assertEqual(code, 201)
+        self.assertEqual(pending["result"]["state"], "WAITING_APPROVAL")
+        code, _ = self.request(f"/v1/tasks/{pending['task_id']}/approve", method="POST",
+                               body={"decision": "maybe"})
+        self.assertEqual(code, 400)
+        reviewer = {"projects": {"console-test"}, "grants": {"task.approve"}}
+        with patch("unified.gateway.API_KEYS", {"reviewer-key": reviewer}):
+            code, out = self.request(
+                f"/v1/tasks/{pending['task_id']}/approve", method="POST",
+                api_key="reviewer-key", body={"decision": "approved"})
+        self.assertEqual(code, 200)
+        self.assertEqual(out["result"]["state"], "COMPLETED")
+        with open(os.path.join(self.workspace, "approved-by-reviewer.txt")) as f:
+            self.assertEqual(f.read(), "approved")
 
     def test_cancel_endpoint_reports_terminal_task(self):
         code, out = self.request("/v1/tasks?sync=1", method="POST", body={

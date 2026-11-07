@@ -85,6 +85,12 @@ class AcceptanceTests(unittest.TestCase):
         ledger_a.close()
         ledger_b.close()
 
+    def test_task_must_explicitly_request_planned_tool_permissions(self):
+        out = self.engine.submit("p", "omitted-read-grant",
+                                 {"intent": "read_file", "path": "hello.txt"}, [], GRANTS)
+        self.assertEqual(out["state"], TaskState.REJECTED.value)
+        self.assertIn("request omitted required permissions", out["error"])
+
     def test_02_unapproved_write_denied(self):
         """Unapproved write through a specialist instruction -> denied before tool call."""
         out = self.engine.submit("p", "k2", {"intent": "write_file", "path": "x.txt",

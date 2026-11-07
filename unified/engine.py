@@ -90,7 +90,13 @@ class Engine:
             raise
         policy = PolicyEngine(set(grants))
         try:
-            policy.admit(permissions)  # evaluate at planning (manual 3.3)
+            policy.admit(permissions)  # caller grants checked at admission
+            required = {permission for step in plan(env)
+                        for permission in step.permissions_used}
+            omitted = sorted(required - set(permissions))
+            if omitted:
+                raise PolicyViolation(
+                    f"request omitted required permissions: {omitted}")
         except PolicyViolation as e:
             self.ledger.set_state(env.task_id, TaskState.REJECTED)
             self.ledger.set_result(env.task_id, {"error": str(e)})
@@ -109,7 +115,10 @@ class Engine:
         if task["state"] == TaskState.REJECTED.value:
             return task["result"]
         env = TaskEnvelope(**task["envelope"])
-        policy = PolicyEngine(set(grants))
+        # Admission validated these requested capabilities against the caller's
+        # grants. Persisted task permissions are the attenuated execution scope;
+        # a later approver need not inherit the original tool authority.
+        policy = PolicyEngine(set(env.permissions))
         steps = plan(env)
         self.ledger.save_steps(task_id, steps)
         cur = TaskState(task["state"])
@@ -323,6 +332,8 @@ class Engine:
     def approve(self, task_id: str, decision: str = "approved", grants: list | None = None) -> dict:
         """Decide a pending approval durably, then resume the paused run from
         its persisted state — the action executes exactly once."""
+        if decision not in ("approved", "rejected"):
+            raise ValueError("decision must be approved or rejected")
         task = self.ledger.get_task(task_id)
         if not task:
             raise LedgerError(f"unknown task {task_id}")

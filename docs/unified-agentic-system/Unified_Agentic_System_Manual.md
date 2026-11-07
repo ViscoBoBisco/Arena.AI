@@ -921,7 +921,7 @@ The ledger tracks task ID, plan revision, step DAG, step input hash, attempt ID,
 
 ## 3.3 Policy and approval service
 
-Authorization is defined by caller identity, project scope, target resources, action type and approval requirements. Example grants: `web.read.public`, `data.market.read`, `repo.read`, `workspace.write.sandbox`, `binary.inspect.static`, `binary.execute.authorized`, `external.notification.send`, `external.account.modify`. Do not infer grants from agent role text or website data. Evaluate both **at planning** and **immediately before a tool executes**. Runtime/binary analysis, shell execution, external account changes and credential-bearing browser interaction should have separate scoped authorities.
+Authorization is defined by caller identity, project scope, target resources, action type and approval requirements. Example grants: `web.read.public`, `data.market.read`, `repo.read`, `workspace.write.sandbox`, `binary.inspect.static`, `binary.execute.authorized`, `external.notification.send`, `external.account.modify`, `model.infer`, `task.approve`, and `task.cancel`. Task-control grants (`task.approve`, `task.cancel`) are distinct from tool grants. Do not infer grants from agent role text or website data. Evaluate both **at planning** and **immediately before a tool executes**. Runtime/binary analysis, shell execution, external account changes and credential-bearing browser interaction should have separate scoped authorities.
 
 ## 3.4 Capability broker and adapter registry
 
