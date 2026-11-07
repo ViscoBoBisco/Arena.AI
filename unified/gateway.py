@@ -47,6 +47,38 @@ def make_handler(engine: Engine):
         def log_message(self, *args):  # quiet
             pass
 
+        def _stream_events(self, task_id: str):
+            """SSE stream of task events: replayed history then live tail with
+            keepalives; closes when the task reaches a terminal state."""
+            from .contracts import TaskState
+            terminal = {s.value for s in (TaskState.COMPLETED, TaskState.FAILED,
+                                          TaskState.CANCELLED, TaskState.REJECTED)}
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            sent = 0
+            try:
+                while True:
+                    events = engine.get_events(task_id)
+                    for ev in events[sent:]:
+                        sent += 1
+                        payload = json.dumps(ev)
+                        self.wfile.write(f"id: {sent}\nevent: task\ndata: {payload}\n\n".encode())
+                    self.wfile.flush()
+                    task = engine.get_task(task_id)
+                    if task is None or task["state"] in terminal:
+                        self.wfile.write(b"event: done\ndata: {}\n\n")
+                        self.wfile.flush()
+                        return
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                    import time as _t
+                    _t.sleep(1)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+
         def do_GET(self):
             path = urlparse(self.path).path
             parts = [p for p in path.split("/") if p]
@@ -54,6 +86,14 @@ def make_handler(engine: Engine):
                 return self._send(200, {"tools": engine.broker.list_tools()})
             if path == "/v1/roles":
                 return self._send(200, {"roles": engine.roles.list() if engine.roles else []})
+            if path == "/v1/metrics":
+                return self._send(200, engine.metrics)
+            if len(parts) == 3 and parts[:2] == ["v1", "memory"]:
+                if engine.memory is None:
+                    return self._send(404, {"error": "memory disabled"})
+                return self._send(200, {"memories": engine.memory.list(parts[2])})
+            if len(parts) == 5 and parts[:2] == ["v1", "tasks"] and parts[4] == "stream":
+                return self._stream_events(parts[2])
             if len(parts) == 3 and parts[:2] == ["v1", "tasks"]:
                 task = engine.get_task(parts[2])
                 if task is None:
@@ -90,7 +130,15 @@ def make_handler(engine: Engine):
                     out["result"] = engine.run(out["task_id"], OPERATOR_GRANTS)
                 return self._send(code, out)
             if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] == "approve":
-                return self._send(200, engine.approve(parts[2]))
+                b = self._body()
+                return self._send(200, engine.approve(parts[2], b.get("decision", "approved"),
+                                                      OPERATOR_GRANTS))
+            if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] == "reject":
+                return self._send(200, engine.approve(parts[2], "rejected", OPERATOR_GRANTS))
+            if len(parts) == 3 and parts[:2] == ["v1", "memory"]:
+                b = self._body()
+                engine.memory.put(parts[2], b["key"], b.get("value"))
+                return self._send(200, {"stored": True})
             if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] == "cancel":
                 engine.cancel(parts[2])
                 return self._send(200, {"task_id": parts[2], "cancel_requested": True})

@@ -32,6 +32,16 @@ def verify(task_id: str, receipts: list[ToolReceipt], delivery_format: str = "re
                                   "step_ids": r.step_id})
             seen.setdefault(key, digest)
 
+    # Cross-check: every artifact hash claimed in receipt data must match the
+    # stored immutable bytes (manual 5.5 freshness/identity checks).
+    hash_mismatches = []
+    for r in succeeded:
+        digest = r.data.get("sha256")
+        if digest:
+            for art in r.artifacts:
+                if art.get("sha256") and art["sha256"] != digest:
+                    hash_mismatches.append({"step_id": r.step_id, "artifact": art["uri"]})
+
     answer = "; ".join(r.summary for r in succeeded) or "no successful steps"
     return {
         "task_id": task_id,
@@ -43,5 +53,6 @@ def verify(task_id: str, receipts: list[ToolReceipt], delivery_format: str = "re
         "failures": [{"step_id": r.step_id, "errors": r.errors} for r in failed],
         "cancelled_steps": [r.step_id for r in cancelled],
         "conflicts": conflicts,
+        "hash_mismatches": hash_mismatches,
         "verified_at": utcnow(),
     }

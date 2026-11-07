@@ -54,6 +54,13 @@ CREATE TABLE IF NOT EXISTS receipts (
     created_at TEXT NOT NULL,
     PRIMARY KEY (task_id, step_id, attempt_id)
 );
+CREATE TABLE IF NOT EXISTS approvals (
+    task_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    status TEXT NOT NULL,  -- pending | approved | rejected
+    decided_at TEXT,
+    PRIMARY KEY (task_id, step_id)
+);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id TEXT NOT NULL,
@@ -202,6 +209,27 @@ class Ledger:
             rows = self._db.execute(
                 "SELECT receipt FROM receipts WHERE task_id=? ORDER BY created_at", (task_id,))
             return [ToolReceipt(**json.loads(r["receipt"])) for r in rows]
+
+    # ---- approvals (durable human-in-the-loop records) -----------------
+    def save_approval(self, task_id: str, step_id: str, status: str) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT OR REPLACE INTO approvals(task_id,step_id,status,decided_at) VALUES(?,?,?,?)",
+                (task_id, step_id, status, utcnow() if status != "pending" else None))
+            self._log(task_id, "approval", {"step_id": step_id, "status": status})
+
+    def get_approval(self, task_id: str, step_id: str) -> Optional[str]:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT status FROM approvals WHERE task_id=? AND step_id=?",
+                (task_id, step_id)).fetchone()
+            return row["status"] if row else None
+
+    def pending_approvals(self, task_id: str) -> list:
+        with self._lock:
+            return [dict(r) for r in self._db.execute(
+                "SELECT step_id,status FROM approvals WHERE task_id=? AND status='pending'",
+                (task_id,))]
 
     # ---- events ------------------------------------------------------
     def _log(self, task_id: str, kind: str, detail: dict) -> None:

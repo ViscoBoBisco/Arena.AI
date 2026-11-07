@@ -24,15 +24,18 @@ from .verifier import verify
 
 class Engine:
     def __init__(self, ledger: Ledger, broker: CapabilityBroker, evidence: EvidenceStore,
-                 model_router=None, roles=None, automation=None):
+                 model_router=None, roles=None, automation=None, memory=None):
         self.ledger = ledger
         self.broker = broker
         self.evidence = evidence
         self.model_router = model_router
         self.roles = roles
         self.automation = automation
+        self.memory = memory
         self._cancel = set()
         self._lock = threading.RLock()
+        self.metrics = {"tasks_by_state": {}, "tool_calls": 0,
+                        "tool_failures": 0, "model_tokens": 0}
 
     # ---- admission (manual 3.1 / 3.3) --------------------------------
     def submit(self, project_id: str, idempotency_key: str, request: dict,
@@ -74,15 +77,42 @@ class Engine:
         policy = PolicyEngine(set(grants))
         steps = plan(env)
         self.ledger.save_steps(task_id, steps)
-        self.ledger.set_state(task_id, TaskState.PLANNED)
-        self.ledger.set_state(task_id, TaskState.RUNNING)
+        cur = TaskState(task["state"])
+        if cur == TaskState.ADMITTED:
+            self.ledger.set_state(task_id, TaskState.PLANNED)
+            self.ledger.set_state(task_id, TaskState.RUNNING)
+        elif cur == TaskState.WAITING_APPROVAL:
+            self.ledger.set_state(task_id, TaskState.RUNNING)  # resumed after approval
 
-        by_id = {s.step_id: s for s in steps}
-        done: set[str] = set()
-        receipts: list[ToolReceipt] = []
+        # Resumable: steps already SUCCEEDED (after approval pause or restart)
+        # are not re-executed.
+        done: set[str] = {s.step_id for s in self.ledger.get_steps(task_id)
+                          if s.state == StepState.SUCCEEDED}
+        receipts: list[ToolReceipt] = self.ledger.get_receipts(task_id)
         for step in steps:  # simple topological order (planner emits ordered DAGs)
-            if any(dep not in done for dep in step.depends_on):
+            if step.step_id in done or any(dep not in done for dep in step.depends_on):
                 continue
+            # Durable human-in-the-loop: side-effecting steps require an
+            # approved record; the run pauses (not the process) and resumes
+            # from persisted state on approval (manual 5.4).
+            spec = self.broker.get(step.tool)
+            if spec and spec.side_effect_class != "read_only":
+                decision = self.ledger.get_approval(task_id, step.step_id)
+                if decision is None:
+                    self.ledger.save_approval(task_id, step.step_id, "pending")
+                if decision == "rejected":
+                    self.ledger.set_state(task_id, TaskState.CANCELLING)
+                    self.ledger.set_state(task_id, TaskState.CANCELLED)
+                    result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
+                              "reason": "approval rejected", "pending_step": step.step_id}
+                    self.ledger.set_result(task_id, result)
+                    return result
+                if decision != "approved":
+                    self.ledger.set_state(task_id, TaskState.WAITING_APPROVAL)
+                    result = {"task_id": task_id, "state": TaskState.WAITING_APPROVAL.value,
+                              "pending_step": step.step_id, "tool": step.tool}
+                    self.ledger.set_result(task_id, result)
+                    return result
             if task_id in self._cancel:
                 self.ledger.set_step_state(task_id, step.step_id, StepState.CANCELLED)
                 receipts.append(ToolReceipt(task_id, step.step_id, new_id("A"),
@@ -102,6 +132,11 @@ class Engine:
                 task_id, step.step_id,
                 StepState.SUCCEEDED if receipt.status == "succeeded" else StepState.FAILED)
             receipts.append(receipt)
+            with self._lock:
+                self.metrics["tool_calls"] += 1
+                if receipt.status == "failed":
+                    self.metrics["tool_failures"] += 1
+                self.metrics["model_tokens"] += receipt.usage.get("model_tokens", 0)
             if receipt.status == "succeeded":
                 done.add(step.step_id)
 
@@ -121,6 +156,9 @@ class Engine:
             self.ledger.set_state(task_id, TaskState.COMPLETED)
         self.ledger.set_result(task_id, result)
         with self._lock:
+            st = task["state"] if result.get("state") is None else result.get("state")
+            self.metrics["tasks_by_state"][result.get("state", st)] = \
+                self.metrics["tasks_by_state"].get(result.get("state", st), 0) + 1
             self._cancel.discard(task_id)
         return result
 
@@ -128,11 +166,23 @@ class Engine:
         with self._lock:
             self._cancel.add(task_id)
 
-    def approve(self, task_id: str) -> dict:
+    def approve(self, task_id: str, decision: str = "approved", grants: list | None = None) -> dict:
+        """Decide a pending approval durably, then resume the paused run from
+        its persisted state — the action executes exactly once."""
         task = self.ledger.get_task(task_id)
-        if task and task["state"] == TaskState.WAITING_APPROVAL.value:
-            self.ledger.set_state(task_id, TaskState.RUNNING)
-        return {"task_id": task_id, "approved": True}
+        if not task:
+            raise LedgerError(f"unknown task {task_id}")
+        for ap in self.ledger.pending_approvals(task_id):
+            self.ledger.save_approval(task_id, ap["step_id"], decision)
+        if task["state"] == TaskState.WAITING_APPROVAL.value:
+            if decision == "approved":
+                self.ledger.set_state(task_id, TaskState.RUNNING)
+                result = self.run(task_id, grants or [])
+                return {"task_id": task_id, "decision": decision, "result": result}
+            self.ledger.set_state(task_id, TaskState.CANCELLED)  # legal per 5.4
+            return {"task_id": task_id, "decision": decision,
+                    "state": TaskState.CANCELLED.value}
+        return {"task_id": task_id, "decision": decision, "state": task["state"]}
 
     # ---- read paths ----------------------------------------------------
     def get_task(self, task_id: str) -> dict | None:

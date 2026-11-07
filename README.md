@@ -18,13 +18,22 @@ unified/
   planner.py        # plan(TaskEnvelope) -> StepDAG (AgenticSeek adapter stand-in)
   engine.py         # canonical path: gateway -> ledger -> plan -> broker -> evidence -> verifier
   verifier.py       # evidence-based result assembly with conflicts/failures surfaced
-  gateway.py        # HTTP API: /v1/tasks, /v1/tools, /v1/roles, /v1/automation/*
+  memory.py         # access-scoped conversation memory (separate from ledger/evidence)
+  gateway.py        # HTTP API: /v1/tasks, /v1/tools, /v1/roles, /v1/metrics,
+                    #   /v1/memory/{project}, SSE /v1/tasks/{id}/events/stream,
+                    #   /v1/automation/trigger|callbacks, approve/reject
   server.py         # entry point
 cli.py              # CLI gateway client
 tests/
-  test_acceptance.py  # 9 tests from the manual's section 5.10 acceptance suite
-  test_expansion.py   # 13 tests for adapters, model router, roles, automation
+  test_acceptance.py          # 9 tests from the manual's section 5.10 acceptance suite
+  test_expansion.py           # 13 tests for adapters, model router, roles, automation
+  test_approvals_streaming.py # 6 tests: durable approvals, memory, metrics, hash checks
 ```
+
+Side-effecting tool steps (e.g. `native.fs.write`) pause the run in a durable
+`WAITING_APPROVAL` state and execute exactly once after `POST .../approve`;
+`POST .../reject` cancels. Step IDs are deterministic per task, so committed
+receipts and approvals survive restarts and resumes.
 
 ### Run
 
