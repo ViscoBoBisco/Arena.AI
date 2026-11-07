@@ -14,6 +14,7 @@ from .ledger import Ledger
 def build_engine(data_dir: str) -> Engine:
     from .adapters import AdapterContext, register_adapters
     from .automation import AutomationConnector
+    from .delivery import DeliveryService
     from .memory import ConversationMemory
     from .model_router import ModelRouter
     from .role_registry import RoleRegistry
@@ -35,7 +36,8 @@ def build_engine(data_dir: str) -> Engine:
     roles = RoleRegistry(os.path.join(data_dir, "roles.json")
                          if os.path.exists(os.path.join(data_dir, "roles.json")) else None)
     engine = Engine(ledger, broker, evidence, model_router=router, roles=roles,
-                    memory=ConversationMemory(os.path.join(data_dir, "memory.db")))
+                    memory=ConversationMemory(os.path.join(data_dir, "memory.db")),
+                    delivery=DeliveryService(os.environ.get("CALLBACK_SECRET", "dev-secret")))
     engine.automation = AutomationConnector(engine, os.environ.get("CALLBACK_SECRET", "dev-secret"))
     return engine
 

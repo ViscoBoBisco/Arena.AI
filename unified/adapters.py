@@ -159,6 +159,19 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
                 "summary": f"{len(impacted)} files reference '{sym}'",
                 "data": {"symbol": sym, "impacted_files": sorted(set(impacted))[:50]}}
 
+    def codegraph_freshness(args):
+        """Freshness/staleness report (manual 5.10 test 6): index commit vs
+        requested commit — never invent current-line attribution."""
+        conn = _graph_conn()
+        rows = conn.execute('SELECT DISTINCT "commit" FROM symbols').fetchall()
+        commits = [r[0] for r in rows] or ["none"]
+        requested = args.get("commit", "unknown")
+        stale = requested not in commits
+        return {"result_type": "codegraph.freshness.v1",
+                "summary": f"index commits: {commits}; requested: {requested}; stale={stale}",
+                "data": {"index_commits": commits, "requested_commit": requested,
+                         "stale": stale}}
+
     # ---- rea.inspect (manual 2.7, static only) ------------------------
     MAGIC = {b"\x7fELF": "ELF", b"MZ": "PE", b"\xfe\xed\xfa\xce": "Mach-O",
              b"\xcf\xfa\xed\xfe": "Mach-O-64", b"PK\x03\x04": "zip/jar/apk"}
@@ -193,6 +206,8 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
                              codegraph_find, "Find symbols in the code graph."))
     broker.register(ToolSpec("codegraph.impact", ["repo.read"], "read_only",
                              codegraph_impact, "Impact trace: files referencing a symbol."))
+    broker.register(ToolSpec("codegraph.freshness", ["repo.read"], "read_only",
+                             codegraph_freshness, "Report index commit staleness."))
     broker.register(ToolSpec("rea.inspect", ["binary.inspect.static"], "read_only",
                              rea_inspect, "Static binary/application triage (hash, format, strings)."))
 

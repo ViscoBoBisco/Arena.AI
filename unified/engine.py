@@ -24,7 +24,8 @@ from .verifier import verify
 
 class Engine:
     def __init__(self, ledger: Ledger, broker: CapabilityBroker, evidence: EvidenceStore,
-                 model_router=None, roles=None, automation=None, memory=None):
+                 model_router=None, roles=None, automation=None, memory=None,
+                 delivery=None):
         self.ledger = ledger
         self.broker = broker
         self.evidence = evidence
@@ -32,6 +33,7 @@ class Engine:
         self.roles = roles
         self.automation = automation
         self.memory = memory
+        self.delivery = delivery
         self._cancel = set()
         self._lock = threading.RLock()
         self.metrics = {"tasks_by_state": {}, "tool_calls": 0,
@@ -186,6 +188,10 @@ class Engine:
             result = verify(task_id, receipts)
             result["state"] = TaskState.COMPLETED.value
             self.ledger.set_state(task_id, TaskState.COMPLETED)
+            # Delivery channel: signed webhook if the task requested one.
+            if self.delivery and env.delivery.get("webhook_url"):
+                result["delivery"] = self.delivery.deliver(
+                    env.delivery["webhook_url"], result)
         self.ledger.set_result(task_id, result)
         with self._lock:
             st = task["state"] if result.get("state") is None else result.get("state")

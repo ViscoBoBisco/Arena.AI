@@ -31,6 +31,13 @@ tests/
   test_workflows.py           # 4 e2e tests: ch.4 research flow, budget limits, impact trace
   test_scheduler.py           # 2 tests: wave-parallel DAG execution, crash recovery
   test_async_api.py           # 3 tests: 202 async submit + poll, sync mode, artifact download
+  test_security_delivery.py   # 3 tests: prompt-injection quarantine, graph staleness, signed webhook delivery
+```
+
+Security/delivery: fetched content is quarantined as `untrusted-data` evidence
+with numbered citation handles (`GET /v1/tasks/{id}/evidence`), `codegraph.freshness`
+reports index staleness, and completed results can be delivered to a signed
+webhook (`delivery.webhook_url`, HMAC-SHA256 + timestamp).
 ```
 
 Tasks run asynchronously by default (`POST /v1/tasks` → `202 Accepted` +

@@ -68,6 +68,10 @@ def plan(env: TaskEnvelope) -> list[Step]:
         steps.append(Step(sid(), "rea.inspect",
                           {"path": env.request.get("path", ""), "_task_id": env.task_id},
                           read_only=True, permissions_used=["binary.inspect.static"]))
+    elif intent == "freshness":
+        steps.append(Step(sid(), "codegraph.freshness",
+                          {"commit": env.request.get("commit", "unknown")},
+                          read_only=True, permissions_used=["repo.read"]))
     elif intent == "impact":
         steps.append(Step(sid(), "codegraph.impact",
                           {"symbol": env.request.get("symbol", "")},

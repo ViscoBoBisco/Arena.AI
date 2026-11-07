@@ -112,6 +112,10 @@ def make_handler(engine: Engine):
                 return self._send(200, task)
             if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] == "events":
                 return self._send(200, {"events": engine.get_events(parts[2])})
+            if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] == "evidence":
+                from .delivery import evidence_with_citations
+                receipts = engine.ledger.get_receipts(parts[2])
+                return self._send(200, {"evidence": evidence_with_citations(receipts)})
             if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] == "artifacts":
                 task = engine.get_task(parts[2])
                 uris = []
