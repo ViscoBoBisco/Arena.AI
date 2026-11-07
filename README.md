@@ -36,6 +36,12 @@ tests/
   test_investigate_metrics.py # 3 tests: ch.4.3 static investigation, IOC extraction, metrics
   test_qualification.py       # Phase-6 qualification: all four ch.4 workflows + trace + typed dataset
   test_health.py              # 2 tests: /healthz liveness, /readyz readiness
+  test_infra_listing.py       # 2 tests: compose service-links parsing, scoped paginated task list
+```
+
+`codegraph.service_links` (14 tools) parses compose `depends_on` into service
+edges; `GET /v1/tasks?limit=&offset=` is project-scoped and paginated; the web UI
+has task-list and metrics panels.
 ```
 
 `demo.sh` runs a full live walkthrough (health → tools → async submit → poll →

@@ -241,6 +241,47 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
                 "data": {"symbol": sym, "defining_files": sorted(targets),
                          "transitive_callers": sorted(affected)[:50]}}
 
+    def codegraph_service_links(args):
+        """Service links from infra files (manual 2.6 infra indexing):
+        parses docker-compose.yml depends_on/links into directed edges."""
+        root = os.path.abspath(os.path.join(ws, args.get("root", ".")))
+        if not root.startswith(os.path.abspath(ws)):
+            return {"result_type": "error.policy.v1", "summary": "root escapes workspace",
+                    "errors": [{"type": "policy_denied"}]}
+        edges, services = [], []
+        for dirpath, _, files in os.walk(root):
+            for fn in files:
+                if fn not in ("docker-compose.yml", "docker-compose.yaml", "compose.yml"):
+                    continue
+                p = os.path.join(dirpath, fn)
+                with open(p, encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()
+                # minimal YAML scan: services: block + depends_on entries
+                in_services = False
+                svc = None
+                for line in lines:
+                    if line.startswith("services:"):
+                        in_services = True
+                        continue
+                    if in_services and line and not line.startswith(" "):
+                        in_services = False
+                    if not in_services:
+                        continue
+                    m = re.match(r"^  ([\w-]+):\s*$", line)
+                    if m:
+                        svc = m.group(1)
+                        services.append(svc)
+                    elif svc and re.match(r"^    depends_on:\s*$", line):
+                        pass
+                    elif svc and re.match(r"^      - ([\w-]+)\s*$", line):
+                        edges.append((svc, re.match(r"^      - ([\w-]+)\s*$", line).group(1)))
+                    elif svc and re.match(r"^      ([\w-]+):", line):
+                        edges.append((svc, re.match(r"^      ([\w-]+):", line).group(1)))
+        return {"result_type": "codegraph.service_links.v1",
+                "summary": f"{len(services)} services, {len(edges)} dependency edges",
+                "data": {"services": sorted(set(services)),
+                         "edges": [{"from": a, "to": b} for a, b in edges]}}
+
     # ---- rea.inspect (manual 2.7, static only) ------------------------
     MAGIC = {b"\x7fELF": "ELF", b"MZ": "PE", b"\xfe\xed\xfa\xce": "Mach-O",
              b"\xcf\xfa\xed\xfe": "Mach-O-64", b"PK\x03\x04": "zip/jar/apk"}
@@ -294,6 +335,8 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
                              codegraph_freshness, "Report index commit staleness."))
     broker.register(ToolSpec("codegraph.trace", ["repo.read"], "read_only",
                              codegraph_trace, "Transitive upstream callers of a symbol."))
+    broker.register(ToolSpec("codegraph.service_links", ["repo.read"], "read_only",
+                             codegraph_service_links, "Service dependency edges from compose files."))
     broker.register(ToolSpec("rea.inspect", ["binary.inspect.static"], "read_only",
                              rea_inspect, "Static binary/application triage (hash, format, strings)."))
 

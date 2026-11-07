@@ -108,6 +108,10 @@ def plan(env: TaskEnvelope) -> list[Step]:
                           {"dataset_uri": env.request.get("dataset_uri", ""),
                            "unit": env.request.get("unit"), "provider": env.request.get("provider")},
                           read_only=True, permissions_used=["data.market.read"]))
+    elif intent == "service_links":
+        steps.append(Step(sid(), "codegraph.service_links",
+                          {"root": env.request.get("root", ".")},
+                          read_only=True, permissions_used=["repo.read"]))
     elif intent == "freshness":
         steps.append(Step(sid(), "codegraph.freshness",
                           {"commit": env.request.get("commit", "unknown")},

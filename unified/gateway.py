@@ -144,6 +144,17 @@ def make_handler(engine: Engine):
                 return self._send(200, {"memories": engine.memory.list(parts[2])})
             if len(parts) == 5 and parts[:2] == ["v1", "tasks"] and parts[4] == "stream":
                 return self._stream_events(parts[2])
+            if path == "/v1/tasks":
+                # project-scoped list with offset pagination (bounded)
+                from urllib.parse import parse_qs
+                q = parse_qs(urlparse(self.path).query)
+                limit = min(int(q.get("limit", ["50"])[0]), 100)
+                offset = int(q.get("offset", ["0"])[0])
+                proj = self._caller_project()
+                rows = [t for t in engine.ledger.list_tasks() if t["project_id"] == proj]
+                page = rows[offset:offset + limit]
+                return self._send(200, {"tasks": page, "total": len(rows),
+                                        "limit": limit, "offset": offset})
             if len(parts) == 3 and parts[:2] == ["v1", "tasks"]:
                 task, err = self._task_for_caller(parts[2])
                 if err:

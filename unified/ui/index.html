@@ -44,6 +44,8 @@
   <button class="ghost" onclick="approve()">Approve</button>
   <button class="ghost" onclick="reject()">Reject</button>
   <button class="ghost" onclick="cancelTask()">Cancel</button>
+  <button class="ghost" onclick="loadTasks()">My tasks</button>
+  <button class="ghost" onclick="loadMetrics()">Metrics</button>
 </div>
 <div id="log">ready.</div>
 <script>
@@ -83,6 +85,10 @@ const act = async (p, body) => { if (!currentId) return;
 approve = () => act('approve', { decision: 'approved' });
 reject  = () => act('reject', {});
 cancelTask = () => act('cancel', {});
+const get = async (p) => (await (await fetch(p)).json());
+loadTasks = async () => { const o = await get('/v1/tasks?limit=20');
+  log('tasks: ' + JSON.stringify(o.tasks)); };
+loadMetrics = async () => { log('metrics: ' + JSON.stringify(await get('/v1/metrics/summary'))); };
 </script>
 </body>
 </html>
