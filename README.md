@@ -38,6 +38,12 @@ tests/
   test_health.py              # 2 tests: /healthz liveness, /readyz readiness
   test_infra_listing.py       # 2 tests: compose service-links parsing, scoped paginated task list
   test_auth_ratelimit.py      # 5 tests: 401/403 auth, 429 token bucket
+  test_audit_dlq.py           # 4 tests: hash-chained audit tamper detection, SSRF, 4xx/5xx DLQ
+```
+
+Ledger events are SHA-256 hash-chained (`GET /v1/audit/verify`); webhook delivery
+blocks non-HTTPS and private/metadata IPs (SSRF) and routes 4xx immediately /
+5xx after retries to a dead-letter queue.
 ```
 
 The gateway requires `Authorization: Bearer <api-key>` on all `/v1/*` routes

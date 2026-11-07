@@ -47,7 +47,7 @@ class SecurityDeliveryTests(unittest.TestCase):
             evidence=self.evidence, workspace_root=self.ws, fixture_dir=self.fix,
             graph_db=os.path.join(d, "g.db")))
         self.engine = Engine(self.ledger, self.broker, self.evidence,
-                             delivery=DeliveryService("wh-secret"))
+                             delivery=DeliveryService("wh-secret", allow_private=True))
 
     def tearDown(self):
         self.tmp.cleanup()

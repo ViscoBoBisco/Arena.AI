@@ -7,6 +7,7 @@ retries return the existing receipt rather than repeating the action.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -66,7 +67,9 @@ CREATE TABLE IF NOT EXISTS events (
     task_id TEXT NOT NULL,
     at TEXT NOT NULL,
     kind TEXT NOT NULL,
-    detail TEXT NOT NULL
+    detail TEXT NOT NULL,
+    prev_hash TEXT,
+    entry_hash TEXT
 );
 """
 
@@ -84,6 +87,11 @@ class Ledger:
         self._db.execute("PRAGMA foreign_keys=ON")
         with self._db:
             self._db.executescript(_SCHEMA)
+            for col in ("prev_hash", "entry_hash"):
+                try:
+                    self._db.execute(f"ALTER TABLE events ADD COLUMN {col} TEXT")
+                except sqlite3.OperationalError:
+                    pass
 
     def close(self) -> None:
         with self._lock:
@@ -233,9 +241,37 @@ class Ledger:
 
     # ---- events ------------------------------------------------------
     def _log(self, task_id: str, kind: str, detail: dict) -> None:
+        at = utcnow()
+        payload = json.dumps(detail, sort_keys=True)
+        prev = self._db.execute(
+            "SELECT entry_hash FROM events ORDER BY id DESC LIMIT 1").fetchone()
+        prev_hash = prev["entry_hash"] if (prev and prev["entry_hash"]) else "GENESIS"
+        entry_hash = hashlib.sha256(
+            f"{prev_hash}|{task_id}|{at}|{kind}|{payload}".encode()).hexdigest()
         self._db.execute(
-            "INSERT INTO events(task_id,at,kind,detail) VALUES(?,?,?,?)",
-            (task_id, utcnow(), kind, json.dumps(detail)))
+            "INSERT INTO events(task_id,at,kind,detail,prev_hash,entry_hash) VALUES(?,?,?,?,?,?)",
+            (task_id, at, kind, payload, prev_hash, entry_hash))
+
+    def verify_audit_chain(self) -> dict:
+        """Recompute the hash chain over all audit events; detects any
+        retroactive edit or deletion (tamper-evident audit log best practice)."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id,task_id,at,kind,detail,prev_hash,entry_hash FROM events ORDER BY id"
+            ).fetchall()
+        expected_prev = "GENESIS"
+        checked = 0
+        for r in rows:
+            if not r["entry_hash"]:
+                continue  # pre-chain legacy rows
+            calc = hashlib.sha256(
+                f"{r['prev_hash']}|{r['task_id']}|{r['at']}|{r['kind']}|{r['detail']}".encode()
+            ).hexdigest()
+            if r["prev_hash"] != expected_prev or r["entry_hash"] != calc:
+                return {"intact": False, "broken_at_id": r["id"], "checked": checked}
+            expected_prev = r["entry_hash"]
+            checked += 1
+        return {"intact": True, "checked": checked, "head": expected_prev}
 
     def events(self, task_id: str) -> list:
         with self._lock:

@@ -156,6 +156,8 @@ def make_handler(engine: Engine):
                 return self._send(200 if ok else 503, {"status": "ok" if ok else "not ready"})
             if path == "/v1/metrics":
                 return self._send(200, engine.metrics)
+            if path == "/v1/audit/verify":
+                return self._send(200, engine.ledger.verify_audit_chain())
             if path == "/v1/metrics/summary":
                 m = engine.metrics
                 lat = sorted(m.get("latencies_ms", []))
