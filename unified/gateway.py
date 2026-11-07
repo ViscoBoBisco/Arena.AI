@@ -13,15 +13,46 @@ Binds to 0.0.0.0 for the sandbox preview proxy.
 from __future__ import annotations
 
 import json
+import os
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from .engine import Engine
 from .ratelimit import TokenBucket
 
-# API keys: project -> key (dev default; production injects via env)
-API_KEYS = {"dev-key": {"*"}}
-RATE_LIMIT = TokenBucket(capacity=120, refill_per_sec=25.0)
+# JSON map of bearer token -> permitted project IDs, injected by deployment.
+# The wildcard development key is retained only when no explicit key map is set.
+def _load_api_keys() -> dict[str, set[str]]:
+    raw = os.environ.get("UNIFIED_API_KEYS", "").strip()
+    if not raw:
+        return {"dev-key": {"*"}}
+    try:
+        config = json.loads(raw)
+        if not isinstance(config, dict):
+            return {}
+        keys = {}
+        for token, projects in config.items():
+            if not isinstance(token, str) or not token:
+                continue
+            if isinstance(projects, str):
+                projects = [projects]
+            if isinstance(projects, list) and all(isinstance(p, str) and p for p in projects):
+                keys[token] = set(projects)
+        return keys
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+
+API_KEYS = _load_api_keys()
+MAX_BODY_BYTES = 1_048_576
+_RATE_LIMITS: dict[str, TokenBucket] = {}
+_RATE_LOCK = threading.Lock()
+
+
+def _rate_limit_for(key: str) -> TokenBucket:
+    with _RATE_LOCK:
+        return _RATE_LIMITS.setdefault(key, TokenBucket(capacity=120, refill_per_sec=25.0))
 
 # Demo grant set for the built-in operator; a real deployment issues these
 # per caller (manual 3.3).
@@ -29,6 +60,12 @@ OPERATOR_GRANTS = [
     "web.read.public", "data.market.read", "repo.read",
     "workspace.write.sandbox", "binary.inspect.static", "model.infer",
 ]
+
+
+class RequestBodyError(Exception):
+    def __init__(self, status: int, message: str):
+        self.status = status
+        self.message = message
 
 
 def make_handler(engine: Engine):
@@ -44,11 +81,28 @@ def make_handler(engine: Engine):
             self.wfile.write(body)
             return True
 
+        def _raw_body(self) -> bytes:
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+            except (TypeError, ValueError):
+                raise RequestBodyError(400, "invalid Content-Length")
+            if length < 0:
+                raise RequestBodyError(400, "invalid Content-Length")
+            if length > MAX_BODY_BYTES:
+                raise RequestBodyError(413, "request body exceeds 1 MiB limit")
+            return self.rfile.read(length) if length else b""
+
         def _body(self) -> dict:
-            length = int(self.headers.get("Content-Length", 0))
-            if not length:
+            raw = self._raw_body()
+            if not raw:
                 return {}
-            return json.loads(self.rfile.read(length).decode())
+            try:
+                body = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                raise RequestBodyError(400, "request body must be valid JSON")
+            if not isinstance(body, dict):
+                raise RequestBodyError(400, "JSON request body must be an object")
+            return body
 
         def log_message(self, *args):  # quiet
             pass
@@ -95,7 +149,7 @@ def make_handler(engine: Engine):
             allowed = API_KEYS.get(key)
             if allowed is None:
                 return None, self._send(403, {"error": "invalid api key"})
-            ok, retry = RATE_LIMIT.allow()
+            ok, retry = _rate_limit_for(key).allow()
             if not ok:
                 self.send_response(429)
                 self.send_header("Content-Type", "application/json")
@@ -107,8 +161,19 @@ def make_handler(engine: Engine):
             return True, None
 
         def _caller_project(self) -> str:
-            """Tenant scope for every read/write: the authenticated project."""
-            return self.headers.get("X-Project-Id", "default")
+            """Tenant requested by the caller; checked against the bearer key."""
+            return self.headers.get("X-Project-Id", "default").strip()
+
+        def _authorize_project(self) -> bool:
+            project = self._caller_project()
+            if not project or len(project) > 128:
+                self._send(400, {"error": "X-Project-Id must be 1–128 characters"})
+                return False
+            allowed = getattr(self, "_allowed", set())
+            if "*" not in allowed and project not in allowed:
+                self._send(403, {"error": "API key is not authorized for this project"})
+                return False
+            return True
 
         def _task_for_caller(self, task_id: str):
             task = engine.get_task(task_id)
@@ -126,6 +191,8 @@ def make_handler(engine: Engine):
             if path not in ("/healthz", "/readyz", "/") and path != "/index.html":
                 proj, err = self._auth()
                 if err:
+                    return
+                if path.startswith("/v1/") and not self._authorize_project():
                     return
             if path in ("/", "/index.html"):
                 import os
@@ -234,12 +301,15 @@ def make_handler(engine: Engine):
                 # project-scoped list with offset pagination (bounded)
                 from urllib.parse import parse_qs
                 q = parse_qs(urlparse(self.path).query)
-                limit = min(int(q.get("limit", ["50"])[0]), 100)
-                offset = int(q.get("offset", ["0"])[0])
+                try:
+                    limit = max(1, min(int(q.get("limit", ["50"])[0]), 100))
+                    offset = max(0, int(q.get("offset", ["0"])[0]))
+                except ValueError:
+                    return self._send(400, {"error": "limit and offset must be integers"})
                 proj = self._caller_project()
-                rows = [t for t in engine.ledger.list_tasks() if t["project_id"] == proj]
-                page = rows[offset:offset + limit]
-                return self._send(200, {"tasks": page, "total": len(rows),
+                page = engine.ledger.list_tasks(project_id=proj, limit=limit, offset=offset)
+                total = engine.ledger.count_tasks(project_id=proj)
+                return self._send(200, {"tasks": page, "total": total,
                                         "limit": limit, "offset": offset})
             if len(parts) == 3 and parts[:2] == ["v1", "tasks"]:
                 task, err = self._task_for_caller(parts[2])
@@ -291,13 +361,32 @@ def make_handler(engine: Engine):
             return self._send(404, {"error": "not found"})
 
         def do_POST(self):
+            try:
+                self._do_POST()
+            except RequestBodyError as e:
+                self._send(e.status, {"error": e.message})
+
+        def _do_POST(self):
             path = urlparse(self.path).path
             parts = [p for p in path.split("/") if p]
             proj, err = self._auth()
             if err:
                 return
+            if not self._authorize_project():
+                return
             if path == "/v1/tasks":
                 b = self._body()
+                if not isinstance(b.get("idempotency_key"), str) or not 1 <= len(b["idempotency_key"]) <= 200:
+                    return self._send(400, {"error": "idempotency_key must be a 1–200 character string"})
+                if not isinstance(b.get("request", {}), dict):
+                    return self._send(400, {"error": "request must be a JSON object"})
+                if not isinstance(b.get("permissions", []), list) or not all(
+                        isinstance(p, str) for p in b.get("permissions", [])):
+                    return self._send(400, {"error": "permissions must be a list of strings"})
+                if not isinstance(b.get("inputs", []), list):
+                    return self._send(400, {"error": "inputs must be a JSON array"})
+                if b.get("budgets") is not None and not isinstance(b["budgets"], dict):
+                    return self._send(400, {"error": "budgets must be a JSON object"})
                 try:
                     out = engine.submit(
                         project_id=self._caller_project(),
@@ -347,7 +436,7 @@ def make_handler(engine: Engine):
                     out["result"] = engine.run(out["task_id"], OPERATOR_GRANTS)
                 return self._send(200, out)
             if path == "/v1/automation/callbacks":
-                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                raw = self._raw_body()
                 out = engine.automation.callback(
                     raw,
                     self.headers.get("X-Signature-256", ""),

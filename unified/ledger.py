@@ -157,12 +157,26 @@ class Ledger:
                 (json.dumps(result), utcnow(), task_id),
             )
 
-    def list_tasks(self) -> list:
+    def list_tasks(self, project_id: str | None = None, limit: int | None = None,
+                   offset: int = 0) -> list:
+        """List tasks in newest-first order; optional project and SQL pagination."""
+        query = (
+            "SELECT task_id,idempotency_key,state,project_id,envelope,result,created_at,updated_at"
+            " FROM tasks"
+        )
+        params = []
+        if project_id is not None:
+            query += " WHERE project_id=?"
+            params.append(project_id)
+        query += " ORDER BY rowid DESC"
+        if limit is not None:
+            query += " LIMIT ? OFFSET ?"
+            params.extend([max(0, int(limit)), max(0, int(offset))])
+        elif offset:
+            query += " LIMIT -1 OFFSET ?"
+            params.append(max(0, int(offset)))
         with self._lock:
-            rows = self._db.execute(
-                "SELECT task_id,idempotency_key,state,project_id,envelope,result,created_at,updated_at"
-                " FROM tasks ORDER BY rowid DESC"
-            ).fetchall()
+            rows = self._db.execute(query, params).fetchall()
             out = []
             for r in rows:
                 env = json.loads(r["envelope"]) if r["envelope"] else {}
@@ -182,6 +196,16 @@ class Ledger:
                     "updated_at": r["updated_at"],
                 })
             return out
+
+    def count_tasks(self, project_id: str | None = None) -> int:
+        with self._lock:
+            if project_id is None:
+                row = self._db.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()
+            else:
+                row = self._db.execute(
+                    "SELECT COUNT(*) AS n FROM tasks WHERE project_id=?", (project_id,)
+                ).fetchone()
+            return int(row["n"])
 
     # ---- steps -------------------------------------------------------
     def save_steps(self, task_id: str, steps: list[Step]) -> None:

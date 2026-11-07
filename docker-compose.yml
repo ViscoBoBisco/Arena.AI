@@ -7,6 +7,7 @@ services:
       - "8080:8080"          # the only public surface
     environment:
       - CALLBACK_SECRET=${CALLBACK_SECRET:?set CALLBACK_SECRET in .env}
+      - UNIFIED_API_KEYS=${UNIFIED_API_KEYS:-}
     volumes:
       - arena-data:/data     # ledger, artifacts, memory, graph
     networks:

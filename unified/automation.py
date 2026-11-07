@@ -39,7 +39,12 @@ class AutomationConnector:
         ok, reason = self._verify(raw_body, signature, timestamp)
         if not ok:
             return {"accepted": False, "reason": reason}
-        payload = json.loads(raw_body.decode())
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {"accepted": False, "reason": "invalid JSON payload"}
+        if not isinstance(payload, dict):
+            return {"accepted": False, "reason": "payload must be a JSON object"}
         event_id = payload.get("event_id", "")
         if event_id in self._seen_events:
             return {"accepted": True, "replay": True, "event_id": event_id}

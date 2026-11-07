@@ -2,10 +2,12 @@
 import hashlib
 import json
 import os
+import socket
 import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import urllib.error
 import urllib.request
 
@@ -38,6 +40,9 @@ class ConsoleApiTests(unittest.TestCase):
             memory=ConversationMemory(os.path.join(cls.tmp.name, "memory.db")),
         )
         cls.engine.automation = AutomationConnector(cls.engine, "test-secret")
+        from unified.gateway import _RATE_LIMITS, _RATE_LOCK
+        with _RATE_LOCK:
+            _RATE_LIMITS.clear()
         cls.server = serve(cls.engine, "127.0.0.1", 8131)
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
         cls.base = "http://127.0.0.1:8131"
@@ -48,10 +53,11 @@ class ConsoleApiTests(unittest.TestCase):
         cls.server.server_close()
         cls.tmp.cleanup()
 
-    def request(self, path, method="GET", project="console-test", body=None, auth=True):
+    def request(self, path, method="GET", project="console-test", body=None, auth=True,
+                api_key="dev-key"):
         headers = {"X-Project-Id": project}
         if auth:
-            headers["Authorization"] = "Bearer dev-key"
+            headers["Authorization"] = "Bearer " + api_key
         data = json.dumps(body).encode() if body is not None else None
         if data is not None:
             headers["Content-Type"] = "application/json"
@@ -125,6 +131,36 @@ class ConsoleApiTests(unittest.TestCase):
         self.assertEqual(task["project_id"], "console-test")
         code, _ = self.request(f"/v1/tasks/{task_id}", project="another-project")
         self.assertEqual(code, 403)
+
+    def test_api_key_project_allowlist_and_request_size_validation(self):
+        from unified.gateway import _load_api_keys
+        with patch.dict(os.environ, {"UNIFIED_API_KEYS": '{"tenant-key":["console-test"]}'}):
+            loaded = _load_api_keys()
+        self.assertEqual(loaded, {"tenant-key": {"console-test"}})
+        with patch("unified.gateway.API_KEYS", {"tenant-key": {"console-test"}}):
+            code, _ = self.request("/v1/tools", api_key="tenant-key")
+            self.assertEqual(code, 200)
+            code, _ = self.request("/v1/tools", project="other-project", api_key="tenant-key")
+            self.assertEqual(code, 403)
+
+        malformed = urllib.request.Request(
+            self.base + "/v1/tasks", data=b"{bad json",
+            headers={"Authorization": "Bearer dev-key", "X-Project-Id": "console-test",
+                     "Content-Type": "application/json"}, method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(malformed)
+        self.assertEqual(cm.exception.code, 400)
+
+        with socket.create_connection(("127.0.0.1", 8131), timeout=3) as sock:
+            sock.sendall(
+                b"POST /v1/tasks HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                b"Authorization: Bearer dev-key\r\nX-Project-Id: console-test\r\n"
+                b"Content-Length: 1048577\r\nConnection: close\r\n\r\n"
+            )
+            response = sock.recv(4096)
+        self.assertIn(b"413", response.split(b"\r\n", 1)[0])
+        code, _ = self.request("/v1/tasks?limit=not-a-number")
+        self.assertEqual(code, 400)
 
     def test_memory_scope_and_stream_auth(self):
         code, _ = self.request("/v1/memory/console-test", method="POST",

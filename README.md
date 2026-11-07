@@ -49,6 +49,10 @@ blocks non-HTTPS and private/metadata IPs (SSRF) and routes 4xx immediately /
 The gateway requires `Authorization: Bearer <api-key>` on all `/v1/*` routes
 (401 missing, 403 invalid, 429 + `Retry-After` over the token-bucket limit);
 `/healthz`, `/readyz` and the UI stay open. `demo.sh` shows a full live run.
+Set `UNIFIED_API_KEYS` to a JSON object mapping bearer tokens to permitted project
+IDs (for example `{"token-a":["project-a"]}`); configuring it disables the
+built-in wildcard `dev-key`. Requests are capped at 1 MiB and task-list reads use
+bounded SQL pagination.
 ```
 
 `codegraph.service_links` (14 tools) parses compose `depends_on` into service
