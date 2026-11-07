@@ -29,6 +29,13 @@ tests/
   test_expansion.py           # 13 tests for adapters, model router, roles, automation
   test_approvals_streaming.py # 6 tests: durable approvals, memory, metrics, hash checks
   test_workflows.py           # 4 e2e tests: ch.4 research flow, budget limits, impact trace
+  test_scheduler.py           # 2 tests: wave-parallel DAG execution, crash recovery
+```
+
+The scheduler executes independent ready DAG steps in parallel waves (tool
+parallelism; model calls serialize on the shared router queue) and reconciles
+interrupted tasks at startup, reusing committed receipts so side effects are
+never repeated.
 unified/ui/index.html       # zero-build web UI (vanilla JS + SSE) served at /
 ```
 

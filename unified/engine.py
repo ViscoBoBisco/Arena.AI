@@ -90,76 +90,87 @@ class Engine:
                           if s.state == StepState.SUCCEEDED}
         receipts: list[ToolReceipt] = self.ledger.get_receipts(task_id)
         import time as _time
+        from concurrent.futures import ThreadPoolExecutor
         started = _time.monotonic()
         budgets = env.budgets or {}
-        for step in steps:  # simple topological order (planner emits ordered DAGs)
-            if step.step_id in done or any(dep not in done for dep in step.depends_on):
-                continue
-            # Hard per-task budgets: enforced at step level with graceful
-            # termination and a typed receipt (never a silent overrun).
-            if len(receipts) >= budgets.get("tool_calls", 30):
-                receipt = ToolReceipt(task_id, step.step_id, new_id("A"), "failed",
-                                      "error.budget.v1", "tool_calls budget exhausted",
-                                      errors=[{"type": "budget_exceeded", "budget": "tool_calls"}])
-                self.ledger.save_receipt(receipt, committed=False)
-                self.ledger.set_step_state(task_id, step.step_id, StepState.FAILED)
-                receipts.append(receipt)
+        remaining = [s for s in steps if s.step_id not in done]
+        # Wave-based DAG execution (manual 4.5): independent ready steps run
+        # in parallel (tool parallelism); model calls serialize on the shared
+        # router queue. Approval pauses break the wave loop sequentially.
+        while remaining:
+            ready = [s for s in remaining
+                     if all(dep in done for dep in s.depends_on)]
+            if not ready:
                 break
+            wave_receipts = []
+            pause = None
+            for step in ready:
+                spec = self.broker.get(step.tool)
+                if spec and spec.side_effect_class != "read_only":
+                    decision = self.ledger.get_approval(task_id, step.step_id)
+                    if decision is None:
+                        self.ledger.save_approval(task_id, step.step_id, "pending")
+                    if decision == "rejected":
+                        self.ledger.set_state(task_id, TaskState.CANCELLING)
+                        self.ledger.set_state(task_id, TaskState.CANCELLED)
+                        result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
+                                  "reason": "approval rejected", "pending_step": step.step_id}
+                        self.ledger.set_result(task_id, result)
+                        return result
+                    if decision != "approved":
+                        pause = step
+                        break
+            if pause is not None:
+                self.ledger.set_state(task_id, TaskState.WAITING_APPROVAL)
+                result = {"task_id": task_id, "state": TaskState.WAITING_APPROVAL.value,
+                          "pending_step": pause.step_id, "tool": pause.tool}
+                self.ledger.set_result(task_id, result)
+                return result
+            budget_hit = None
             if _time.monotonic() - started > budgets.get("time_seconds", 600):
-                receipt = ToolReceipt(task_id, step.step_id, new_id("A"), "failed",
-                                      "error.budget.v1", "time_seconds budget exhausted",
-                                      errors=[{"type": "budget_exceeded", "budget": "time_seconds"}])
-                self.ledger.save_receipt(receipt, committed=False)
-                self.ledger.set_step_state(task_id, step.step_id, StepState.FAILED)
-                receipts.append(receipt)
+                budget_hit = "time_seconds"
+            elif len(receipts) + len(wave_receipts) >= budgets.get("tool_calls", 30):
+                budget_hit = "tool_calls"
+            if task_id in self._cancel or budget_hit:
+                reason = "cancelled" if task_id in self._cancel else "budget_exceeded"
+                for step in ready:
+                    receipt = ToolReceipt(task_id, step.step_id, new_id("A"),
+                                          "failed" if budget_hit else "cancelled",
+                                          "error.budget.v1" if budget_hit else "cancelled.v1",
+                                          reason,
+                                          errors=[] if not budget_hit else
+                                          [{"type": "budget_exceeded", "budget": budget_hit}])
+                    self.ledger.save_receipt(receipt, committed=False)
+                    self.ledger.set_step_state(task_id, step.step_id, StepState.FAILED)
+                    receipts.append(receipt)
                 break
-            # Durable human-in-the-loop: side-effecting steps require an
-            # approved record; the run pauses (not the process) and resumes
-            # from persisted state on approval (manual 5.4).
-            spec = self.broker.get(step.tool)
-            if spec and spec.side_effect_class != "read_only":
-                decision = self.ledger.get_approval(task_id, step.step_id)
-                if decision is None:
-                    self.ledger.save_approval(task_id, step.step_id, "pending")
-                if decision == "rejected":
-                    self.ledger.set_state(task_id, TaskState.CANCELLING)
-                    self.ledger.set_state(task_id, TaskState.CANCELLED)
-                    result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
-                              "reason": "approval rejected", "pending_step": step.step_id}
-                    self.ledger.set_result(task_id, result)
-                    return result
-                if decision != "approved":
-                    self.ledger.set_state(task_id, TaskState.WAITING_APPROVAL)
-                    result = {"task_id": task_id, "state": TaskState.WAITING_APPROVAL.value,
-                              "pending_step": step.step_id, "tool": step.tool}
-                    self.ledger.set_result(task_id, result)
-                    return result
-            if task_id in self._cancel:
-                self.ledger.set_step_state(task_id, step.step_id, StepState.CANCELLED)
-                receipts.append(ToolReceipt(task_id, step.step_id, new_id("A"),
-                                            "cancelled", "cancelled.v1", "cancelled"))
-                continue
-            # Manual 3.2 invariant: committed receipt is reused, never repeated.
-            committed = self.ledger.committed_receipt(task_id, step.step_id)
-            if committed is not None:
-                receipts.append(committed)
-                done.add(step.step_id)
-                continue
-            self.ledger.set_step_state(task_id, step.step_id, StepState.RUNNING)
-            receipt = self.broker.call(task_id, step.step_id, step.tool, step.args,
-                                       step.permissions_used, policy)
-            self.ledger.save_receipt(receipt, committed=(receipt.status == "succeeded"))
-            self.ledger.set_step_state(
-                task_id, step.step_id,
-                StepState.SUCCEEDED if receipt.status == "succeeded" else StepState.FAILED)
-            receipts.append(receipt)
-            with self._lock:
-                self.metrics["tool_calls"] += 1
-                if receipt.status == "failed":
-                    self.metrics["tool_failures"] += 1
-                self.metrics["model_tokens"] += receipt.usage.get("model_tokens", 0)
-            if receipt.status == "succeeded":
-                done.add(step.step_id)
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                futs = {}
+                for step in ready:
+                    committed = self.ledger.committed_receipt(task_id, step.step_id)
+                    if committed is not None:
+                        receipts.append(committed)
+                        done.add(step.step_id)
+                        continue
+                    self.ledger.set_step_state(task_id, step.step_id, StepState.RUNNING)
+                    futs[pool.submit(self.broker.call, task_id, step.step_id, step.tool,
+                                     step.args, step.permissions_used, policy)] = step
+                for fut in futs:
+                    step = futs[fut]
+                    receipt = fut.result()
+                    self.ledger.save_receipt(receipt, committed=(receipt.status == "succeeded"))
+                    self.ledger.set_step_state(
+                        task_id, step.step_id,
+                        StepState.SUCCEEDED if receipt.status == "succeeded" else StepState.FAILED)
+                    receipts.append(receipt)
+                    with self._lock:
+                        self.metrics["tool_calls"] += 1
+                        if receipt.status == "failed":
+                            self.metrics["tool_failures"] += 1
+                        self.metrics["model_tokens"] += receipt.usage.get("model_tokens", 0)
+                    if receipt.status == "succeeded":
+                        done.add(step.step_id)
+            remaining = [s for s in remaining if s.step_id not in done]
 
         if task_id in self._cancel:
             self.ledger.set_state(task_id, TaskState.CANCELLING)
@@ -182,6 +193,21 @@ class Engine:
                 self.metrics["tasks_by_state"].get(result.get("state", st), 0) + 1
             self._cancel.discard(task_id)
         return result
+
+    def recover(self, grants: list[str]) -> list:
+        """Startup recovery (manual 5.4): reconcile tasks left in non-terminal
+        states by re-running them; committed receipts are reused, so side
+        effects are never repeated (at-least-once + idempotency)."""
+        recovered = []
+        for t in self.ledger.list_tasks():
+            if t["state"] in (TaskState.PLANNED.value, TaskState.RUNNING.value,
+                              TaskState.VERIFYING.value, TaskState.CANCELLING.value):
+                try:
+                    self.run(t["task_id"], grants)
+                    recovered.append(t["task_id"])
+                except Exception:
+                    pass
+        return recovered
 
     def cancel(self, task_id: str) -> None:
         with self._lock:

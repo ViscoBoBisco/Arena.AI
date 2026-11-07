@@ -47,6 +47,10 @@ def main() -> None:
     ap.add_argument("--data", default="arena-data")
     args = ap.parse_args()
     engine = build_engine(args.data)
+    from .gateway import OPERATOR_GRANTS
+    recovered = engine.recover(OPERATOR_GRANTS)
+    if recovered:
+        print(f"recovered {len(recovered)} interrupted task(s): {recovered}")
     server = serve(engine, args.host, args.port)
     print(f"Unified gateway listening on http://{args.host}:{args.port}")
     try:
