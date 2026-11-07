@@ -45,8 +45,9 @@ def _load_web_allowlist() -> tuple[str, ...]:
 
 
 def build_engine(data_dir: str) -> Engine:
-    from .gateway import validate_production_configuration
+    from .gateway import _setting, validate_production_configuration
     validate_production_configuration()
+    callback_secret = _setting("CALLBACK_SECRET") or "dev-secret"
     web_allowlist = _load_web_allowlist()
     from .adapters import AdapterContext, register_adapters
     from .automation import AutomationConnector
@@ -73,8 +74,8 @@ def build_engine(data_dir: str) -> Engine:
                          if os.path.exists(os.path.join(data_dir, "roles.json")) else None)
     engine = Engine(ledger, broker, evidence, model_router=router, roles=roles,
                     memory=ConversationMemory(os.path.join(data_dir, "memory.db")),
-                    delivery=DeliveryService(os.environ.get("CALLBACK_SECRET", "dev-secret")))
-    engine.automation = AutomationConnector(engine, os.environ.get("CALLBACK_SECRET", "dev-secret"))
+                    delivery=DeliveryService(callback_secret))
+    engine.automation = AutomationConnector(engine, callback_secret)
     return engine
 
 

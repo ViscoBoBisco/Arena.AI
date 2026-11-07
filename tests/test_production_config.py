@@ -2,12 +2,13 @@
 import json
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from unified.gateway import _load_api_keys, validate_production_configuration
+from unified.gateway import _load_api_keys, _setting, validate_production_configuration
 from unified.server import _load_web_allowlist
 
 
@@ -36,6 +37,30 @@ class ProductionConfigurationTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=False), patch("unified.gateway.API_KEYS", {"a" * 48: profile}):
             with self.assertRaisesRegex(RuntimeError, "wildcard project"):
                 validate_production_configuration()
+
+    def test_secret_values_can_be_loaded_from_mounted_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            callback = os.path.join(d, "callback")
+            api_keys = os.path.join(d, "api-keys.json")
+            with open(callback, "w", encoding="utf-8") as f:
+                f.write("b" * 48 + "\n")
+            profile = {"projects": ["project-a"], "grants": ["repo.read"]}
+            with open(api_keys, "w", encoding="utf-8") as f:
+                json.dump({"a" * 48: profile}, f)
+            env = {"UNIFIED_ENV": "production", "CALLBACK_SECRET": "",
+                   "CALLBACK_SECRET_FILE": callback, "UNIFIED_API_KEYS": "",
+                   "UNIFIED_API_KEYS_FILE": api_keys}
+            loaded_profile = {"projects": {"project-a"}, "grants": {"repo.read"}}
+            with patch.dict(os.environ, env, clear=False), patch(
+                    "unified.gateway.API_KEYS", {"a" * 48: loaded_profile}):
+                self.assertEqual(_setting("CALLBACK_SECRET"), "b" * 48)
+                self.assertEqual(_load_api_keys(), {"a" * 48: loaded_profile})
+                validate_production_configuration()
+
+    def test_setting_rejects_ambiguous_direct_and_file_values(self):
+        with patch.dict(os.environ, {"CALLBACK_SECRET": "direct", "CALLBACK_SECRET_FILE": "/missing"}, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "only one"):
+                _setting("CALLBACK_SECRET")
 
     def test_production_accepts_strong_scoped_credentials(self):
         env = self._env()

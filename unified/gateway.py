@@ -31,9 +31,24 @@ OPERATOR_GRANTS = [
 ]
 
 
+def _setting(name: str) -> str:
+    """Read a setting directly or from an orchestrator-mounted secret file."""
+    value = os.environ.get(name, "")
+    path = os.environ.get(name + "_FILE", "")
+    if value and path:
+        raise RuntimeError(f"configure only one of {name} and {name}_FILE")
+    if not path:
+        return value.strip()
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError as exc:
+        raise RuntimeError(f"cannot read configured {name}_FILE") from exc
+
+
 def _load_api_keys() -> dict[str, dict[str, set[str]]]:
     """Load token -> {projects, grants}; explicit keys default to no grants."""
-    raw = os.environ.get("UNIFIED_API_KEYS", "").strip()
+    raw = _setting("UNIFIED_API_KEYS")
     if not raw:
         if os.environ.get("UNIFIED_ENV", "").strip().lower() in {"prod", "production"}:
             return {}
@@ -76,11 +91,11 @@ def validate_production_configuration() -> None:
     """Fail startup rather than expose the development wildcard in production."""
     if os.environ.get("UNIFIED_ENV", "").strip().lower() not in {"prod", "production"}:
         return
-    callback_secret = os.environ.get("CALLBACK_SECRET", "")
+    callback_secret = _setting("CALLBACK_SECRET")
     if len(callback_secret) < 32 or any(marker in callback_secret.lower()
                                         for marker in ("change-me", "replace", "dev-secret", "test")):
         raise RuntimeError("production requires CALLBACK_SECRET to be a non-placeholder secret of at least 32 characters")
-    raw = os.environ.get("UNIFIED_API_KEYS", "").strip()
+    raw = _setting("UNIFIED_API_KEYS")
     if not raw or not API_KEYS:
         raise RuntimeError("production requires at least one explicit UNIFIED_API_KEYS profile")
     try:

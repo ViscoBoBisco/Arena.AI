@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-container-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Unit and syntax checks
+        run: |
+          python3 -m unittest discover -s tests
+          python3 -m compileall -q unified tests
+          python3 - <<'PY'
+          from pathlib import Path
+          page = Path('unified/ui/index.html').read_text()
+          Path('/tmp/console.js').write_text(page.split('<script>', 1)[1].split('</script>', 1)[0])
+          PY
+          node --check /tmp/console.js
+      - name: Build production image
+        run: docker build --tag unified-gateway:ci .
+      - name: Validate Compose and smoke-test production container
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          container="unified-gateway-ci-${GITHUB_RUN_ID}"
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if [[ "$status" -ne 0 ]]; then docker logs "$container" || true; fi
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            rm -rf "$tmp"
+            exit "$status"
+          }
+          trap cleanup EXIT
+          mkdir -p "$tmp/secrets" "$tmp/data"
+          python3 - "$tmp/secrets" <<'PY'
+          import json, pathlib, secrets, sys
+          root = pathlib.Path(sys.argv[1])
+          (root / 'callback_secret').write_text(secrets.token_urlsafe(48) + '\n')
+          writer = secrets.token_urlsafe(48)
+          reviewer = secrets.token_urlsafe(48)
+          profiles = {
+              writer: {"projects": ["ci-project", "ci-other"], "grants": [
+                  "repo.read", "workspace.write.sandbox", "task.cancel",
+                  "ops.read", "memory.read", "memory.write"]},
+              reviewer: {"projects": ["ci-project"], "grants": ["task.approve"]},
+          }
+          (root / 'api_keys.json').write_text(json.dumps(profiles))
+          PY
+          sudo chown -R 10001:10001 "$tmp/secrets" "$tmp/data"
+          chmod 555 "$tmp/secrets"
+          chmod 444 "$tmp/secrets/callback_secret" "$tmp/secrets/api_keys.json"
+          chown 10001:10001 "$tmp/secrets/callback_secret" "$tmp/secrets/api_keys.json"
+          export CALLBACK_SECRET_FILE="$tmp/secrets/callback_secret"
+          export UNIFIED_API_KEYS_FILE="$tmp/secrets/api_keys.json"
+          export UNIFIED_WEB_ALLOWLIST='[]'
+          docker compose config >/dev/null
+          tokens="$(python3 - "$tmp/secrets/api_keys.json" <<'PY'
+          import json, pathlib, sys
+          profiles = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          writer = next(k for k, v in profiles.items() if 'workspace.write.sandbox' in v['grants'])
+          reviewer = next(k for k, v in profiles.items() if 'task.approve' in v['grants'])
+          print(writer, reviewer)
+          PY
+          )"
+          read -r token reviewer_token <<< "$tokens"
+          docker run --detach --name "$container" \
+            --publish 127.0.0.1:18080:8080 \
+            --env UNIFIED_ENV=production \
+            --env CALLBACK_SECRET_FILE=/run/secrets/callback_secret \
+            --env UNIFIED_API_KEYS_FILE=/run/secrets/api_keys \
+            --env UNIFIED_WEB_ALLOWLIST='[]' \
+            --volume "$tmp/secrets:/run/secrets:ro" \
+            --volume "$tmp/data:/data" \
+            --read-only --tmpfs /tmp --cap-drop ALL --pids-limit 128 \
+            --memory 256m --cpus 1.5 --security-opt no-new-privileges:true \
+            unified-gateway:ci >/dev/null
+          API_TOKEN="$token" REVIEWER_TOKEN="$reviewer_token" python3 - <<'PY'
+          import json, os, time, urllib.error, urllib.parse, urllib.request
+          base = 'http://127.0.0.1:18080'
+          token = os.environ['API_TOKEN']
+          reviewer_token = os.environ['REVIEWER_TOKEN']
+          def request(path, project='ci-project', method='GET', body=None, auth_token=None):
+              headers = {'Authorization': 'Bearer ' + (auth_token or token), 'X-Project-Id': project}
+              data = None
+              if body is not None:
+                  headers['Content-Type'] = 'application/json'
+                  data = json.dumps(body).encode()
+              req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=5) as response:
+                      raw = response.read()
+                      return response.status, response.headers, json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as error:
+                  raw = error.read()
+                  return error.code, error.headers, json.loads(raw) if raw else {}
+          for _ in range(60):
+              try:
+                  status, headers, _ = request('/readyz')
+                  if status == 200:
+                      break
+              except Exception:
+                  pass
+              time.sleep(1)
+          else:
+              raise RuntimeError('production container did not become ready')
+          assert headers.get('Cache-Control') == 'no-store'
+          status, _, session = request('/v1/session')
+          assert status == 200 and 'task.approve' in session['grants']
+          status, _, memory = request('/v1/memory/ci-project', method='POST',
+                                      body={'key': 'ci', 'value': {'ok': True}})
+          assert status == 200
+          status, _, task = request('/v1/tasks?sync=1', method='POST', body={
+              'idempotency_key': 'ci-production-smoke',
+              'request': {'intent': 'write_file', 'path': 'ci.txt', 'content': 'isolated'},
+              'permissions': ['workspace.write.sandbox']})
+          assert status == 201 and task['result']['state'] == 'WAITING_APPROVAL'
+          status, _, reviewer_session = request('/v1/session', auth_token=reviewer_token)
+          assert status == 200 and reviewer_session['grants'] == ['task.approve']
+          status, _, result = request('/v1/tasks/' + task['task_id'] + '/approve', method='POST',
+                                      body={'decision': 'approved'}, auth_token=reviewer_token)
+          assert status == 200 and result['result']['state'] == 'COMPLETED'
+          status, _, preview = request('/v1/workspace?path=ci.txt')
+          assert status == 200 and preview['preview'] == 'isolated'
+          status, _, other = request('/v1/workspace?path=ci.txt', project='ci-other')
+          assert status == 404
+          status, _, metrics = request('/v1/metrics', project='ci-other')
+          assert status == 200 and metrics['tasks_by_state'] == {}
+          status, _, audit = request('/v1/audit/verify')
+          assert status == 200 and audit['intact']
+          print('production container smoke test passed')
+          PY

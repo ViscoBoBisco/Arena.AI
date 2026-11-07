@@ -7,9 +7,12 @@ services:
       - "127.0.0.1:8080:8080" # do not expose plaintext API directly to the internet
     environment:
       - UNIFIED_ENV=production
-      - CALLBACK_SECRET=${CALLBACK_SECRET:?set CALLBACK_SECRET in .env}
-      - UNIFIED_API_KEYS=${UNIFIED_API_KEYS:?set UNIFIED_API_KEYS in .env}
+      - CALLBACK_SECRET_FILE=/run/secrets/callback_secret
+      - UNIFIED_API_KEYS_FILE=/run/secrets/api_keys
       - UNIFIED_WEB_ALLOWLIST=${UNIFIED_WEB_ALLOWLIST:-[]}
+    secrets:
+      - callback_secret
+      - api_keys
     volumes:
       - arena-data:/data     # ledger, artifacts, memory, graph
     networks:
@@ -18,6 +21,11 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    mem_limit: 512m
+    cpus: 1.50
+    pids_limit: 128
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
     logging:
@@ -32,3 +40,9 @@ networks:
 
 volumes:
   arena-data:
+
+secrets:
+  callback_secret:
+    file: ${CALLBACK_SECRET_FILE:?set CALLBACK_SECRET_FILE to a protected local file}
+  api_keys:
+    file: ${UNIFIED_API_KEYS_FILE:?set UNIFIED_API_KEYS_FILE to a protected JSON file}
