@@ -86,13 +86,36 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
 
     # ---- openbb.query (manual 2.3) ------------------------------------
     def openbb_query(args):
-        # Honest stub: without installed provider extensions this is an
-        # explicit capability error, never fabricated market data.
+        # Typed path via dataset artifact when provider extensions are absent:
+        # schema-validated, units/metadata preserved, never fabricated.
+        uri = args.get("dataset_uri")
+        if uri:
+            body = ev.get_artifact(uri)
+            if body is None:
+                return {"result_type": "error.v1", "summary": "dataset artifact not found",
+                        "errors": [{"type": "not_found", "uri": uri}]}
+            try:
+                rows = json.loads(body.decode())
+            except Exception as e:
+                return {"result_type": "error.v1", "summary": f"dataset parse failed: {e}",
+                        "errors": [{"type": "schema", "detail": str(e)}]}
+            if not isinstance(rows, list) or (rows and not isinstance(rows[0], dict)):
+                return {"result_type": "error.v1", "summary": "dataset must be a JSON array of objects",
+                        "errors": [{"type": "schema"}]}
+            cols = sorted({k for r in rows for k in r})
+            return {"result_type": "data.series.v1",
+                    "summary": f"typed dataset: {len(rows)} rows x {len(cols)} cols",
+                    "data": {"rows": len(rows), "columns": cols,
+                             "sample": rows[:5],
+                             "unit": args.get("unit"), "provider": args.get("provider", "artifact"),
+                             "sha256": sha256_bytes(body)},
+                    "evidence": [ev.evidence_ref(uri, f"sha256:{sha256_bytes(body)}")]}
+        # No provider extensions installed: explicit capability error.
         return {"result_type": "error.capability.v1",
                 "summary": "OpenBB provider extensions not installed in this deployment",
                 "data": {"command": args.get("command"), "provider": args.get("provider")},
                 "errors": [{"type": "capability_unavailable",
-                            "detail": "install provider extension or supply dataset artifact"}]}
+                            "detail": "install provider extension or supply dataset_uri artifact"}]}
 
     # ---- codegraph (manual 2.6) ---------------------------------------
     def _graph_conn():
@@ -172,6 +195,52 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
                 "data": {"index_commits": commits, "requested_commit": requested,
                          "stale": stale}}
 
+    def codegraph_trace(args):
+        """Transitive upstream callers of a symbol via the import graph
+        (cycle-safe DFS; research: upstream = 'who is affected?')."""
+        sym = args.get("symbol", "")
+        conn = _graph_conn()
+        rows = conn.execute("SELECT name,file FROM symbols").fetchall()
+        files_by_sym: dict[str, set] = {}
+        for name, file in rows:
+            files_by_sym.setdefault(name, set()).add(file)
+        # module name -> file, and file -> imported module names; scan ALL
+        # workspace .py files so import edges exist even without symbols
+        imports: dict[str, set] = {}
+        all_files = []
+        for dirpath, _, files in os.walk(ws):
+            for fn in files:
+                if fn.endswith(".py"):
+                    all_files.append(os.path.relpath(os.path.join(dirpath, fn), ws))
+        for file in all_files:
+            p = os.path.join(ws, file)
+            try:
+                with open(p, encoding="utf-8", errors="replace") as f:
+                    src = f.read()
+                mods = {a or b for a, b in
+                        re.findall(r"(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))", src)}
+                imports[file] = {m.split(".")[0] for m in mods}
+            except OSError:
+                imports[file] = set()
+        # BFS over reverse import edges from files defining sym (cycle-safe)
+        targets = files_by_sym.get(sym, set())
+        target_mods = {file[:-3] for file in targets}
+        affected, seen, stack = set(), set(targets), list(targets)
+        while stack:
+            cur = stack.pop()
+            for f, imps in imports.items():
+                if f in seen:
+                    continue
+                if imps & target_mods or f in targets:
+                    seen.add(f)
+                    affected.add(f)
+                    target_mods.add(f[:-3])
+                    stack.append(f)
+        return {"result_type": "codegraph.trace.v1",
+                "summary": f"{len(affected)} transitive dependents of '{sym}'",
+                "data": {"symbol": sym, "defining_files": sorted(targets),
+                         "transitive_callers": sorted(affected)[:50]}}
+
     # ---- rea.inspect (manual 2.7, static only) ------------------------
     MAGIC = {b"\x7fELF": "ELF", b"MZ": "PE", b"\xfe\xed\xfa\xce": "Mach-O",
              b"\xcf\xfa\xed\xfe": "Mach-O-64", b"PK\x03\x04": "zip/jar/apk"}
@@ -223,6 +292,8 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
                              codegraph_impact, "Impact trace: files referencing a symbol."))
     broker.register(ToolSpec("codegraph.freshness", ["repo.read"], "read_only",
                              codegraph_freshness, "Report index commit staleness."))
+    broker.register(ToolSpec("codegraph.trace", ["repo.read"], "read_only",
+                             codegraph_trace, "Transitive upstream callers of a symbol."))
     broker.register(ToolSpec("rea.inspect", ["binary.inspect.static"], "read_only",
                              rea_inspect, "Static binary/application triage (hash, format, strings)."))
 

@@ -34,6 +34,12 @@ tests/
   test_security_delivery.py   # 3 tests: prompt-injection quarantine, graph staleness, signed webhook delivery
   test_tenant_workflows.py    # 2 tests: cross-project 403 isolation, ch.4.2 repo-change flow
   test_investigate_metrics.py # 3 tests: ch.4.3 static investigation, IOC extraction, metrics
+  test_qualification.py       # Phase-6 qualification: all four ch.4 workflows + trace + typed dataset
+```
+
+`codegraph.trace` gives cycle-safe transitive upstream callers (13 tools);
+`openbb.query` accepts a `dataset_uri` artifact for a schema-validated typed path
+when provider extensions are absent (units/metadata preserved, never fabricated).
 ```
 
 `investigate` runs the ch. 4.3 flow (static-only `rea.inspect` with IOC/entropy
