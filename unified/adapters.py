@@ -7,9 +7,11 @@ Tool names follow the domain.noun.verb namespace convention.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
+import socket
 import sqlite3
 import urllib.parse
 import urllib.request
@@ -17,6 +19,15 @@ from dataclasses import dataclass
 
 from .broker import CapabilityBroker, ToolSpec
 from .evidence import EvidenceStore, sha256_bytes
+
+
+MAX_FETCH_BYTES = 2 * 1024 * 1024
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Outbound fetches fail on redirects so allowlists cannot be bypassed."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 @dataclass
@@ -31,23 +42,58 @@ class AdapterContext:
 def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
     ev, ws = ctx.evidence, ctx.workspace_root
 
+    def workspace_for(args):
+        return os.path.realpath(broker.workspace_for_project(args.get("_project_id")))
+
+    def workspace_path(args, rel="."):
+        root = workspace_for(args)
+        path = os.path.realpath(os.path.join(root, rel))
+        try:
+            if os.path.commonpath((root, path)) != root:
+                raise PermissionError("path escapes workspace")
+        except ValueError as exc:
+            raise PermissionError("path escapes workspace") from exc
+        return path
+
     # ---- scrapling.fetch (manual 2.2) --------------------------------
     def scrapling_fetch(args):
         url = args.get("url", "")
-        host = urllib.parse.urlsplit(url).hostname or ""
+        try:
+            parsed = urllib.parse.urlsplit(url)
+            host = (parsed.hostname or "").lower().rstrip(".")
+            port = parsed.port
+        except (TypeError, ValueError):
+            host, port, parsed = "", None, None
+        if (not parsed or parsed.scheme.lower() != "https" or not host
+                or parsed.username or parsed.password or port not in (None, 443)):
+            return {"result_type": "error.policy.v1", "summary": "only credential-free HTTPS URLs on port 443 are allowed",
+                    "errors": [{"type": "policy_denied"}]}
         if not any(host == a or host.endswith("." + a) for a in ctx.web_allowlist):
             return {"result_type": "error.capability.v1",
                     "summary": f"host not in web allowlist: {host or '(none)'}",
                     "errors": [{"type": "capability_unavailable",
                                 "detail": "web.read.public allowlist is empty or excludes host"}]}
         try:
+            addresses = {ipaddress.ip_address(info[4][0].split("%", 1)[0])
+                         for info in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)}
+            if not addresses or any(not ip.is_global for ip in addresses):
+                raise PermissionError("host resolves to a non-public address")
+        except (OSError, ValueError) as exc:
+            return {"result_type": "error.policy.v1", "summary": "host resolution failed or was not public",
+                    "errors": [{"type": "policy_denied", "detail": type(exc).__name__}]}
+        try:
             req = urllib.request.Request(url, headers={"User-Agent": "arena-gateway/0.1"})
-            with urllib.request.urlopen(req, timeout=args.get("timeout_s", 10)) as resp:
-                body = resp.read()
+            timeout = min(30.0, max(1.0, float(args.get("timeout_s", 10))))
+            opener = urllib.request.build_opener(_NoRedirectHandler())
+            with opener.open(req, timeout=timeout) as resp:
+                body = resp.read(MAX_FETCH_BYTES + 1)
                 final_url = resp.geturl()
-        except Exception as e:
-            return {"result_type": "error.fetch.v1", "summary": f"fetch failed: {e}",
-                    "errors": [{"type": "fetch_error", "detail": str(e)}]}
+            if len(body) > MAX_FETCH_BYTES:
+                return {"result_type": "error.resource.v1", "summary": "web response exceeds 2 MiB limit",
+                        "errors": [{"type": "resource_limit", "limit_bytes": MAX_FETCH_BYTES}]}
+        except Exception as exc:
+            return {"result_type": "error.fetch.v1", "summary": "outbound fetch failed",
+                    "errors": [{"type": "fetch_error", "detail": type(exc).__name__}]}
         art = ev.put_artifact(args.get("_task_id", "adhoc"), args.get("_step_id", "adhoc"),
                               "page.html", body)
         text = body.decode("utf-8", "replace")
@@ -118,18 +164,21 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
                             "detail": "install provider extension or supply dataset_uri artifact"}]}
 
     # ---- codegraph (manual 2.6) ---------------------------------------
-    def _graph_conn():
-        db = ctx.graph_db or os.path.join(ws, ".codegraph.db")
+    def _graph_conn(args=None):
+        project_ws = workspace_for(args or {})
+        db = (os.path.join(project_ws, ".codegraph.db") if broker.project_isolation
+              else ctx.graph_db or os.path.join(project_ws, ".codegraph.db"))
+        os.makedirs(os.path.dirname(os.path.abspath(db)), exist_ok=True)
         conn = sqlite3.connect(db)
         conn.execute("CREATE TABLE IF NOT EXISTS symbols (name TEXT, kind TEXT, file TEXT, line INTEGER, \"commit\" TEXT)")
         return conn
 
     def codegraph_index(args):
-        root = os.path.abspath(os.path.join(ws, args.get("root", ".")))
+        root = workspace_path(args, args.get("root", "."))
         if not root.startswith(os.path.abspath(ws)):
             return {"result_type": "error.policy.v1", "summary": "root escapes workspace",
                     "errors": [{"type": "policy_denied"}]}
-        conn = _graph_conn()
+        conn = _graph_conn(args)
         n = 0
         with conn:
             conn.execute("DELETE FROM symbols")
@@ -140,7 +189,9 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
                     p = os.path.join(dirpath, fn)
                     rel = os.path.relpath(p, root)
                     try:
-                        with open(p, encoding="utf-8", errors="replace") as f:
+                        safe_path = workspace_path(
+                            args, os.path.relpath(p, workspace_for(args)))
+                        with open(safe_path, encoding="utf-8", errors="replace") as f:
                             for i, line in enumerate(f, 1):
                                 m = re.match(r"\s*(?:def|class)\s+(\w+)", line)
                                 if m:
@@ -154,7 +205,7 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
                 "data": {"symbols": n, "root": args.get("root", "."), "commit": args.get("commit", "unknown")}}
 
     def codegraph_find(args):
-        conn = _graph_conn()
+        conn = _graph_conn(args)
         rows = conn.execute("SELECT name,kind,file,line,\"commit\" FROM symbols WHERE name LIKE ?",
                             (f"%{args.get('query','')}%",)).fetchall()
         return {"result_type": "codegraph.find.v1",
@@ -166,13 +217,13 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
         """Impact tracing (manual 2.6): which indexed files import/reference
         the given symbol — a bounded reverse-dependency query."""
         sym = args.get("symbol", "")
-        conn = _graph_conn()
+        conn = _graph_conn(args)
         rows = conn.execute(
             'SELECT file, line FROM symbols WHERE "commit" = (SELECT MAX("commit") FROM symbols)').fetchall()
         impacted = []
         for file, _line in rows:
-            p = os.path.join(ws, file)
             try:
+                p = workspace_path(args, file)
                 with open(p, encoding="utf-8", errors="replace") as f:
                     if sym and sym in f.read():
                         impacted.append(file)
@@ -185,7 +236,7 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
     def codegraph_freshness(args):
         """Freshness/staleness report (manual 5.10 test 6): index commit vs
         requested commit — never invent current-line attribution."""
-        conn = _graph_conn()
+        conn = _graph_conn(args)
         rows = conn.execute('SELECT DISTINCT "commit" FROM symbols').fetchall()
         commits = [r[0] for r in rows] or ["none"]
         requested = args.get("commit", "unknown")
@@ -199,7 +250,7 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
         """Transitive upstream callers of a symbol via the import graph
         (cycle-safe DFS; research: upstream = 'who is affected?')."""
         sym = args.get("symbol", "")
-        conn = _graph_conn()
+        conn = _graph_conn(args)
         rows = conn.execute("SELECT name,file FROM symbols").fetchall()
         files_by_sym: dict[str, set] = {}
         for name, file in rows:
@@ -208,13 +259,13 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
         # workspace .py files so import edges exist even without symbols
         imports: dict[str, set] = {}
         all_files = []
-        for dirpath, _, files in os.walk(ws):
+        for dirpath, _, files in os.walk(workspace_for(args)):
             for fn in files:
                 if fn.endswith(".py"):
-                    all_files.append(os.path.relpath(os.path.join(dirpath, fn), ws))
+                    all_files.append(os.path.relpath(os.path.join(dirpath, fn), workspace_for(args)))
         for file in all_files:
-            p = os.path.join(ws, file)
             try:
+                p = workspace_path(args, file)
                 with open(p, encoding="utf-8", errors="replace") as f:
                     src = f.read()
                 mods = {a or b for a, b in
@@ -244,7 +295,7 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
     def codegraph_service_links(args):
         """Service links from infra files (manual 2.6 infra indexing):
         parses docker-compose.yml depends_on/links into directed edges."""
-        root = os.path.abspath(os.path.join(ws, args.get("root", ".")))
+        root = workspace_path(args, args.get("root", "."))
         if not root.startswith(os.path.abspath(ws)):
             return {"result_type": "error.policy.v1", "summary": "root escapes workspace",
                     "errors": [{"type": "policy_denied"}]}
@@ -254,6 +305,7 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
                 if fn not in ("docker-compose.yml", "docker-compose.yaml", "compose.yml"):
                     continue
                 p = os.path.join(dirpath, fn)
+                p = workspace_path(args, os.path.relpath(p, workspace_for(args)))
                 with open(p, encoding="utf-8", errors="replace") as f:
                     lines = f.readlines()
                 # minimal YAML scan: services: block + depends_on entries
@@ -288,7 +340,7 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
 
     def rea_inspect(args):
         target = args.get("path", "")
-        path = os.path.abspath(os.path.join(ws, target))
+        path = workspace_path(args, target)
         if not path.startswith(os.path.abspath(ws)) or not os.path.isfile(path):
             return {"result_type": "error.policy.v1", "summary": "target outside workspace or missing",
                     "errors": [{"type": "policy_denied", "detail": target}]}
@@ -297,7 +349,11 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
             f.seek(0)
             digest = hashlib.sha256(f.read()).hexdigest()
         fmt = next((v for k, v in MAGIC.items() if head.startswith(k)), "unknown")
-        blob = head + open(path, "rb").read() if os.path.getsize(path) <= 1 << 20 else head
+        if os.path.getsize(path) <= 1 << 20:
+            with open(path, "rb") as f:
+                blob = head + f.read()
+        else:
+            blob = head
         strings = re.findall(rb"[ -~]{6,}", blob)
         # IOC extraction from strings (static only; sample is never executed)
         text = blob.decode("latin-1")

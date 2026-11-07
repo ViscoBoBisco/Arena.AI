@@ -112,6 +112,7 @@ class SecurityDeliveryTests(unittest.TestCase):
         expected = "sha256=" + hmac.new(b"wh-secret", received["body"], hashlib.sha256).hexdigest()
         self.assertEqual(received["sig"], expected)
         srv.shutdown()
+        srv.server_close()
 
 
 if __name__ == "__main__":

@@ -63,6 +63,15 @@ class ExpansionTests(unittest.TestCase):
         self.assertEqual(r.status, "failed")
         self.assertEqual(r.errors[0]["type"], "capability_unavailable")
 
+    def test_web_fetch_rejects_plain_http_and_does_not_follow_redirects(self):
+        from unified.adapters import _NoRedirectHandler
+        r = self._call("scrapling.fetch", {"url": "http://example.org/x"}, ["web.read.public"])
+        self.assertEqual(r.status, "failed")
+        self.assertEqual(r.errors[0]["type"], "policy_denied")
+        handler = _NoRedirectHandler()
+        self.assertIsNone(handler.redirect_request(None, None, 302, "Found", {},
+                                                   "https://allowed.example/redirected"))
+
     def test_fixture_fetch_with_evidence(self):
         r = self._call("scrapling.fetch_fixture", {"name": "page1.html"}, ["web.read.public"])
         self.assertEqual(r.status, "succeeded")
@@ -90,7 +99,9 @@ class ExpansionTests(unittest.TestCase):
         r = self._call("rea.inspect", {"path": "blob.bin"}, ["binary.inspect.static"])
         self.assertEqual(r.status, "succeeded")
         self.assertEqual(r.data["format"], "ELF")
-        self.assertEqual(r.data["sha256"], hashlib.sha256(open(os.path.join(self.ws, "blob.bin"), "rb").read()).hexdigest())
+        with open(os.path.join(self.ws, "blob.bin"), "rb") as f:
+            expected_sha256 = hashlib.sha256(f.read()).hexdigest()
+        self.assertEqual(r.data["sha256"], expected_sha256)
         self.assertIn("hello_world_string", r.data["strings_sample"])
 
     def test_rea_requires_grant(self):

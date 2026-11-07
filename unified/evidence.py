@@ -24,6 +24,10 @@ class EvidenceStore:
         os.makedirs(self.root, exist_ok=True)
         self._index_path = os.path.join(self.root, "index.jsonl")
 
+    def is_ready(self) -> bool:
+        """Check artifact storage availability without creating probe artifacts."""
+        return os.path.isdir(self.root) and os.access(self.root, os.W_OK)
+
     def put_artifact(self, task_id: str, step_id: str, name: str, data: bytes) -> dict:
         """Store bytes immutably; returns an artifact reference with hash."""
         digest = sha256_bytes(data)

@@ -4,6 +4,7 @@ manual 1.4: gateway -> ledger -> plan -> broker -> evidence -> verifier.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import threading
@@ -22,6 +23,11 @@ from .ledger import Ledger, LedgerError
 from .planner import plan
 from .policy import PolicyEngine, PolicyViolation
 from .verifier import verify
+
+
+def _new_metrics() -> dict:
+    return {"tasks_by_state": {}, "tool_calls": 0, "tool_failures": 0,
+            "model_tokens": 0, "errors_by_tool": {}, "latencies_ms": []}
 
 
 def _request_fingerprint(env: TaskEnvelope) -> str:
@@ -50,9 +56,16 @@ class Engine:
         self.delivery = delivery
         self._cancel = set()
         self._lock = threading.RLock()
-        self.metrics = {"tasks_by_state": {}, "tool_calls": 0,
-                        "tool_failures": 0, "model_tokens": 0,
-                        "errors_by_tool": {}, "latencies_ms": []}
+        self.metrics = _new_metrics()  # aggregate, internal/operator use
+        self._project_metrics: dict[str, dict] = {}
+
+    def metrics_for_project(self, project_id: str) -> dict:
+        """Return only the requesting project’s in-process metrics."""
+        with self._lock:
+            return copy.deepcopy(self._project_metrics.get(project_id, _new_metrics()))
+
+    def _project_metric(self, project_id: str) -> dict:
+        return self._project_metrics.setdefault(project_id, _new_metrics())
 
     # ---- admission (manual 3.1 / 3.3) --------------------------------
     def _existing_submission(self, task_id: str, fingerprint: str) -> dict:
@@ -223,8 +236,10 @@ class Engine:
                         done.add(step.step_id)
                         continue
                     self.ledger.set_step_state(task_id, step.step_id, StepState.RUNNING)
+                    call_args = dict(step.args)
+                    call_args["_project_id"] = env.project_id
                     futs[pool.submit(self.broker.call, task_id, step.step_id, step.tool,
-                                     step.args, step.permissions_used, policy)] = step
+                                     call_args, step.permissions_used, policy)] = step
                 for fut in futs:
                     step = futs[fut]
                     receipt = fut.result()
@@ -234,12 +249,13 @@ class Engine:
                         StepState.SUCCEEDED if receipt.status == "succeeded" else StepState.FAILED)
                     receipts.append(receipt)
                     with self._lock:
-                        self.metrics["tool_calls"] += 1
-                        if receipt.status == "failed":
-                            self.metrics["tool_failures"] += 1
-                            self.metrics["errors_by_tool"][step.tool] = \
-                                self.metrics["errors_by_tool"].get(step.tool, 0) + 1
-                        self.metrics["model_tokens"] += receipt.usage.get("model_tokens", 0)
+                        for metrics in (self.metrics, self._project_metric(env.project_id)):
+                            metrics["tool_calls"] += 1
+                            if receipt.status == "failed":
+                                metrics["tool_failures"] += 1
+                                metrics["errors_by_tool"][step.tool] = \
+                                    metrics["errors_by_tool"].get(step.tool, 0) + 1
+                            metrics["model_tokens"] += receipt.usage.get("model_tokens", 0)
                     if receipt.status == "succeeded":
                         done.add(step.step_id)
             remaining = [s for s in remaining if s.step_id not in done]
@@ -273,10 +289,12 @@ class Engine:
         if self.model_router and hasattr(self.model_router, "forget_task"):
             self.model_router.forget_task(task_id)
         with self._lock:
-            self.metrics["latencies_ms"].append(int((_time.monotonic() - started) * 1000))
             state = result.get("state", task["state"])
-            self.metrics["tasks_by_state"][state] = \
-                self.metrics["tasks_by_state"].get(state, 0) + 1
+            elapsed_ms = int((_time.monotonic() - started) * 1000)
+            for metrics in (self.metrics, self._project_metric(env.project_id)):
+                metrics["latencies_ms"].append(elapsed_ms)
+                metrics["tasks_by_state"][state] = \
+                    metrics["tasks_by_state"].get(state, 0) + 1
         return result
 
     def submit_async(self, task_id: str, grants: list[str]) -> threading.Thread:
@@ -290,14 +308,12 @@ class Engine:
         states by re-running them; committed receipts are reused, so side
         effects are never repeated (at-least-once + idempotency)."""
         recovered = []
-        for t in self.ledger.list_tasks():
-            if t["state"] in (TaskState.PLANNED.value, TaskState.RUNNING.value,
-                              TaskState.VERIFYING.value, TaskState.CANCELLING.value):
-                try:
-                    self.run(t["task_id"], grants)
-                    recovered.append(t["task_id"])
-                except Exception:
-                    pass
+        for task in self.ledger.list_recoverable_tasks():
+            try:
+                self.run(task["task_id"], grants)
+                recovered.append(task["task_id"])
+            except Exception:
+                pass
         return recovered
 
     def cancel(self, task_id: str) -> bool:
@@ -353,8 +369,9 @@ class Engine:
     def get_task(self, task_id: str) -> dict | None:
         return self.ledger.get_task(task_id)
 
-    def get_events(self, task_id: str) -> list:
-        return self.ledger.events(task_id)
+    def get_events(self, task_id: str, after_id: int = 0,
+                   limit: int | None = None) -> list:
+        return self.ledger.events(task_id, after_id=after_id, limit=limit)
 
     def get_artifact(self, uri: str) -> bytes | None:
         return self.evidence.get_artifact(uri)

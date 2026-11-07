@@ -255,7 +255,7 @@ The source-acquisition subsystem. A reusable spider delegates crawl scheduling, 
 
 ### Merger behavior
 
-Create an isolated Scrapling worker and expose `scrapling.fetch`, `scrapling.extract`, `scrapling.crawl`, `scrapling.capture`, and `scrapling.status` through the broker. Each call has a target URL or allowlisted domain set, concurrency and bandwidth limits, a deadline, and explicit session behavior. Capture final URLs, retrieval timestamps, selectors, redirects, errors and page hashes; store artifacts separately from adaptive parser state.
+Create an isolated Scrapling worker and expose `scrapling.fetch`, `scrapling.extract`, `scrapling.crawl`, `scrapling.capture`, and `scrapling.status` through the broker. Each call has a target URL or allowlisted domain set, concurrency and bandwidth limits, a deadline, and explicit session behavior. The current gateway requires HTTPS on port 443, checks all DNS results are public, rejects redirects, and caps response bodies at 2 MiB. Record the requested URL, retrieval timestamp, selectors, errors and page hashes; store artifacts separately from adaptive parser state.
 
 **Boundary tests:** cancel a crawler in flight; verify per-domain budget enforcement; restart after a partial export; check a failed extraction does not report fabricated fields; ensure page text cannot issue model/tool commands. External access must follow applicable authorization, site terms and network policies.
 
@@ -921,7 +921,7 @@ The ledger tracks task ID, plan revision, step DAG, step input hash, attempt ID,
 
 ## 3.3 Policy and approval service
 
-Authorization is defined by caller identity, project scope, target resources, action type and approval requirements. Example grants: `web.read.public`, `data.market.read`, `repo.read`, `workspace.write.sandbox`, `binary.inspect.static`, `binary.execute.authorized`, `external.notification.send`, `external.account.modify`, `model.infer`, `task.approve`, and `task.cancel`. Task-control grants (`task.approve`, `task.cancel`) are distinct from tool grants. Do not infer grants from agent role text or website data. Evaluate both **at planning** and **immediately before a tool executes**. Runtime/binary analysis, shell execution, external account changes and credential-bearing browser interaction should have separate scoped authorities.
+Authorization is defined by caller identity, project scope, target resources, action type and approval requirements. Example grants: `web.read.public`, `data.market.read`, `repo.read`, `workspace.write.sandbox`, `binary.inspect.static`, `binary.execute.authorized`, `external.notification.send`, `external.account.modify`, `model.infer`, `task.approve`, `task.cancel`, `ops.read`, `memory.read`, and `memory.write`. Task-control grants (`task.approve`, `task.cancel`), memory access, and global operator visibility (`ops.read`) are distinct from tool grants. Do not infer grants from agent role text or website data. Evaluate both **at planning** and **immediately before a tool executes**. Runtime/binary analysis, shell execution, external account changes and credential-bearing browser interaction should have separate scoped authorities.
 
 ## 3.4 Capability broker and adapter registry
 
@@ -1193,7 +1193,7 @@ unified-platform/
   tests/                    # contracts, restart, recovery, and end-to-end
 ```
 
-The paths above are **suggested for new integration code**, not asserted upstream repository paths. Keep the seven projects as version-pinned standalone dependencies/services. Start on a single host with isolated service containers/processes. Use separate service accounts and writable volumes. Expose only the gateway to user networks; keep databases, worker APIs and local model servers behind internal access controls. Use a persistent artifact root and automated backups.
+The paths above are **suggested for new integration code**, not asserted upstream repository paths. Keep the seven projects as version-pinned standalone dependencies/services. Start on a single host with isolated service containers/processes. Use separate service accounts and writable volumes. Expose only the gateway to user networks; keep databases, worker APIs and local model servers behind internal access controls. Use a persistent artifact root and automated backups. The repository's production Compose profile sets an explicit production mode, refuses absent or wildcard-scoped API-key configuration and placeholder secrets, binds the gateway to loopback for a TLS reverse proxy, and assigns each project a separate workspace and code-graph database. Existing unscoped workspace files and graph indexes require explicit per-project migration/reindexing; they are not automatically exposed after the isolation change. The sample container runs as UID 10001, so persistent volumes must be writable by that service account. Health/readiness probes must remain read-only; set cache and browser security headers on all responses.
 
 ## 5.7 Service-to-service connections
 
@@ -1216,7 +1216,7 @@ The paths above are **suggested for new integration code**, not asserted upstrea
 
 - **Untrusted material:** web pages, repository docs, files, returned tool text and binary strings are data; do not allow them to create new authorization rules or override planner policy.
 - **Credential separation:** browser profiles, OpenBB provider tokens, n8n credentials, REA vendor installations and model service keys remain local to their owners. Do not publish them to prompt context.
-- **Network segmentation:** distinguish public-web retrieval, provider APIs, local private data, and external write operations. Fail closed if a required permission is missing.
+- **Network segmentation:** distinguish public-web retrieval, provider APIs, local private data, and external write operations. Fail closed if a required permission is missing. Web retrieval uses an explicit hostname allowlist, HTTPS only, no redirects, public DNS, and bounded response sizes; still use network egress controls as a second boundary.
 - **Path isolation:** file and REA workers operate on declared roots or immutable input artifacts. Treat symlinks and path traversal as security-sensitive.
 - **Provenance under failures:** partial crawls, incomplete data series, stale code indexes, absent providers, native-tool crashes and timed-out notifications must remain visible in receipts.
 - **CPU/GPU/RAM:** tool and inference concurrency are separate queues; establish limits per worker class and stop work when budgets expire.

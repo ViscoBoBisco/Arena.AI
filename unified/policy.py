@@ -13,7 +13,8 @@ KNOWN_GRANTS = {
     "web.read.public", "data.market.read", "repo.read",
     "workspace.write.sandbox", "binary.inspect.static",
     "binary.execute.authorized", "external.notification.send",
-    "external.account.modify", "model.infer", "task.approve", "task.cancel",
+    "external.account.modify", "model.infer", "task.approve", "task.cancel", "ops.read",
+    "memory.read", "memory.write",
 }
 
 

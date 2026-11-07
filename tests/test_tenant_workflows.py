@@ -54,6 +54,32 @@ class TenantAndRepoChangeTests(unittest.TestCase):
         with open(os.path.join(self.ws, "svc.py")) as f:
             self.assertIn("return 1", f.read())
 
+    def test_project_workspace_isolated_and_symlink_traversal_blocked(self):
+        broker = CapabilityBroker(self.evidence, workspace_root=self.ws, project_isolation=True)
+        register_adapters(broker, AdapterContext(evidence=self.evidence, workspace_root=self.ws,
+                                                  graph_db=os.path.join(self.tmp.name, "shared.db")))
+        engine = Engine(self.ledger, broker, self.evidence)
+        grants = ["repo.read", "workspace.write.sandbox"]
+        submitted = engine.submit("tenant-a", "write-private", {
+            "intent": "write_file", "path": "private.txt", "content": "tenant A data"},
+            ["workspace.write.sandbox"], grants)
+        self.assertEqual(engine.run(submitted["task_id"], grants)["state"],
+                         TaskState.WAITING_APPROVAL.value)
+        approved = engine.approve(submitted["task_id"], "approved", grants)
+        self.assertEqual(approved["result"]["state"], TaskState.COMPLETED.value)
+        self.assertNotEqual(broker.workspace_for_project("tenant-a"),
+                            broker.workspace_for_project("tenant-b"))
+        other = engine.submit("tenant-b", "read-private", {
+            "intent": "read_file", "path": "private.txt"}, ["repo.read"], grants)
+        result = engine.run(other["task_id"], grants)
+        self.assertEqual(result["state"], TaskState.FAILED.value)
+        self.assertFalse(os.path.exists(os.path.join(broker.workspace_for_project("tenant-b"), "private.txt")))
+        outside = os.path.join(self.tmp.name, "outside")
+        os.makedirs(outside)
+        os.symlink(outside, os.path.join(broker.workspace_for_project("tenant-a"), "linked"))
+        with self.assertRaises(PermissionError):
+            broker._sandbox_path("linked/secret", "tenant-a")
+
     def test_cross_project_access_denied(self):
         import threading
         server = serve(self.engine, "127.0.0.1", 8124)
@@ -78,6 +104,7 @@ class TenantAndRepoChangeTests(unittest.TestCase):
             self.assertEqual(urllib.request.urlopen(r2).status, 200)
         finally:
             server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":

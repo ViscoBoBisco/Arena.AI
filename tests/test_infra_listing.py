@@ -78,6 +78,7 @@ class InfraListingTests(unittest.TestCase):
             self.assertEqual(b["total"], 1)
         finally:
             server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":

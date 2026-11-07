@@ -117,6 +117,12 @@ class ConsoleApiTests(unittest.TestCase):
         self.assertEqual(code, 403)
         code, _ = self.request(f"/v1/tasks/{task_id}", project="another-project")
         self.assertEqual(code, 403)
+        code, own_metrics = self.request("/v1/metrics", project="console-test")
+        self.assertEqual(code, 200)
+        code, other_metrics = self.request("/v1/metrics", project="another-project")
+        self.assertEqual(code, 200)
+        self.assertGreater(own_metrics["tasks_by_state"].get("COMPLETED", 0), 0)
+        self.assertEqual(other_metrics["tasks_by_state"], {})
 
     def test_automation_trigger_is_scoped_to_console_project(self):
         code, out = self.request("/v1/automation/trigger", method="POST", body={
@@ -150,8 +156,17 @@ class ConsoleApiTests(unittest.TestCase):
         with patch("unified.gateway.API_KEYS", {"tenant-key": profile}):
             code, _ = self.request("/v1/tools", api_key="tenant-key")
             self.assertEqual(code, 200)
+            code, denied_workspace = self.request("/v1/workspace", api_key="tenant-key")
+            self.assertEqual(code, 200)
             code, session = self.request("/v1/session", api_key="tenant-key")
             self.assertEqual(session["grants"], ["repo.read"])
+            code, _ = self.request("/v1/audit/verify", api_key="tenant-key")
+            self.assertEqual(code, 403)
+            code, _ = self.request("/v1/memory/console-test", api_key="tenant-key")
+            self.assertEqual(code, 403)
+            code, _ = self.request("/v1/memory/console-test", method="POST",
+                                   api_key="tenant-key", body={"key": "nope", "value": 1})
+            self.assertEqual(code, 403)
             code, _ = self.request(f"/v1/tasks/{pending['task_id']}/approve", method="POST",
                                    api_key="tenant-key", body={"decision": "approved"})
             self.assertEqual(code, 403)
@@ -167,6 +182,11 @@ class ConsoleApiTests(unittest.TestCase):
             })
             self.assertEqual(code, 403)
             self.assertEqual(denied["state"], "REJECTED")
+
+        with patch("unified.gateway.API_KEYS", {"no-read-key": {
+                "projects": {"console-test"}, "grants": set()}}):
+            code, _ = self.request("/v1/workspace", api_key="no-read-key")
+            self.assertEqual(code, 403)
 
         malformed = urllib.request.Request(
             self.base + "/v1/tasks", data=b"{bad json",
@@ -186,12 +206,22 @@ class ConsoleApiTests(unittest.TestCase):
         self.assertIn(b"413", response.split(b"\r\n", 1)[0])
         code, _ = self.request("/v1/tasks?limit=not-a-number")
         self.assertEqual(code, 400)
+        code, oversized_offset = self.request("/v1/tasks?offset=" + "9" * 200)
+        self.assertEqual(code, 200)
+        self.assertEqual(oversized_offset["tasks"], [])
 
     def test_idempotency_replays_same_request_and_rejects_changed_payload(self):
         payload = {"idempotency_key": "api-idempotency", "request": {
             "intent": "echo", "instructions": "original"}, "permissions": []}
         code, first = self.request("/v1/tasks?sync=1", method="POST", body=payload)
         self.assertEqual(code, 201)
+        code, first_page = self.request(f"/v1/tasks/{first['task_id']}/events?limit=1")
+        self.assertEqual(code, 200)
+        self.assertEqual(len(first_page["events"]), 1)
+        code, second_page = self.request(
+            f"/v1/tasks/{first['task_id']}/events?limit=1&after_id={first_page['next_after_id']}")
+        self.assertEqual(code, 200)
+        self.assertGreater(second_page["events"][0]["id"], first_page["events"][0]["id"])
         code, replay = self.request("/v1/tasks", method="POST", body=payload)
         self.assertEqual(code, 200)
         self.assertTrue(replay["duplicate"])

@@ -28,9 +28,11 @@ class ToolSpec:
 
 
 class CapabilityBroker:
-    def __init__(self, evidence: EvidenceStore, workspace_root: Optional[str] = None):
+    def __init__(self, evidence: EvidenceStore, workspace_root: Optional[str] = None,
+                 project_isolation: bool = False):
         self.evidence = evidence
         self.workspace_root = os.path.abspath(workspace_root or os.getcwd())
+        self.project_isolation = project_isolation
         self._tools: dict[str, ToolSpec] = {}
         self._register_native_tools()
 
@@ -105,12 +107,23 @@ class CapabilityBroker:
                                read_only=True))
 
     # ---- native tools --------------------------------------------------
-    def _sandbox_path(self, rel: str) -> str:
-        """Resolve rel inside the workspace root; reject traversal (manual 5.8)."""
-        root = self.workspace_root
-        path = os.path.abspath(os.path.join(root, rel))
-        if path != root and not path.startswith(root + os.sep):
-            raise PermissionError(f"path escapes workspace: {rel}")
+    def workspace_for_project(self, project_id: str | None = None) -> str:
+        """Return a tenant workspace; production namespaces projects by digest."""
+        if not self.project_isolation or not project_id:
+            return self.workspace_root
+        import hashlib
+        return os.path.join(self.workspace_root,
+                            hashlib.sha256(project_id.encode("utf-8")).hexdigest())
+
+    def _sandbox_path(self, rel: str, project_id: str | None = None) -> str:
+        """Resolve within the caller project root and reject traversal/symlinks."""
+        root = os.path.realpath(self.workspace_for_project(project_id))
+        path = os.path.realpath(os.path.join(root, rel))
+        try:
+            if os.path.commonpath((root, path)) != root:
+                raise PermissionError(f"path escapes workspace: {rel}")
+        except ValueError as exc:
+            raise PermissionError(f"path escapes workspace: {rel}") from exc
         return path
 
     def _register_native_tools(self) -> None:
@@ -120,7 +133,7 @@ class CapabilityBroker:
                     "data": {"text": args.get("text", "")}}
 
         def fs_read(args):
-            path = self._sandbox_path(args["path"])
+            path = self._sandbox_path(args["path"], args.get("_project_id"))
             with open(path, "rb") as f:
                 data = f.read()
             art = self.evidence.put_artifact(args.get("_task_id", "adhoc"),
@@ -135,7 +148,7 @@ class CapabilityBroker:
                         f"file://{path}", f"bytes:0-{len(data)}")]}
 
         def fs_write(args):
-            path = self._sandbox_path(args["path"])
+            path = self._sandbox_path(args["path"], args.get("_project_id"))
             os.makedirs(os.path.dirname(path), exist_ok=True)
             data = args.get("content", "").encode()
             with open(path, "wb") as f:

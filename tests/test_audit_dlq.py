@@ -74,6 +74,7 @@ class AuditAndDlqTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)  # 4xx is terminal: 1 attempt only
         finally:
             srv.shutdown()
+            srv.server_close()
 
     def test_5xx_retries_then_moves_to_dlq(self):
         calls = []
@@ -98,6 +99,7 @@ class AuditAndDlqTests(unittest.TestCase):
             self.assertEqual(len(svc.dlq), 1)
         finally:
             srv.shutdown()
+            srv.server_close()
 
 
 if __name__ == "__main__":

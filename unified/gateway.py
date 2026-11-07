@@ -27,7 +27,7 @@ from .ratelimit import TokenBucket
 OPERATOR_GRANTS = [
     "web.read.public", "data.market.read", "repo.read",
     "workspace.write.sandbox", "binary.inspect.static", "model.infer",
-    "task.approve", "task.cancel",
+    "task.approve", "task.cancel", "ops.read", "memory.read", "memory.write",
 ]
 
 
@@ -35,6 +35,8 @@ def _load_api_keys() -> dict[str, dict[str, set[str]]]:
     """Load token -> {projects, grants}; explicit keys default to no grants."""
     raw = os.environ.get("UNIFIED_API_KEYS", "").strip()
     if not raw:
+        if os.environ.get("UNIFIED_ENV", "").strip().lower() in {"prod", "production"}:
+            return {}
         return {"dev-key": {"projects": {"*"}, "grants": set(OPERATOR_GRANTS)}}
     try:
         config = json.loads(raw)
@@ -68,6 +70,33 @@ def _load_api_keys() -> dict[str, dict[str, set[str]]]:
 
 
 API_KEYS = _load_api_keys()
+
+
+def validate_production_configuration() -> None:
+    """Fail startup rather than expose the development wildcard in production."""
+    if os.environ.get("UNIFIED_ENV", "").strip().lower() not in {"prod", "production"}:
+        return
+    callback_secret = os.environ.get("CALLBACK_SECRET", "")
+    if len(callback_secret) < 32 or any(marker in callback_secret.lower()
+                                        for marker in ("change-me", "replace", "dev-secret", "test")):
+        raise RuntimeError("production requires CALLBACK_SECRET to be a non-placeholder secret of at least 32 characters")
+    raw = os.environ.get("UNIFIED_API_KEYS", "").strip()
+    if not raw or not API_KEYS:
+        raise RuntimeError("production requires at least one explicit UNIFIED_API_KEYS profile")
+    try:
+        configured = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("UNIFIED_API_KEYS must be valid JSON in production") from exc
+    if not isinstance(configured, dict) or len(API_KEYS) != len(configured):
+        raise RuntimeError("every production API key must have a valid project and grant profile")
+    for token, profile in API_KEYS.items():
+        if (len(token) < 32 or any(marker in token.lower()
+                                   for marker in ("replace", "change-me", "dev-key", "test"))):
+            raise RuntimeError("production API keys must be non-placeholder tokens of at least 32 characters")
+        if "*" in profile["projects"]:
+            raise RuntimeError("wildcard project scope is forbidden in production API-key profiles")
+
+
 MAX_BODY_BYTES = 1_048_576
 _RATE_LIMITS: dict[str, TokenBucket] = {}
 _RATE_LOCK = threading.Lock()
@@ -87,6 +116,19 @@ class RequestBodyError(Exception):
 def make_handler(engine: Engine):
     class GatewayHandler(BaseHTTPRequestHandler):
         server_version = "UnifiedGateway/0.1"
+
+        def version_string(self):
+            return self.server_version
+
+        def end_headers(self):
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+            self.send_header("Content-Security-Policy", "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'")
+            super().end_headers()
 
         def _send(self, code: int, payload: dict) -> None:
             body = json.dumps(payload).encode()
@@ -131,17 +173,19 @@ def make_handler(engine: Engine):
                                           TaskState.CANCELLED, TaskState.REJECTED)}
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
             self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
-            sent = 0
+            try:
+                last_event_id = min(2**63 - 1, max(0, int(self.headers.get("Last-Event-ID", "0") or "0")))
+            except ValueError:
+                last_event_id = 0
             try:
                 while True:
-                    events = engine.get_events(task_id)
-                    for ev in events[sent:]:
-                        sent += 1
+                    events = engine.get_events(task_id, after_id=last_event_id, limit=500)
+                    for ev in events:
+                        last_event_id = ev["id"]
                         payload = json.dumps(ev)
-                        self.wfile.write(f"id: {sent}\nevent: task\ndata: {payload}\n\n".encode())
+                        self.wfile.write(f"id: {last_event_id}\nevent: task\ndata: {payload}\n\n".encode())
                     self.wfile.flush()
                     task = engine.get_task(task_id)
                     if task is None or task["state"] in terminal:
@@ -236,12 +280,14 @@ def make_handler(engine: Engine):
                 import hashlib
                 import os
                 from urllib.parse import parse_qs
-                ws = engine.broker.workspace_root
+                if "repo.read" not in self._caller_grants:
+                    return self._send(403, {"error": "API key lacks repo.read grant"})
+                ws = engine.broker.workspace_for_project(self._caller_project())
                 q = parse_qs(urlparse(self.path).query)
                 rel_req = q.get("path", [None])[0]
                 if rel_req:
                     try:
-                        full = engine.broker._sandbox_path(rel_req)
+                        full = engine.broker._sandbox_path(rel_req, self._caller_project())
                     except PermissionError as e:
                         return self._send(403, {"error": str(e)})
                     if not os.path.isfile(full):
@@ -282,20 +328,22 @@ def make_handler(engine: Engine):
             if path == "/healthz":  # liveness: cheap, local only
                 return self._send(200, {"status": "ok"})
             if path == "/readyz":   # readiness: verify ledger + artifact store
-                import os
                 ok = True
                 try:
-                    engine.ledger.list_tasks()
-                    engine.evidence.put_artifact("_health", "_check", "ping", b"ok")
-                except Exception as e:
+                    engine.ledger.ping()
+                    if not engine.evidence.is_ready():
+                        ok = False
+                except Exception:
                     ok = False
                 return self._send(200 if ok else 503, {"status": "ok" if ok else "not ready"})
             if path == "/v1/metrics":
-                return self._send(200, engine.metrics)
+                return self._send(200, engine.metrics_for_project(self._caller_project()))
             if path == "/v1/audit/verify":
+                if "ops.read" not in self._caller_grants:
+                    return self._send(403, {"error": "API key lacks ops.read grant"})
                 return self._send(200, engine.ledger.verify_audit_chain())
             if path == "/v1/metrics/summary":
-                m = engine.metrics
+                m = engine.metrics_for_project(self._caller_project())
                 lat = sorted(m.get("latencies_ms", []))
                 def pct(p):
                     return lat[min(len(lat) - 1, int(p * len(lat)))] if lat else 0
@@ -312,6 +360,8 @@ def make_handler(engine: Engine):
             if len(parts) == 3 and parts[:2] == ["v1", "memory"]:
                 if parts[2] != self._caller_project():
                     return self._send(403, {"error": "cross-project access denied"})
+                if "memory.read" not in self._caller_grants:
+                    return self._send(403, {"error": "API key lacks memory.read grant"})
                 if engine.memory is None:
                     return self._send(404, {"error": "memory disabled"})
                 return self._send(200, {"memories": engine.memory.list(parts[2])})
@@ -326,7 +376,7 @@ def make_handler(engine: Engine):
                 q = parse_qs(urlparse(self.path).query)
                 try:
                     limit = max(1, min(int(q.get("limit", ["50"])[0]), 100))
-                    offset = max(0, int(q.get("offset", ["0"])[0]))
+                    offset = min(2**63 - 1, max(0, int(q.get("offset", ["0"])[0])))
                 except ValueError:
                     return self._send(400, {"error": "limit and offset must be integers"})
                 proj = self._caller_project()
@@ -343,7 +393,17 @@ def make_handler(engine: Engine):
                 task, err = self._task_for_caller(parts[2])
                 if err:
                     return err
-                return self._send(200, {"events": engine.get_events(parts[2])})
+                from urllib.parse import parse_qs
+                q = parse_qs(urlparse(self.path).query)
+                try:
+                    after_id = min(2**63 - 1, max(0, int(q.get("after_id", ["0"])[0])))
+                    limit = max(1, min(int(q.get("limit", ["100"])[0]), 500))
+                except ValueError:
+                    return self._send(400, {"error": "after_id and limit must be integers"})
+                events = engine.get_events(parts[2], after_id=after_id, limit=limit)
+                return self._send(200, {"events": events,
+                                        "next_after_id": events[-1]["id"] if events else after_id,
+                                        "limit": limit})
             if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] == "evidence":
                 task, err = self._task_for_caller(parts[2])
                 if err:
@@ -447,6 +507,8 @@ def make_handler(engine: Engine):
             if len(parts) == 3 and parts[:2] == ["v1", "memory"]:
                 if parts[2] != self._caller_project():
                     return self._send(403, {"error": "cross-project access denied"})
+                if "memory.write" not in self._caller_grants:
+                    return self._send(403, {"error": "API key lacks memory.write grant"})
                 b = self._body()
                 engine.memory.put(parts[2], b["key"], b.get("value"))
                 return self._send(200, {"stored": True})

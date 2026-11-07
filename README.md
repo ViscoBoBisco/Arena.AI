@@ -53,8 +53,24 @@ Set `UNIFIED_API_KEYS` to a JSON object mapping bearer tokens to project IDs and
 tool grants (for example `{"token-a":{"projects":["project-a"],"grants":["repo.read"]}}`);
 configuring it disables the built-in wildcard `dev-key`, and omitted grants mean
 no tool permissions. Approval and cancellation also require explicit
-`task.approve` and `task.cancel` grants. Requests are capped at 1 MiB and task-list
-reads use bounded SQL pagination.
+`task.approve` and `task.cancel` grants. The production Compose profile sets
+`UNIFIED_ENV=production` and fails startup unless API keys are explicitly
+configured with non-wildcard project scopes, plus a non-placeholder callback
+secret. Generate secrets as described in `.env.example`; Compose publishes only
+on loopback so a TLS-terminating reverse proxy can sit in front. Production
+workspaces are namespaced per project, including the code graph; workspace
+browsing requires `repo.read`. Existing pre-isolation workspace files and graph
+indexes are not auto-assigned or exposed: migrate/reindex them per project
+explicitly before production rollout. The container runs as UID 10001; ensure an
+existing named volume's `/data` is writable by that UID before upgrading.
+Runtime metrics are project-scoped; the global audit verifier requires the
+separate `ops.read` grant, and project memory
+reads/writes require `memory.read` / `memory.write`. Outbound fetching is
+disabled unless `UNIFIED_WEB_ALLOWLIST` explicitly names audited HTTPS hosts;
+fetches reject redirects, non-public DNS results, and responses over 2 MiB. Health probes are
+read-only. Responses include no-store caching and restrictive browser security
+headers. Requests are capped at 1 MiB and task/event history reads use bounded
+SQL pagination.
 ```
 
 `codegraph.service_links` (14 tools) parses compose `depends_on` into service

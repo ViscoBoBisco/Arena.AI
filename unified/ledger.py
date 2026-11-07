@@ -97,6 +97,11 @@ class Ledger:
         with self._lock:
             self._db.close()
 
+    def ping(self) -> None:
+        """Cheap, read-only database probe for readiness checks."""
+        with self._lock:
+            self._db.execute("SELECT 1").fetchone()
+
     # ---- tasks -------------------------------------------------------
     def find_by_idempotency(self, project_id: str, key: str) -> Optional[str]:
         with self._lock:
@@ -217,6 +222,17 @@ class Ledger:
                 ).fetchone()
             return int(row["n"])
 
+    def list_recoverable_tasks(self) -> list[dict]:
+        """Fetch only interrupted tasks for recovery, not the full task history."""
+        states = (TaskState.PLANNED.value, TaskState.RUNNING.value,
+                  TaskState.VERIFYING.value, TaskState.CANCELLING.value)
+        placeholders = ",".join("?" for _ in states)
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT task_id,state FROM tasks WHERE state IN ({placeholders}) ORDER BY rowid",
+                states).fetchall()
+            return [dict(row) for row in rows]
+
     # ---- steps -------------------------------------------------------
     def save_steps(self, task_id: str, steps: list[Step]) -> None:
         with self._lock, self._db:
@@ -332,7 +348,12 @@ class Ledger:
             checked += 1
         return {"intact": True, "checked": checked, "head": expected_prev}
 
-    def events(self, task_id: str) -> list:
+    def events(self, task_id: str, after_id: int = 0,
+               limit: int | None = None) -> list:
+        query = "SELECT id,at,kind,detail FROM events WHERE task_id=? AND id>? ORDER BY id"
+        params: list = [task_id, min(2**63 - 1, max(0, int(after_id)))]
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(max(0, int(limit)))
         with self._lock:
-            return [dict(r) for r in self._db.execute(
-                "SELECT at,kind,detail FROM events WHERE task_id=? ORDER BY id", (task_id,))]
+            return [dict(row) for row in self._db.execute(query, params)]

@@ -102,6 +102,16 @@ class ApprovalFlowTests(unittest.TestCase):
         r = self.engine.run(out["task_id"], GRANTS)
         self.assertEqual(r["state"], TaskState.COMPLETED.value)
 
+    def test_event_history_can_be_read_in_bounded_id_pages(self):
+        out = self.engine.submit("p", "event-pages", {"intent": "echo", "instructions": "x"},
+                                 [], GRANTS)
+        self.engine.run(out["task_id"], GRANTS)
+        events = self.engine.get_events(out["task_id"])
+        self.assertGreater(len(events), 1)
+        page = self.engine.get_events(out["task_id"], after_id=events[0]["id"], limit=1)
+        self.assertEqual(len(page), 1)
+        self.assertGreater(page[0]["id"], events[0]["id"])
+
     def test_memory_scoped(self):
         self.engine.memory.put("proj-a", "pref", {"tone": "formal"})
         self.assertEqual(self.engine.memory.get("proj-a", "pref"), {"tone": "formal"})
