@@ -127,12 +127,14 @@ def plan(env: TaskEnvelope) -> list[Step]:
                   read_only=True, permissions_used=["web.read.public"])
         s2 = Step(sid(), "model.complete",
                   {"prompt": f"Summarize the captured page: {instructions}",
-                   "budget_tokens": env.budgets.get("model_tokens", 4096)},
+                   "budget_tokens": env.budgets.get("model_tokens", 4096),
+                   "_task_id": env.task_id},
                   depends_on=[s1.step_id], read_only=True, permissions_used=["model.infer"])
         steps.extend([s1, s2])
     elif intent == "model_complete":
         steps.append(Step(sid(), "model.complete",
-                          {"prompt": instructions, "budget_tokens": env.budgets.get("model_tokens", 4096)},
+                          {"prompt": instructions, "budget_tokens": env.budgets.get("model_tokens", 4096),
+                           "_task_id": env.task_id},
                           read_only=True, permissions_used=["model.infer"]))
     else:
         steps.append(Step(sid(), "native.echo",

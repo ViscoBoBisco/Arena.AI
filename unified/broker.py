@@ -89,7 +89,8 @@ class CapabilityBroker:
     def register_model_tool(self, router) -> None:
         def model_complete(args):
             out = router.complete(args.get("prompt", ""),
-                                  budget_tokens=args.get("budget_tokens", 4096))
+                                  budget_tokens=args.get("budget_tokens", 4096),
+                                  task_id=args.get("_task_id"))
             if not out["ok"]:
                 return {"result_type": "error.resource.v1", "summary": out["error"],
                         "errors": [{"type": "resource", "detail": out["error"]}],

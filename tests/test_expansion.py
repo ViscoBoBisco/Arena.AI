@@ -105,6 +105,17 @@ class ExpansionTests(unittest.TestCase):
         exhausted = self.router.complete("more text here", budget_tokens=1)
         self.assertFalse(exhausted["ok"])
 
+    def test_model_router_budgets_are_isolated_by_task(self):
+        router = ModelRouter(max_concurrent=1)
+        first = router.complete("hi", budget_tokens=5, task_id="task-a")
+        other = router.complete("hi", budget_tokens=5, task_id="task-b")
+        repeated = router.complete("hi", budget_tokens=5, task_id="task-a")
+        self.assertTrue(first["ok"])
+        self.assertTrue(other["ok"])
+        self.assertEqual(first["usage"]["model_tokens"], other["usage"]["model_tokens"])
+        self.assertFalse(repeated["ok"])
+        self.assertEqual(repeated["usage"]["tokens_used"], first["usage"]["model_tokens"])
+
     def test_model_tool(self):
         r = self._call("model.complete", {"prompt": "summarize", "budget_tokens": 100},
                        ["model.infer"])
