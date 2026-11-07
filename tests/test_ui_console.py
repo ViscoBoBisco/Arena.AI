@@ -162,6 +162,20 @@ class ConsoleApiTests(unittest.TestCase):
         code, _ = self.request("/v1/tasks?limit=not-a-number")
         self.assertEqual(code, 400)
 
+    def test_idempotency_replays_same_request_and_rejects_changed_payload(self):
+        payload = {"idempotency_key": "api-idempotency", "request": {
+            "intent": "echo", "instructions": "original"}, "permissions": []}
+        code, first = self.request("/v1/tasks?sync=1", method="POST", body=payload)
+        self.assertEqual(code, 201)
+        code, replay = self.request("/v1/tasks", method="POST", body=payload)
+        self.assertEqual(code, 200)
+        self.assertTrue(replay["duplicate"])
+        changed = {**payload, "request": {"intent": "echo", "instructions": "changed"}}
+        code, conflict = self.request("/v1/tasks", method="POST", body=changed)
+        self.assertEqual(code, 409)
+        self.assertTrue(conflict["conflict"])
+        self.assertEqual(first["task_id"], conflict["task_id"])
+
     def test_cancel_endpoint_reports_terminal_task(self):
         code, out = self.request("/v1/tasks?sync=1", method="POST", body={
             "idempotency_key": "cancel-terminal",

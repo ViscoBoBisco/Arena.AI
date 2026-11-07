@@ -4,6 +4,8 @@ manual 1.4: gateway -> ledger -> plan -> broker -> evidence -> verifier.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 
 from .broker import CapabilityBroker
@@ -20,6 +22,18 @@ from .ledger import Ledger, LedgerError
 from .planner import plan
 from .policy import PolicyEngine, PolicyViolation
 from .verifier import verify
+
+
+def _request_fingerprint(env: TaskEnvelope) -> str:
+    """Canonical identity for one project-scoped idempotent submission."""
+    canonical = json.dumps({
+        "request": env.request,
+        "inputs": env.inputs,
+        "permissions": env.permissions,
+        "budgets": env.budgets,
+        "delivery": env.delivery,
+    }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class Engine:
@@ -41,21 +55,39 @@ class Engine:
                         "errors_by_tool": {}, "latencies_ms": []}
 
     # ---- admission (manual 3.1 / 3.3) --------------------------------
+    def _existing_submission(self, task_id: str, fingerprint: str) -> dict:
+        task = self.ledger.get_task(task_id)
+        prior = TaskEnvelope(**task["envelope"])
+        if _request_fingerprint(prior) != fingerprint:
+            return {"task_id": task_id, "duplicate": False, "conflict": True,
+                    "state": task["state"],
+                    "error": "idempotency key already used with a different request"}
+        return {"task_id": task_id, "duplicate": True, "conflict": False,
+                "state": task["state"]}
+
     def submit(self, project_id: str, idempotency_key: str, request: dict,
                permissions: list[str], grants: list[str],
                inputs: list | None = None, budgets: dict | None = None) -> dict:
         """POST /v1/tasks. Duplicate idempotency key returns the same task ID
         without duplicate execution (manual 5.10, test 1)."""
-        existing = self.ledger.find_by_idempotency(project_id, idempotency_key)
-        if existing:
-            return {"task_id": existing, "duplicate": True,
-                    "state": self.ledger.get_task(existing)["state"]}
         env = TaskEnvelope(task_id=new_id("T"), idempotency_key=idempotency_key,
                            project_id=project_id, request=request,
                            inputs=inputs or [], permissions=permissions,
                            budgets=budgets or {"model_calls": 12, "tool_calls": 30,
                                               "time_seconds": 600})
-        self.ledger.create_task(env)
+        fingerprint = _request_fingerprint(env)
+        existing = self.ledger.find_by_idempotency(project_id, idempotency_key)
+        if existing:
+            return self._existing_submission(existing, fingerprint)
+        try:
+            self.ledger.create_task(env)
+        except LedgerError:
+            # A concurrent process may have claimed the unique project/key
+            # pair after the lookup; re-read and classify it rather than 500.
+            existing = self.ledger.find_by_idempotency(project_id, idempotency_key)
+            if existing:
+                return self._existing_submission(existing, fingerprint)
+            raise
         policy = PolicyEngine(set(grants))
         try:
             policy.admit(permissions)  # evaluate at planning (manual 3.3)

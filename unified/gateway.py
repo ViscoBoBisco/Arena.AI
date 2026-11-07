@@ -398,6 +398,8 @@ def make_handler(engine: Engine):
                         budgets=b.get("budgets"))
                 except KeyError as e:
                     return self._send(400, {"error": f"missing field: {e}"})
+                if out.get("conflict"):
+                    return self._send(409, out)
                 code = 200 if out.get("duplicate") else 202  # async accepted
                 if out.get("state") != "REJECTED" and not out.get("duplicate"):
                     if "sync=1" in urlparse(self.path).query:
@@ -435,6 +437,8 @@ def make_handler(engine: Engine):
                                                 b.get("request", {}),
                                                 b.get("permissions", []),
                                                 project_id=self._caller_project())
+                if out.get("conflict"):
+                    return self._send(409, out)
                 if not out.get("duplicate") and out.get("state") != "REJECTED":
                     out["result"] = engine.run(out["task_id"], OPERATOR_GRANTS)
                 return self._send(200, out)

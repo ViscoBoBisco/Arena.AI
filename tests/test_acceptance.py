@@ -4,6 +4,8 @@ Run: python3 -m unittest discover -s tests -v
 """
 import os
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
 import unittest
 
@@ -40,6 +42,48 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(r1["task_id"], r2["task_id"])
         self.assertTrue(r2["duplicate"])
         self.assertEqual(len(self.ledger.list_tasks()), 1)
+        conflicting = self.engine.submit("p", "key-1",
+                                         {"intent": "echo", "instructions": "different"},
+                                         [], GRANTS)
+        self.assertTrue(conflicting["conflict"])
+        self.assertEqual(conflicting["task_id"], r1["task_id"])
+
+    def test_concurrent_duplicate_submissions_claim_one_task(self):
+        workers = 12
+        barrier = threading.Barrier(workers)
+
+        def submit_same():
+            barrier.wait()
+            return self.engine.submit("p", "simultaneous-key",
+                                      {"intent": "echo", "instructions": "same"}, [], GRANTS)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(lambda _: submit_same(), range(workers)))
+        self.assertEqual(len({r["task_id"] for r in results}), 1)
+        self.assertEqual(sum(not r["duplicate"] for r in results), 1)
+        self.assertEqual(self.ledger.count_tasks("p"), 1)
+
+    def test_concurrent_duplicate_claims_across_ledger_connections(self):
+        path = os.path.join(self.tmp.name, "dedupe-race.db")
+        ledger_a = Ledger(path)
+        ledger_b = Ledger(path)
+        engine_a = Engine(ledger_a, self.broker, self.evidence)
+        engine_b = Engine(ledger_b, self.broker, self.evidence)
+        barrier = threading.Barrier(2)
+
+        def submit(engine):
+            barrier.wait()
+            return engine.submit("shared-project", "shared-key",
+                                 {"intent": "echo", "instructions": "same"}, [], GRANTS)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(submit, engine) for engine in (engine_a, engine_b)]
+            results = [f.result(timeout=5) for f in futures]
+        self.assertEqual(results[0]["task_id"], results[1]["task_id"])
+        self.assertEqual(sum(not r["duplicate"] for r in results), 1)
+        self.assertEqual(ledger_a.count_tasks("shared-project"), 1)
+        ledger_a.close()
+        ledger_b.close()
 
     def test_02_unapproved_write_denied(self):
         """Unapproved write through a specialist instruction -> denied before tool call."""

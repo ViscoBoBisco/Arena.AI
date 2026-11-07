@@ -107,20 +107,30 @@ class Ledger:
             return row["task_id"] if row else None
 
     def create_task(self, env: TaskEnvelope) -> str:
-        """Insert task; raises LedgerError on duplicate idempotency key."""
-        with self._lock, self._db:
+        """Insert task; raises LedgerError on duplicate idempotency key.
+
+        The unique index is the cross-connection/process arbiter; translate its
+        race-time IntegrityError back to the same duplicate contract.
+        """
+        try:
+            with self._lock, self._db:
+                existing = self.find_by_idempotency(env.project_id, env.idempotency_key)
+                if existing:
+                    raise LedgerError(f"duplicate idempotency key -> {existing}")
+                now = utcnow()
+                self._db.execute(
+                    "INSERT INTO tasks(task_id,idempotency_key,project_id,envelope,state,created_at,updated_at)"
+                    " VALUES(?,?,?,?,?,?,?)",
+                    (env.task_id, env.idempotency_key, env.project_id,
+                     json.dumps(env.__dict__), TaskState.CREATED.value, now, now),
+                )
+                self._log(env.task_id, "task.created", {"state": TaskState.CREATED.value})
+                return env.task_id
+        except sqlite3.IntegrityError as e:
             existing = self.find_by_idempotency(env.project_id, env.idempotency_key)
             if existing:
-                raise LedgerError(f"duplicate idempotency key -> {existing}")
-            now = utcnow()
-            self._db.execute(
-                "INSERT INTO tasks(task_id,idempotency_key,project_id,envelope,state,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?)",
-                (env.task_id, env.idempotency_key, env.project_id,
-                 json.dumps(env.__dict__), TaskState.CREATED.value, now, now),
-            )
-            self._log(env.task_id, "task.created", {"state": TaskState.CREATED.value})
-            return env.task_id
+                raise LedgerError(f"duplicate idempotency key -> {existing}") from e
+            raise
 
     def get_task(self, task_id: str) -> Optional[dict]:
         with self._lock:
