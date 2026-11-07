@@ -33,6 +33,13 @@ tests/
   test_async_api.py           # 3 tests: 202 async submit + poll, sync mode, artifact download
   test_security_delivery.py   # 3 tests: prompt-injection quarantine, graph staleness, signed webhook delivery
   test_tenant_workflows.py    # 2 tests: cross-project 403 isolation, ch.4.2 repo-change flow
+  test_investigate_metrics.py # 3 tests: ch.4.3 static investigation, IOC extraction, metrics
+```
+
+`investigate` runs the ch. 4.3 flow (static-only `rea.inspect` with IOC/entropy
+triage → optional graph correlation; runtime observation stays unauthorized).
+`GET /v1/metrics/summary` exposes dashboard metrics: success rate, tool error
+rate by tool, p50/p95 latency, token usage.
 ```
 
 Multi-project isolation: every task read requires a matching `X-Project-Id`

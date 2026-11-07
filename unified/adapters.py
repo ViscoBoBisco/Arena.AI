@@ -187,11 +187,26 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
             f.seek(0)
             digest = hashlib.sha256(f.read()).hexdigest()
         fmt = next((v for k, v in MAGIC.items() if head.startswith(k)), "unknown")
-        strings = re.findall(rb"[ -~]{6,}", head)
+        blob = head + open(path, "rb").read() if os.path.getsize(path) <= 1 << 20 else head
+        strings = re.findall(rb"[ -~]{6,}", blob)
+        # IOC extraction from strings (static only; sample is never executed)
+        text = blob.decode("latin-1")
+        iocs = {
+            "urls": re.findall(r"https?://[^\s\"'<>]+", text)[:10],
+            "domains": sorted(set(re.findall(r"\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b", text)))[:10],
+            "ips": sorted(set(re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", text)))[:10],
+        }
+        # Shannon entropy of the header region (packed/encrypted indicator)
+        import math
+        from collections import Counter
+        counts = Counter(head)
+        entropy = -sum((c / len(head)) * math.log2(c / len(head)) for c in counts.values()) if head else 0
         return {"result_type": "rea.inspect.v1",
-                "summary": f"static inspection of {target}: format={fmt}",
+                "summary": f"static inspection of {target}: format={fmt}, entropy={entropy:.2f}",
                 "data": {"sha256": digest, "format": fmt, "size": os.path.getsize(path),
-                         "strings_sample": [s.decode() for s in strings[:20]]},
+                         "entropy": round(entropy, 3), "iocs": iocs,
+                         "strings_sample": [s.decode() for s in strings[:20]],
+                         "mode": "static-only"},
                 "evidence": [ev.evidence_ref(f"file://{path}", f"sha256:{digest}")]}
 
     broker.register(ToolSpec("scrapling.fetch", ["web.read.public"], "read_only",

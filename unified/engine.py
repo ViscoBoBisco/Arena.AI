@@ -37,7 +37,8 @@ class Engine:
         self._cancel = set()
         self._lock = threading.RLock()
         self.metrics = {"tasks_by_state": {}, "tool_calls": 0,
-                        "tool_failures": 0, "model_tokens": 0}
+                        "tool_failures": 0, "model_tokens": 0,
+                        "errors_by_tool": {}, "latencies_ms": []}
 
     # ---- admission (manual 3.1 / 3.3) --------------------------------
     def submit(self, project_id: str, idempotency_key: str, request: dict,
@@ -169,6 +170,8 @@ class Engine:
                         self.metrics["tool_calls"] += 1
                         if receipt.status == "failed":
                             self.metrics["tool_failures"] += 1
+                            self.metrics["errors_by_tool"][step.tool] = \
+                                self.metrics["errors_by_tool"].get(step.tool, 0) + 1
                         self.metrics["model_tokens"] += receipt.usage.get("model_tokens", 0)
                     if receipt.status == "succeeded":
                         done.add(step.step_id)
@@ -194,6 +197,7 @@ class Engine:
                     env.delivery["webhook_url"], result)
         self.ledger.set_result(task_id, result)
         with self._lock:
+            self.metrics["latencies_ms"].append(int((_time.monotonic() - started) * 1000))
             st = task["state"] if result.get("state") is None else result.get("state")
             self.metrics["tasks_by_state"][result.get("state", st)] = \
                 self.metrics["tasks_by_state"].get(result.get("state", st), 0) + 1

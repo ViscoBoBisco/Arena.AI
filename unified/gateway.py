@@ -112,6 +112,21 @@ def make_handler(engine: Engine):
                 return self._send(200, {"roles": engine.roles.list() if engine.roles else []})
             if path == "/v1/metrics":
                 return self._send(200, engine.metrics)
+            if path == "/v1/metrics/summary":
+                m = engine.metrics
+                lat = sorted(m.get("latencies_ms", []))
+                def pct(p):
+                    return lat[min(len(lat) - 1, int(p * len(lat)))] if lat else 0
+                total = sum(m["tasks_by_state"].values()) or 1
+                completed = m["tasks_by_state"].get("COMPLETED", 0)
+                return self._send(200, {
+                    "task_success_rate": round(completed / total, 3),
+                    "total_tasks": total,
+                    "tool_calls": m["tool_calls"],
+                    "tool_error_rate": round(m["tool_failures"] / max(m["tool_calls"], 1), 3),
+                    "errors_by_tool": m.get("errors_by_tool", {}),
+                    "p50_latency_ms": pct(0.5), "p95_latency_ms": pct(0.95),
+                    "model_tokens": m["model_tokens"]})
             if len(parts) == 3 and parts[:2] == ["v1", "memory"]:
                 if engine.memory is None:
                     return self._send(404, {"error": "memory disabled"})
