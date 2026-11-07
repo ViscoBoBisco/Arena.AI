@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arena.AI — Unified Gateway</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; background: #0f1420; color: #e6e9f0;
+         max-width: 860px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.3rem; }
+  select, button, textarea { font: inherit; }
+  textarea { width: 100%; min-height: 70px; background: #1a2233; color: #e6e9f0;
+             border: 1px solid #33405c; border-radius: 6px; padding: .5rem; }
+  button { background: #3b82f6; color: #fff; border: 0; border-radius: 6px;
+           padding: .45rem 1rem; cursor: pointer; }
+  button.ghost { background: #2a3450; }
+  #log { background: #0a0e18; border: 1px solid #26304a; border-radius: 6px;
+         padding: .75rem; margin-top: 1rem; white-space: pre-wrap; font-size: .85rem;
+         max-height: 420px; overflow-y: auto; }
+  .row { display: flex; gap: .5rem; margin: .5rem 0; flex-wrap: wrap; }
+  label { font-size: .8rem; color: #9aa7c7; }
+</style>
+</head>
+<body>
+<h1>Unified Agentic Intelligence Platform</h1>
+<div class="row">
+  <label>Intent
+    <select id="intent">
+      <option value="echo">echo</option>
+      <option value="fetch_fixture">fetch_fixture</option>
+      <option value="index_repo">index_repo</option>
+      <option value="find_symbol">find_symbol</option>
+      <option value="inspect_binary">inspect_binary</option>
+      <option value="model_complete">model_complete</option>
+      <option value="write_file">write_file (needs approval)</option>
+    </select>
+  </label>
+  <label>Arg <input id="arg" placeholder="instructions / name / query / path" size="40"></label>
+</div>
+<textarea id="extra" placeholder='extra request fields as JSON, e.g. {"name":"demo.html"}'></textarea>
+<div class="row">
+  <button onclick="submit()">Submit task</button>
+  <button class="ghost" onclick="approve()">Approve</button>
+  <button class="ghost" onclick="reject()">Reject</button>
+  <button class="ghost" onclick="cancelTask()">Cancel</button>
+</div>
+<div id="log">ready.</div>
+<script>
+const log = (m) => { const el = document.getElementById('log');
+  el.textContent += m + "\n"; el.scrollTop = el.scrollHeight; };
+let currentId = null, es = null;
+async function submit() {
+  const intent = document.getElementById('intent').value;
+  const arg = document.getElementById('arg').value;
+  let extra = {};
+  try { extra = JSON.parse(document.getElementById('extra').value || '{}'); } catch(e) {}
+  const request = { intent, instructions: arg, ...extra };
+  if (intent === 'fetch_fixture') request.name = arg;
+  if (intent === 'find_symbol') request.query = arg;
+  if (intent === 'inspect_binary' || intent === 'write_file') request.path = arg;
+  const res = await fetch('/v1/tasks', { method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ project_id: 'ui', idempotency_key: 'ui-' + Date.now(),
+                           request, permissions: [] })});
+  const out = await res.json();
+  currentId = out.task_id;
+  log(`task ${currentId} -> ${out.result ? out.result.state : out.state}`);
+  if (out.result) log(JSON.stringify(out.result, null, 1).slice(0, 1500));
+  stream();
+}
+function stream() {
+  if (es) es.close();
+  if (!currentId) return;
+  es = new EventSource(`/v1/tasks/${currentId}/events/stream`);
+  es.addEventListener('task', (e) => log('event: ' + e.data));
+  es.addEventListener('done', () => { log('stream done'); es.close(); });
+}
+const act = async (p, body) => { if (!currentId) return;
+  const r = await fetch(`/v1/tasks/${currentId}/${p}`, { method: 'POST',
+    headers: {'Content-Type':'application/json'}, body: JSON.stringify(body || {}) });
+  const out = await r.json(); log(p + ': ' + JSON.stringify(out).slice(0, 800)); };
+approve = () => act('approve', { decision: 'approved' });
+reject  = () => act('reject', {});
+cancelTask = () => act('cancel', {});
+</script>
+</body>
+</html>

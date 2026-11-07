@@ -22,7 +22,7 @@ from .engine import Engine
 # per caller (manual 3.3).
 OPERATOR_GRANTS = [
     "web.read.public", "data.market.read", "repo.read",
-    "workspace.write.sandbox",
+    "workspace.write.sandbox", "binary.inspect.static", "model.infer",
 ]
 
 
@@ -82,6 +82,17 @@ def make_handler(engine: Engine):
         def do_GET(self):
             path = urlparse(self.path).path
             parts = [p for p in path.split("/") if p]
+            if path in ("/", "/index.html"):
+                import os
+                ui = os.path.join(os.path.dirname(__file__), "ui", "index.html")
+                with open(ui, "rb") as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if path == "/v1/tools":
                 return self._send(200, {"tools": engine.broker.list_tools()})
             if path == "/v1/roles":

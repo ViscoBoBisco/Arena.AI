@@ -89,9 +89,30 @@ class Engine:
         done: set[str] = {s.step_id for s in self.ledger.get_steps(task_id)
                           if s.state == StepState.SUCCEEDED}
         receipts: list[ToolReceipt] = self.ledger.get_receipts(task_id)
+        import time as _time
+        started = _time.monotonic()
+        budgets = env.budgets or {}
         for step in steps:  # simple topological order (planner emits ordered DAGs)
             if step.step_id in done or any(dep not in done for dep in step.depends_on):
                 continue
+            # Hard per-task budgets: enforced at step level with graceful
+            # termination and a typed receipt (never a silent overrun).
+            if len(receipts) >= budgets.get("tool_calls", 30):
+                receipt = ToolReceipt(task_id, step.step_id, new_id("A"), "failed",
+                                      "error.budget.v1", "tool_calls budget exhausted",
+                                      errors=[{"type": "budget_exceeded", "budget": "tool_calls"}])
+                self.ledger.save_receipt(receipt, committed=False)
+                self.ledger.set_step_state(task_id, step.step_id, StepState.FAILED)
+                receipts.append(receipt)
+                break
+            if _time.monotonic() - started > budgets.get("time_seconds", 600):
+                receipt = ToolReceipt(task_id, step.step_id, new_id("A"), "failed",
+                                      "error.budget.v1", "time_seconds budget exhausted",
+                                      errors=[{"type": "budget_exceeded", "budget": "time_seconds"}])
+                self.ledger.save_receipt(receipt, committed=False)
+                self.ledger.set_step_state(task_id, step.step_id, StepState.FAILED)
+                receipts.append(receipt)
+                break
             # Durable human-in-the-loop: side-effecting steps require an
             # approved record; the run pauses (not the process) and resumes
             # from persisted state on approval (manual 5.4).

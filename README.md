@@ -28,7 +28,13 @@ tests/
   test_acceptance.py          # 9 tests from the manual's section 5.10 acceptance suite
   test_expansion.py           # 13 tests for adapters, model router, roles, automation
   test_approvals_streaming.py # 6 tests: durable approvals, memory, metrics, hash checks
+  test_workflows.py           # 4 e2e tests: ch.4 research flow, budget limits, impact trace
+unified/ui/index.html       # zero-build web UI (vanilla JS + SSE) served at /
 ```
+
+Hard per-task budgets (`tool_calls`, `time_seconds`) are enforced at step level
+and fail with a typed `budget_exceeded` receipt. Open `http://localhost:8080/`
+for the web UI.
 
 Side-effecting tool steps (e.g. `native.fs.write`) pause the run in a durable
 `WAITING_APPROVAL` state and execute exactly once after `POST .../approve`;

@@ -68,6 +68,20 @@ def plan(env: TaskEnvelope) -> list[Step]:
         steps.append(Step(sid(), "rea.inspect",
                           {"path": env.request.get("path", ""), "_task_id": env.task_id},
                           read_only=True, permissions_used=["binary.inspect.static"]))
+    elif intent == "impact":
+        steps.append(Step(sid(), "codegraph.impact",
+                          {"symbol": env.request.get("symbol", "")},
+                          read_only=True, permissions_used=["repo.read"]))
+    elif intent == "research":
+        # Manual ch. 4.1 vertical slice: acquire evidence, then synthesize.
+        s1 = Step(sid(), "scrapling.fetch_fixture",
+                  {"name": env.request.get("name", "demo.html"), "_task_id": env.task_id},
+                  read_only=True, permissions_used=["web.read.public"])
+        s2 = Step(sid(), "model.complete",
+                  {"prompt": f"Summarize the captured page: {instructions}",
+                   "budget_tokens": env.budgets.get("model_tokens", 4096)},
+                  depends_on=[s1.step_id], read_only=True, permissions_used=["model.infer"])
+        steps.extend([s1, s2])
     elif intent == "model_complete":
         steps.append(Step(sid(), "model.complete",
                           {"prompt": instructions, "budget_tokens": env.budgets.get("model_tokens", 4096)},

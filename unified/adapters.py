@@ -139,6 +139,26 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
                 "data": {"matches": [{"name": r[0], "kind": r[1], "file": r[2],
                                       "line": r[3], "commit": r[4]} for r in rows[:50]]}}
 
+    def codegraph_impact(args):
+        """Impact tracing (manual 2.6): which indexed files import/reference
+        the given symbol — a bounded reverse-dependency query."""
+        sym = args.get("symbol", "")
+        conn = _graph_conn()
+        rows = conn.execute(
+            'SELECT file, line FROM symbols WHERE "commit" = (SELECT MAX("commit") FROM symbols)').fetchall()
+        impacted = []
+        for file, _line in rows:
+            p = os.path.join(ws, file)
+            try:
+                with open(p, encoding="utf-8", errors="replace") as f:
+                    if sym and sym in f.read():
+                        impacted.append(file)
+            except OSError:
+                pass
+        return {"result_type": "codegraph.impact.v1",
+                "summary": f"{len(impacted)} files reference '{sym}'",
+                "data": {"symbol": sym, "impacted_files": sorted(set(impacted))[:50]}}
+
     # ---- rea.inspect (manual 2.7, static only) ------------------------
     MAGIC = {b"\x7fELF": "ELF", b"MZ": "PE", b"\xfe\xed\xfa\xce": "Mach-O",
              b"\xcf\xfa\xed\xfe": "Mach-O-64", b"PK\x03\x04": "zip/jar/apk"}
@@ -171,6 +191,8 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
                              codegraph_index, "Index workspace Python symbols into graph store."))
     broker.register(ToolSpec("codegraph.find", ["repo.read"], "read_only",
                              codegraph_find, "Find symbols in the code graph."))
+    broker.register(ToolSpec("codegraph.impact", ["repo.read"], "read_only",
+                             codegraph_impact, "Impact trace: files referencing a symbol."))
     broker.register(ToolSpec("rea.inspect", ["binary.inspect.static"], "read_only",
                              rea_inspect, "Static binary/application triage (hash, format, strings)."))
 
