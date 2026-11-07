@@ -131,6 +131,9 @@ class Ledger:
             d["envelope"] = json.loads(d["envelope"])
             if d["result"]:
                 d["result"] = json.loads(d["result"])
+            d["steps"] = [s.to_dict() for s in self.get_steps(task_id)]
+            d["receipts"] = [r.to_dict() for r in self.get_receipts(task_id)]
+            d["pending_approvals"] = self.pending_approvals(task_id)
             return d
 
     def set_state(self, task_id: str, dst: TaskState) -> None:
@@ -156,7 +159,29 @@ class Ledger:
 
     def list_tasks(self) -> list:
         with self._lock:
-            return [dict(r) for r in self._db.execute("SELECT task_id,state,project_id FROM tasks")]
+            rows = self._db.execute(
+                "SELECT task_id,idempotency_key,state,project_id,envelope,result,created_at,updated_at"
+                " FROM tasks ORDER BY rowid DESC"
+            ).fetchall()
+            out = []
+            for r in rows:
+                env = json.loads(r["envelope"]) if r["envelope"] else {}
+                res = json.loads(r["result"]) if r["result"] else {}
+                req = env.get("request", {}) if isinstance(env, dict) else {}
+                summary = ""
+                if isinstance(res, dict):
+                    summary = res.get("answer") or res.get("reason") or res.get("error") or ""
+                out.append({
+                    "task_id": r["task_id"],
+                    "idempotency_key": r["idempotency_key"],
+                    "state": r["state"],
+                    "project_id": r["project_id"],
+                    "intent": req.get("intent", "echo"),
+                    "summary": summary,
+                    "created_at": r["created_at"],
+                    "updated_at": r["updated_at"],
+                })
+            return out
 
     # ---- steps -------------------------------------------------------
     def save_steps(self, task_id: str, steps: list[Step]) -> None:

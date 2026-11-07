@@ -89,6 +89,17 @@ class Step:
     permissions_used: list = field(default_factory=list)
     state: StepState = StepState.PENDING
 
+    def to_dict(self) -> dict:
+        return {
+            "step_id": self.step_id,
+            "tool": self.tool,
+            "args": self.args,
+            "depends_on": self.depends_on,
+            "read_only": self.read_only,
+            "permissions_used": self.permissions_used,
+            "state": self.state.value if isinstance(self.state, StepState) else self.state,
+        }
+
 
 @dataclass
 class ToolReceipt:

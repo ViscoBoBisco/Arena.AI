@@ -38,6 +38,7 @@ class ConversationMemory:
 
     def list(self, project_id: str) -> list:
         with self._lock:
-            return [{"key": r[0], "updated_at": r[1]} for r in self._db.execute(
-                "SELECT key,updated_at FROM memories WHERE project_id=? ORDER BY updated_at",
-                (project_id,))]
+            return [{"key": r[0], "updated_at": r[1], "value": json.loads(r[2])}
+                    for r in self._db.execute(
+                        "SELECT key,updated_at,value FROM memories WHERE project_id=? ORDER BY updated_at DESC",
+                        (project_id,))]

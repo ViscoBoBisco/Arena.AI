@@ -45,7 +45,11 @@ class EvidenceStore:
             return None
         path = os.path.join(self.root, uri[len("artifact://"):])
         # path traversal guard (manual 5.8)
-        if not os.path.abspath(path).startswith(os.path.abspath(self.root)):
+        root = os.path.abspath(self.root)
+        try:
+            if os.path.commonpath((root, os.path.abspath(path))) != root:
+                return None
+        except ValueError:
             return None
         if os.path.exists(path):
             with open(path, "rb") as f:

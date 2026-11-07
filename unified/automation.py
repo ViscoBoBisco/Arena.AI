@@ -55,11 +55,11 @@ class AutomationConnector:
                 "task_id": task_id}
 
     def trigger(self, workflow_id: str, execution_id: str, request: dict,
-                permissions: list[str]) -> dict:
+                permissions: list[str], project_id: str = "automation") -> dict:
         """n8n workflow submits a task with a stable idempotency key derived
         from workflow + execution (manual 4.4)."""
         key = f"n8n:{workflow_id}:{execution_id}"
-        return self.engine.submit(project_id="automation", idempotency_key=key,
+        return self.engine.submit(project_id=project_id, idempotency_key=key,
                                   request=request, permissions=permissions,
                                   grants=["web.read.public", "data.market.read",
                                           "repo.read", "workspace.write.sandbox",

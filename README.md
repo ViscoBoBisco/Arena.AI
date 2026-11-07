@@ -52,8 +52,10 @@ The gateway requires `Authorization: Bearer <api-key>` on all `/v1/*` routes
 ```
 
 `codegraph.service_links` (14 tools) parses compose `depends_on` into service
-edges; `GET /v1/tasks?limit=&offset=` is project-scoped and paginated; the web UI
-has task-list and metrics panels.
+edges; `GET /v1/tasks?limit=&offset=` is project-scoped and paginated. The zero-build
+operator console at `/` provides guided task forms for every planner intent,
+Chapter 4 workflow presets, tenant-scoped task/approval inspection, workspace
+browsing, capabilities and memory, metrics, and audit-chain verification.
 ```
 
 `demo.sh` runs a full live walkthrough (health → tools → async submit → poll →

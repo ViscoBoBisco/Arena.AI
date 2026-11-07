@@ -82,7 +82,7 @@ class AsyncApiTests(unittest.TestCase):
             "permissions": ["repo.read"]})
         uri = out["result"]["artifacts"][0]["uri"]
         path = "/v1/" + uri.replace("artifact://", "artifacts/")
-        resp = urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8123" + path, headers={"Authorization": "Bearer dev-key"}))
+        resp = urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8123" + path, headers={"Authorization": "Bearer dev-key", "X-Project-Id": "t"}))
         body = resp.read()
         self.assertEqual(body, b"artifact body")
         self.assertEqual(resp.headers["X-Sha256"], hashlib.sha256(body).hexdigest())

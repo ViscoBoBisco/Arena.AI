@@ -21,7 +21,7 @@ from .ratelimit import TokenBucket
 
 # API keys: project -> key (dev default; production injects via env)
 API_KEYS = {"dev-key": {"*"}}
-RATE_LIMIT = TokenBucket(capacity=30, refill_per_sec=5.0)
+RATE_LIMIT = TokenBucket(capacity=120, refill_per_sec=25.0)
 
 # Demo grant set for the built-in operator; a real deployment issues these
 # per caller (manual 3.3).
@@ -121,10 +121,9 @@ def make_handler(engine: Engine):
         def do_GET(self):
             path = urlparse(self.path).path
             parts = [p for p in path.split("/") if p]
-            # SSE streams can't set Authorization headers (EventSource API);
-            # they stay project-scoped via the task lookup instead.
-            if path not in ("/healthz", "/readyz", "/") and "/events/stream" not in path \
-                    and path != "/index.html":
+            # The console uses fetch streaming, so event streams retain the same
+            # bearer authentication and project scope as all other task reads.
+            if path not in ("/healthz", "/readyz", "/") and path != "/index.html":
                 proj, err = self._auth()
                 if err:
                     return
@@ -143,6 +142,53 @@ def make_handler(engine: Engine):
                 return self._send(200, {"tools": engine.broker.list_tools()})
             if path == "/v1/roles":
                 return self._send(200, {"roles": engine.roles.list() if engine.roles else []})
+            if path == "/v1/workspace":
+                import hashlib
+                import os
+                from urllib.parse import parse_qs
+                ws = engine.broker.workspace_root
+                q = parse_qs(urlparse(self.path).query)
+                rel_req = q.get("path", [None])[0]
+                if rel_req:
+                    try:
+                        full = engine.broker._sandbox_path(rel_req)
+                    except PermissionError as e:
+                        return self._send(403, {"error": str(e)})
+                    if not os.path.isfile(full):
+                        return self._send(404, {"error": "file not found"})
+                    digest = hashlib.sha256()
+                    with open(full, "rb") as f:
+                        raw = f.read(32768)
+                        digest.update(raw)
+                        while True:
+                            chunk = f.read(65536)
+                            if not chunk:
+                                break
+                            digest.update(chunk)
+                    is_bin = b"\x00" in raw[:512] or raw.startswith(b"\x7fELF")
+                    preview = raw[:256].hex(" ") if is_bin else raw.decode("utf-8", "replace")[:8000]
+                    return self._send(200, {
+                        "path": rel_req,
+                        "size": os.path.getsize(full),
+                        "sha256": digest.hexdigest(),
+                        "is_binary": is_bin,
+                        "preview": preview,
+                    })
+                files = []
+                if os.path.isdir(ws):
+                    for dirpath, _, fns in os.walk(ws):
+                        for fn in sorted(fns):
+                            if fn.startswith("."):
+                                continue
+                            full = os.path.join(dirpath, fn)
+                            rel = os.path.relpath(full, ws)
+                            try:
+                                sz = os.path.getsize(full)
+                            except OSError:
+                                sz = 0
+                            ext = os.path.splitext(fn)[1].lstrip(".") or "file"
+                            files.append({"path": rel, "size": sz, "ext": ext})
+                return self._send(200, {"files": sorted(files, key=lambda x: x["path"])})
             if path == "/healthz":  # liveness: cheap, local only
                 return self._send(200, {"status": "ok"})
             if path == "/readyz":   # readiness: verify ledger + artifact store
@@ -174,10 +220,15 @@ def make_handler(engine: Engine):
                     "p50_latency_ms": pct(0.5), "p95_latency_ms": pct(0.95),
                     "model_tokens": m["model_tokens"]})
             if len(parts) == 3 and parts[:2] == ["v1", "memory"]:
+                if parts[2] != self._caller_project():
+                    return self._send(403, {"error": "cross-project access denied"})
                 if engine.memory is None:
                     return self._send(404, {"error": "memory disabled"})
                 return self._send(200, {"memories": engine.memory.list(parts[2])})
             if len(parts) == 5 and parts[:2] == ["v1", "tasks"] and parts[4] == "stream":
+                task, err = self._task_for_caller(parts[2])
+                if err:
+                    return err
                 return self._stream_events(parts[2])
             if path == "/v1/tasks":
                 # project-scoped list with offset pagination (bounded)
@@ -215,7 +266,14 @@ def make_handler(engine: Engine):
                 if task and task.get("result"):
                     uris = [a["uri"] for a in task["result"].get("artifacts", [])]
                 return self._send(200, {"artifacts": uris})
-            if len(parts) >= 2 and parts[0] == "v1" and parts[1] == "artifacts":
+            if len(parts) >= 4 and parts[0] == "v1" and parts[1] == "artifacts":
+                # Artifact IDs begin with their task ID, so downloads inherit
+                # the owning task's project scope.
+                task, err = self._task_for_caller(parts[2])
+                if err:
+                    return err
+                if parts[2] != task["task_id"] or any(p in (".", "..") for p in parts[2:]):
+                    return self._send(400, {"error": "invalid artifact path"})
                 # Download an artifact by URI path; verify hash (manual 5.5).
                 import hashlib
                 uri = "artifact://" + "/".join(parts[2:])
@@ -260,17 +318,22 @@ def make_handler(engine: Engine):
                         engine.submit_async(out["task_id"], OPERATOR_GRANTS)
                         out["status_url"] = f"/v1/tasks/{out['task_id']}"
                 return self._send(code, out)
-            if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] == "approve":
-                b = self._body()
-                return self._send(200, engine.approve(parts[2], b.get("decision", "approved"),
-                                                      OPERATOR_GRANTS))
-            if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] == "reject":
-                return self._send(200, engine.approve(parts[2], "rejected", OPERATOR_GRANTS))
+            if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] in ("approve", "reject"):
+                task, scope_err = self._task_for_caller(parts[2])
+                if scope_err:
+                    return scope_err
+                decision = self._body().get("decision", "approved") if parts[3] == "approve" else "rejected"
+                return self._send(200, engine.approve(parts[2], decision, OPERATOR_GRANTS))
             if len(parts) == 3 and parts[:2] == ["v1", "memory"]:
+                if parts[2] != self._caller_project():
+                    return self._send(403, {"error": "cross-project access denied"})
                 b = self._body()
                 engine.memory.put(parts[2], b["key"], b.get("value"))
                 return self._send(200, {"stored": True})
             if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] == "cancel":
+                task, scope_err = self._task_for_caller(parts[2])
+                if scope_err:
+                    return scope_err
                 engine.cancel(parts[2])
                 return self._send(200, {"task_id": parts[2], "cancel_requested": True})
             if path == "/v1/automation/trigger":
@@ -278,7 +341,8 @@ def make_handler(engine: Engine):
                 out = engine.automation.trigger(b.get("workflow_id", ""),
                                                 b.get("execution_id", ""),
                                                 b.get("request", {}),
-                                                b.get("permissions", []))
+                                                b.get("permissions", []),
+                                                project_id=self._caller_project())
                 if not out.get("duplicate") and out.get("state") != "REJECTED":
                     out["result"] = engine.run(out["task_id"], OPERATOR_GRANTS)
                 return self._send(200, out)
