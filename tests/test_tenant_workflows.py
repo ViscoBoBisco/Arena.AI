@@ -65,7 +65,7 @@ class TenantAndRepoChangeTests(unittest.TestCase):
             tid = out["task_id"]
             # caller from proj-b must not read proj-a's task
             r = urllib.request.Request(f"http://127.0.0.1:8124/v1/tasks/{tid}",
-                                       headers={"X-Project-Id": "proj-b"})
+                                       headers={"X-Project-Id": "proj-b", "Authorization": "Bearer dev-key"})
             try:
                 urllib.request.urlopen(r)
                 code = 200
@@ -74,7 +74,7 @@ class TenantAndRepoChangeTests(unittest.TestCase):
             self.assertEqual(code, 403)
             # caller from proj-a can
             r2 = urllib.request.Request(f"http://127.0.0.1:8124/v1/tasks/{tid}",
-                                        headers={"X-Project-Id": "proj-a"})
+                                        headers={"X-Project-Id": "proj-a", "Authorization": "Bearer dev-key"})
             self.assertEqual(urllib.request.urlopen(r2).status, 200)
         finally:
             server.shutdown()

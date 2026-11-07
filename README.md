@@ -37,6 +37,12 @@ tests/
   test_qualification.py       # Phase-6 qualification: all four ch.4 workflows + trace + typed dataset
   test_health.py              # 2 tests: /healthz liveness, /readyz readiness
   test_infra_listing.py       # 2 tests: compose service-links parsing, scoped paginated task list
+  test_auth_ratelimit.py      # 5 tests: 401/403 auth, 429 token bucket
+```
+
+The gateway requires `Authorization: Bearer <api-key>` on all `/v1/*` routes
+(401 missing, 403 invalid, 429 + `Retry-After` over the token-bucket limit);
+`/healthz`, `/readyz` and the UI stay open. `demo.sh` shows a full live run.
 ```
 
 `codegraph.service_links` (14 tools) parses compose `depends_on` into service

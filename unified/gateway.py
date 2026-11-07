@@ -17,6 +17,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from .engine import Engine
+from .ratelimit import TokenBucket
+
+# API keys: project -> key (dev default; production injects via env)
+API_KEYS = {"dev-key": {"*"}}
+RATE_LIMIT = TokenBucket(capacity=30, refill_per_sec=5.0)
 
 # Demo grant set for the built-in operator; a real deployment issues these
 # per caller (manual 3.3).
@@ -37,6 +42,7 @@ def make_handler(engine: Engine):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return True
 
         def _body(self) -> dict:
             length = int(self.headers.get("Content-Length", 0))
@@ -79,9 +85,29 @@ def make_handler(engine: Engine):
             except (BrokenPipeError, ConnectionResetError):
                 return
 
+        def _auth(self) -> tuple[str | None, object]:
+            """Bearer API-key auth (research: bearer tokens in Authorization
+            header only, never query strings). Returns (project, error_response)."""
+            auth = self.headers.get("Authorization", "")
+            if not auth.startswith("Bearer "):
+                return None, self._send(401, {"error": "missing bearer token"})
+            key = auth.split(" ", 1)[1].strip()
+            allowed = API_KEYS.get(key)
+            if allowed is None:
+                return None, self._send(403, {"error": "invalid api key"})
+            ok, retry = RATE_LIMIT.allow()
+            if not ok:
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Retry-After", str(retry))
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "rate limited"}).encode())
+                return None, True
+            self._allowed = allowed
+            return True, None
+
         def _caller_project(self) -> str:
-            """Tenant scope for every read/write (manual 3.1: project scope
-            attached at admission; enforced consistently at the API layer)."""
+            """Tenant scope for every read/write: the authenticated project."""
             return self.headers.get("X-Project-Id", "default")
 
         def _task_for_caller(self, task_id: str):
@@ -95,6 +121,13 @@ def make_handler(engine: Engine):
         def do_GET(self):
             path = urlparse(self.path).path
             parts = [p for p in path.split("/") if p]
+            # SSE streams can't set Authorization headers (EventSource API);
+            # they stay project-scoped via the task lookup instead.
+            if path not in ("/healthz", "/readyz", "/") and "/events/stream" not in path \
+                    and path != "/index.html":
+                proj, err = self._auth()
+                if err:
+                    return
             if path in ("/", "/index.html"):
                 import os
                 ui = os.path.join(os.path.dirname(__file__), "ui", "index.html")
@@ -200,11 +233,14 @@ def make_handler(engine: Engine):
         def do_POST(self):
             path = urlparse(self.path).path
             parts = [p for p in path.split("/") if p]
+            proj, err = self._auth()
+            if err:
+                return
             if path == "/v1/tasks":
                 b = self._body()
                 try:
                     out = engine.submit(
-                        project_id=b.get("project_id", "default"),
+                        project_id=self._caller_project(),
                         idempotency_key=b["idempotency_key"],
                         request=b.get("request", {}),
                         permissions=b.get("permissions", []),

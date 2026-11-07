@@ -66,7 +66,8 @@ class InfraListingTests(unittest.TestCase):
             self.engine.submit("proj-b", "l-b", {"intent": "echo", "instructions": "x"}, [], GRANTS)
             def get(path, proj):
                 r = urllib.request.Request(f"http://127.0.0.1:8126{path}",
-                                           headers={"X-Project-Id": proj})
+                                           headers={"X-Project-Id": proj,
+                                                    "Authorization": "Bearer dev-key"})
                 return json.loads(urllib.request.urlopen(r).read())
             a = get("/v1/tasks?limit=2&offset=0", "proj-a")
             self.assertEqual(a["total"], 3)

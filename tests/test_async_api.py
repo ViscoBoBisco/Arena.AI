@@ -43,7 +43,7 @@ class AsyncApiTests(unittest.TestCase):
 
     def _req(self, method, path, body=None):
         data = json.dumps(body).encode() if body is not None else None
-        headers = {"X-Project-Id": "t"}
+        headers = {"X-Project-Id": "t", "Authorization": "Bearer dev-key"}
         if data:
             headers["Content-Type"] = "application/json"
         r = urllib.request.Request("http://127.0.0.1:8123" + path, data=data, method=method,
@@ -82,7 +82,7 @@ class AsyncApiTests(unittest.TestCase):
             "permissions": ["repo.read"]})
         uri = out["result"]["artifacts"][0]["uri"]
         path = "/v1/" + uri.replace("artifact://", "artifacts/")
-        resp = urllib.request.urlopen("http://127.0.0.1:8123" + path)
+        resp = urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8123" + path, headers={"Authorization": "Bearer dev-key"}))
         body = resp.read()
         self.assertEqual(body, b"artifact body")
         self.assertEqual(resp.headers["X-Sha256"], hashlib.sha256(body).hexdigest())

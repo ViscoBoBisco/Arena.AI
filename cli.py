@@ -16,7 +16,7 @@ BASE = "http://localhost:8080"
 def _req(method, path, body=None):
     data = json.dumps(body).encode() if body is not None else None
     r = urllib.request.Request(BASE + path, data=data, method=method,
-                               headers={"Content-Type": "application/json"})
+                               headers={"Content-Type": "application/json", "Authorization": "Bearer dev-key"})
     with urllib.request.urlopen(r) as resp:
         return json.loads(resp.read())
 

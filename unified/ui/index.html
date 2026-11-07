@@ -62,7 +62,7 @@ async function submit() {
   if (intent === 'find_symbol') request.query = arg;
   if (intent === 'inspect_binary' || intent === 'write_file') request.path = arg;
   const res = await fetch('/v1/tasks', { method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer dev-key'},
     body: JSON.stringify({ project_id: 'ui', idempotency_key: 'ui-' + Date.now(),
                            request, permissions: [] })});
   const out = await res.json();
@@ -74,18 +74,18 @@ async function submit() {
 function stream() {
   if (es) es.close();
   if (!currentId) return;
-  es = new EventSource(`/v1/tasks/${currentId}/events/stream`);
+  es = new EventSource(`/v1/tasks/${currentId}/events/stream`); // SSE cannot set headers; stream route stays open
   es.addEventListener('task', (e) => log('event: ' + e.data));
   es.addEventListener('done', () => { log('stream done'); es.close(); });
 }
 const act = async (p, body) => { if (!currentId) return;
   const r = await fetch(`/v1/tasks/${currentId}/${p}`, { method: 'POST',
-    headers: {'Content-Type':'application/json'}, body: JSON.stringify(body || {}) });
+    headers: {'Content-Type':'application/json', 'Authorization': 'Bearer dev-key'}, body: JSON.stringify(body || {}) });
   const out = await r.json(); log(p + ': ' + JSON.stringify(out).slice(0, 800)); };
 approve = () => act('approve', { decision: 'approved' });
 reject  = () => act('reject', {});
 cancelTask = () => act('cancel', {});
-const get = async (p) => (await (await fetch(p)).json());
+const get = async (p) => (await (await fetch(p, {headers: {'Authorization': 'Bearer dev-key'}})).json());
 loadTasks = async () => { const o = await get('/v1/tasks?limit=20');
   log('tasks: ' + JSON.stringify(o.tasks)); };
 loadMetrics = async () => { log('metrics: ' + JSON.stringify(await get('/v1/metrics/summary'))); };
