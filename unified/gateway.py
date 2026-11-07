@@ -79,6 +79,19 @@ def make_handler(engine: Engine):
             except (BrokenPipeError, ConnectionResetError):
                 return
 
+        def _caller_project(self) -> str:
+            """Tenant scope for every read/write (manual 3.1: project scope
+            attached at admission; enforced consistently at the API layer)."""
+            return self.headers.get("X-Project-Id", "default")
+
+        def _task_for_caller(self, task_id: str):
+            task = engine.get_task(task_id)
+            if task is None:
+                return None, self._send(404, {"error": "unknown task"})
+            if task["project_id"] != self._caller_project():
+                return None, self._send(403, {"error": "cross-project access denied"})
+            return task, None
+
         def do_GET(self):
             path = urlparse(self.path).path
             parts = [p for p in path.split("/") if p]
@@ -106,18 +119,26 @@ def make_handler(engine: Engine):
             if len(parts) == 5 and parts[:2] == ["v1", "tasks"] and parts[4] == "stream":
                 return self._stream_events(parts[2])
             if len(parts) == 3 and parts[:2] == ["v1", "tasks"]:
-                task = engine.get_task(parts[2])
-                if task is None:
-                    return self._send(404, {"error": "unknown task"})
+                task, err = self._task_for_caller(parts[2])
+                if err:
+                    return err
                 return self._send(200, task)
             if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] == "events":
+                task, err = self._task_for_caller(parts[2])
+                if err:
+                    return err
                 return self._send(200, {"events": engine.get_events(parts[2])})
             if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] == "evidence":
+                task, err = self._task_for_caller(parts[2])
+                if err:
+                    return err
                 from .delivery import evidence_with_citations
                 receipts = engine.ledger.get_receipts(parts[2])
                 return self._send(200, {"evidence": evidence_with_citations(receipts)})
             if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] == "artifacts":
-                task = engine.get_task(parts[2])
+                task, err = self._task_for_caller(parts[2])
+                if err:
+                    return err
                 uris = []
                 if task and task.get("result"):
                     uris = [a["uri"] for a in task["result"].get("artifacts", [])]

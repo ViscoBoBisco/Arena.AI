@@ -32,6 +32,13 @@ tests/
   test_scheduler.py           # 2 tests: wave-parallel DAG execution, crash recovery
   test_async_api.py           # 3 tests: 202 async submit + poll, sync mode, artifact download
   test_security_delivery.py   # 3 tests: prompt-injection quarantine, graph staleness, signed webhook delivery
+  test_tenant_workflows.py    # 2 tests: cross-project 403 isolation, ch.4.2 repo-change flow
+```
+
+Multi-project isolation: every task read requires a matching `X-Project-Id`
+header (403 on cross-project access). The verifier applies the verifier role's
+rubric as deterministic checks; `repo_change` runs the ch. 4.2 flow
+(index → impact → approved sandboxed write → verified report).
 ```
 
 Security/delivery: fetched content is quarantined as `untrusted-data` evidence

@@ -43,8 +43,11 @@ class AsyncApiTests(unittest.TestCase):
 
     def _req(self, method, path, body=None):
         data = json.dumps(body).encode() if body is not None else None
+        headers = {"X-Project-Id": "t"}
+        if data:
+            headers["Content-Type"] = "application/json"
         r = urllib.request.Request("http://127.0.0.1:8123" + path, data=data, method=method,
-                                   headers={"Content-Type": "application/json"} if data else {})
+                                   headers=headers)
         try:
             resp = urllib.request.urlopen(r)
             return resp.status, json.loads(resp.read())

@@ -68,6 +68,21 @@ def plan(env: TaskEnvelope) -> list[Step]:
         steps.append(Step(sid(), "rea.inspect",
                           {"path": env.request.get("path", ""), "_task_id": env.task_id},
                           read_only=True, permissions_used=["binary.inspect.static"]))
+    elif intent == "repo_change":
+        # Manual ch. 4.2: graph -> impact hypothesis -> sandboxed write -> verify
+        s1 = Step(sid(), "codegraph.index",
+                  {"root": env.request.get("root", "."), "commit": env.request.get("commit", "unknown"),
+                   "_task_id": env.task_id},
+                  read_only=True, permissions_used=["repo.read"])
+        s2 = Step(sid(), "codegraph.impact",
+                  {"symbol": env.request.get("symbol", "")},
+                  depends_on=[s1.step_id], read_only=True, permissions_used=["repo.read"])
+        s3 = Step(sid(), "native.fs.write",
+                  {"path": env.request.get("path", ""), "content": env.request.get("content", ""),
+                   "_task_id": env.task_id},
+                  depends_on=[s2.step_id], read_only=False,
+                  permissions_used=["workspace.write.sandbox"])
+        steps.extend([s1, s2, s3])
     elif intent == "freshness":
         steps.append(Step(sid(), "codegraph.freshness",
                           {"commit": env.request.get("commit", "unknown")},
