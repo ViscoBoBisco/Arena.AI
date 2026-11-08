@@ -171,7 +171,13 @@ jobs:
             :
           else
             status=$?
-            cp "$tmp/smoke.log" "$RUNNER_TEMP/production-smoke.log"
+            if [[ -f "$tmp/smoke.log" ]]; then
+              echo "::error::smoke Python failed with status $status; captured $(wc -l < "$tmp/smoke.log") lines"
+              cp "$tmp/smoke.log" "$RUNNER_TEMP/production-smoke.log"
+              while IFS= read -r line; do echo "::error::smoke traceback: $line"; done < "$tmp/smoke.log"
+            else
+              echo "::error::smoke Python command failed with status $status before opening its log"
+            fi
             exit "$status"
           fi
       - name: Report production smoke diagnostics
