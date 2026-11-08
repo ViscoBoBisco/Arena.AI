@@ -71,8 +71,8 @@ jobs:
           (root / 'api_keys.json').write_text(json.dumps(profiles))
           PY
           sudo chown -R 10001:10001 "$tmp/secrets" "$tmp/data"
-          chmod 555 "$tmp/secrets"
-          chmod 444 "$tmp/secrets/callback_secret" "$tmp/secrets/api_keys.json"
+          sudo chmod 555 "$tmp/secrets"
+          sudo chmod 444 "$tmp/secrets/callback_secret" "$tmp/secrets/api_keys.json"
           export CALLBACK_SECRET_FILE="$tmp/secrets/callback_secret"
           export UNIFIED_API_KEYS_FILE="$tmp/secrets/api_keys.json"
           export UNIFIED_WEB_ALLOWLIST='[]'
