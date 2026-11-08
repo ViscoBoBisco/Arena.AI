@@ -124,7 +124,7 @@ jobs:
           assert headers.get('Cache-Control') == 'no-store', 'missing no-store response header'
           print('::notice::production container became ready')
           status, _, session = request('/v1/session')
-          assert status == 200 and 'task.approve' in session['grants'], f'session failed: {status} {session}'
+          assert status == 200 and 'workspace.write.sandbox' in session['grants'] and 'task.approve' not in session['grants'], f'writer scope wrong: {status} {session}'
           print('::notice::scoped writer credentials verified')
           status, _, memory = request('/v1/memory/ci-project', method='POST',
                                       body={'key': 'ci', 'value': {'ok': True}})
