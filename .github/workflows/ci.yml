@@ -108,6 +108,9 @@ jobs:
               except urllib.error.HTTPError as error:
                   raw = error.read()
                   return error.code, error.headers, json.loads(raw) if raw else {}
+              except Exception as error:
+                  print(f"::error::request {method} {path} raised {type(error).__name__}: {error}", flush=True)
+                  raise
           for _ in range(60):
               try:
                   status, headers, _ = request('/readyz')
@@ -118,29 +121,34 @@ jobs:
               time.sleep(1)
           else:
               raise RuntimeError('production container did not become ready')
-          assert headers.get('Cache-Control') == 'no-store'
+          assert headers.get('Cache-Control') == 'no-store', 'missing no-store response header'
+          print('::notice::production container became ready')
           status, _, session = request('/v1/session')
-          assert status == 200 and 'task.approve' in session['grants']
+          assert status == 200 and 'task.approve' in session['grants'], f'session failed: {status} {session}'
+          print('::notice::scoped writer credentials verified')
           status, _, memory = request('/v1/memory/ci-project', method='POST',
                                       body={'key': 'ci', 'value': {'ok': True}})
-          assert status == 200
+          assert status == 200, f'memory write failed: {status} {memory}'
+          print('::notice::project memory write verified')
           status, _, task = request('/v1/tasks?sync=1', method='POST', body={
               'idempotency_key': 'ci-production-smoke',
               'request': {'intent': 'write_file', 'path': 'ci.txt', 'content': 'isolated'},
               'permissions': ['workspace.write.sandbox']})
-          assert status == 201 and task['result']['state'] == 'WAITING_APPROVAL'
+          assert status == 201 and task['result']['state'] == 'WAITING_APPROVAL', f'task admission failed: {status} {task}'
+          print('::notice::task paused at approval boundary')
           status, _, reviewer_session = request('/v1/session', auth_token=reviewer_token)
-          assert status == 200 and reviewer_session['grants'] == ['task.approve']
+          assert status == 200 and reviewer_session['grants'] == ['task.approve'], f'reviewer scope wrong: {reviewer_session}'
           status, _, result = request('/v1/tasks/' + task['task_id'] + '/approve', method='POST',
                                       body={'decision': 'approved'}, auth_token=reviewer_token)
-          assert status == 200 and result['result']['state'] == 'COMPLETED'
+          assert status == 200 and result['result']['state'] == 'COMPLETED', f'approval failed: {status} {result}'
+          print('::notice::approval-only reviewer resumed the task')
           status, _, preview = request('/v1/workspace?path=ci.txt')
-          assert status == 200 and preview['preview'] == 'isolated'
+          assert status == 200 and preview['preview'] == 'isolated', f'project workspace read failed: {status} {preview}'
           status, _, other = request('/v1/workspace?path=ci.txt', project='ci-other')
-          assert status == 404
+          assert status == 404, f'workspace leaked across projects: {status} {other}'
           status, _, metrics = request('/v1/metrics', project='ci-other')
-          assert status == 200 and metrics['tasks_by_state'] == {}
+          assert status == 200 and metrics['tasks_by_state'] == {}, f'metrics crossed project boundary: {metrics}'
           status, _, audit = request('/v1/audit/verify')
-          assert status == 200 and audit['intact']
+          assert status == 200 and audit['intact'], f'audit verification failed: {status} {audit}'
           print('production container smoke test passed')
           PY
