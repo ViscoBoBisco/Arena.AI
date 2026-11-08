@@ -171,6 +171,13 @@ jobs:
             :
           else
             status=$?
-            while IFS= read -r line; do echo "::error::smoke failure: $line"; done < "$tmp/smoke.log"
+            cp "$tmp/smoke.log" "$RUNNER_TEMP/production-smoke.log"
             exit "$status"
+          fi
+      - name: Report production smoke diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          if [[ -f "$RUNNER_TEMP/production-smoke.log" ]]; then
+            while IFS= read -r line; do echo "::error::production smoke: $line"; done < "$RUNNER_TEMP/production-smoke.log"
           fi
