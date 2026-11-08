@@ -156,7 +156,9 @@ jobs:
           assert status == 200 and result['result']['state'] == 'COMPLETED', f'approval failed: {status} {result}'
           print('::notice::approval-only reviewer resumed the task')
           status, _, preview = request('/v1/workspace?path=ci.txt')
-          assert status == 200 and preview['preview'] == 'isolated', f'project workspace read failed: {status} {preview}'
+          print(f'workspace smoke response: status={status}, body={preview}', flush=True)
+          if status != 200 or preview.get('preview') != 'isolated':
+              raise RuntimeError(f'project workspace read failed: {status} {preview}')
           status, _, other = request('/v1/workspace?path=ci.txt', project='ci-other')
           assert status == 404, f'workspace leaked across projects: {status} {other}'
           status, _, metrics = request('/v1/metrics', project='ci-other')
