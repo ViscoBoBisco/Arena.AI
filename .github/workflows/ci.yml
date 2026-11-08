@@ -40,16 +40,7 @@ jobs:
           cleanup() {
             status=$?
             trap - EXIT
-            if [[ "$status" -ne 0 ]]; then
-              for diagnostic in compose.log docker-run.log smoke.log; do
-                if [[ -f "$tmp/$diagnostic" ]]; then
-                  while IFS= read -r line; do echo "::error::$diagnostic: $line"; done < <(tail -n 30 "$tmp/$diagnostic")
-                fi
-              done
-              docker logs --tail 30 "$container" 2>&1 | while IFS= read -r line; do
-                echo "::error::container log: $line"
-              done
-            fi
+            if [[ "$status" -ne 0 ]]; then docker logs "$container" || true; fi
             docker rm -f "$container" >/dev/null 2>&1 || true
             sudo rm -rf -- "$tmp"
             exit "$status"
@@ -76,7 +67,7 @@ jobs:
           export CALLBACK_SECRET_FILE="$tmp/secrets/callback_secret"
           export UNIFIED_API_KEYS_FILE="$tmp/secrets/api_keys.json"
           export UNIFIED_WEB_ALLOWLIST='[]'
-          docker compose config >"$tmp/compose.log" 2>&1 || { cat "$tmp/compose.log"; exit 1; }
+          docker compose config >/dev/null
           tokens="$(python3 - "$tmp/secrets/api_keys.json" <<'PY'
           import json, pathlib, sys
           profiles = json.loads(pathlib.Path(sys.argv[1]).read_text())
@@ -96,15 +87,9 @@ jobs:
             --volume "$tmp/data:/data" \
             --read-only --tmpfs /tmp --cap-drop ALL --pids-limit 128 \
             --memory 256m --cpus 1.5 --security-opt no-new-privileges:true \
-            unified-gateway:ci >"$tmp/docker-run.log" 2>&1 || { cat "$tmp/docker-run.log"; exit 1; }
-          if API_TOKEN="$token" REVIEWER_TOKEN="$reviewer_token" python3 - >"$tmp/smoke.log" 2>&1 <<'PY'
-          import json, os, sys, time, traceback, urllib.error, urllib.parse, urllib.request
-          def report_uncaught(exc_type, exc, tb):
-              diagnostic = ''.join(traceback.format_exception(exc_type, exc, tb))
-              with open(os.path.join(os.environ['RUNNER_TEMP'], 'production-smoke.log'), 'w') as stream:
-                  stream.write(diagnostic)
-              sys.__excepthook__(exc_type, exc, tb)
-          sys.excepthook = report_uncaught
+            unified-gateway:ci >/dev/null
+          API_TOKEN="$token" REVIEWER_TOKEN="$reviewer_token" python3 - <<'PY'
+          import json, os, time, urllib.error, urllib.parse, urllib.request
           base = 'http://127.0.0.1:18080'
           token = os.environ['API_TOKEN']
           reviewer_token = os.environ['REVIEWER_TOKEN']
@@ -136,35 +121,23 @@ jobs:
           else:
               raise RuntimeError('production container did not become ready')
           assert headers.get('Cache-Control') == 'no-store', 'missing no-store response header'
-          print('::notice::production container became ready')
           status, _, session = request('/v1/session')
           assert status == 200 and 'workspace.write.sandbox' in session['grants'] and 'task.approve' not in session['grants'], f'writer scope wrong: {status} {session}'
-          print('::notice::scoped writer credentials verified')
           status, _, memory = request('/v1/memory/ci-project', method='POST',
                                       body={'key': 'ci', 'value': {'ok': True}})
           assert status == 200, f'memory write failed: {status} {memory}'
-          print('::notice::project memory write verified')
-          print('::notice::submitting scoped write task', flush=True)
           status, _, task = request('/v1/tasks?sync=1', method='POST', body={
               'idempotency_key': 'ci-production-smoke',
               'request': {'intent': 'write_file', 'path': 'ci.txt', 'content': 'isolated'},
               'permissions': ['workspace.write.sandbox']})
-          print(f"::notice::write task response status={status} result={task}", flush=True)
-          if status != 201 or task.get('result', {}).get('state') != 'WAITING_APPROVAL':
-              message = f'task admission failed: {status} {task}'
-              print(f'::error title=production-smoke::{message}', flush=True)
-              raise AssertionError(message)
-          print('::notice::task paused at approval boundary')
+          assert status == 201 and task['result']['state'] == 'WAITING_APPROVAL', f'task admission failed: {status} {task}'
           status, _, reviewer_session = request('/v1/session', auth_token=reviewer_token)
           assert status == 200 and reviewer_session['grants'] == ['task.approve'], f'reviewer scope wrong: {reviewer_session}'
           status, _, result = request('/v1/tasks/' + task['task_id'] + '/approve', method='POST',
                                       body={'decision': 'approved'}, auth_token=reviewer_token)
           assert status == 200 and result['result']['state'] == 'COMPLETED', f'approval failed: {status} {result}'
-          print('::notice::approval-only reviewer resumed the task')
           status, _, preview = request('/v1/workspace?path=ci.txt')
-          print(f'workspace smoke response: status={status}, body={preview}', flush=True)
-          if status != 200 or preview.get('preview') != 'isolated':
-              raise RuntimeError(f'project workspace read failed: {status} {preview}')
+          assert status == 200 and preview['preview'] == 'isolated', f'project workspace read failed: {status} {preview}'
           status, _, other = request('/v1/workspace?path=ci.txt', project='ci-other')
           assert status == 404, f'workspace leaked across projects: {status} {other}'
           status, _, metrics = request('/v1/metrics', project='ci-other')
@@ -173,26 +146,3 @@ jobs:
           assert status == 200 and audit['intact'], f'audit verification failed: {status} {audit}'
           print('production container smoke test passed')
           PY
-          then
-            :
-          else
-            status=$?
-            if [[ -f "$tmp/smoke.log" ]]; then
-              echo "::error::smoke Python failed with status $status; captured $(wc -l < "$tmp/smoke.log") lines"
-              cp "$tmp/smoke.log" "$RUNNER_TEMP/production-smoke.log"
-              while IFS= read -r line; do echo "::error::smoke traceback: $line"; done < "$tmp/smoke.log"
-            else
-              echo "::error::smoke Python command failed with status $status before opening its log"
-            fi
-            exit "$status"
-          fi
-      - name: Report production smoke diagnostics
-        if: failure()
-        shell: bash
-        run: |
-          if [[ -f "$RUNNER_TEMP/production-smoke.log" ]]; then
-            echo "::error::production smoke diagnostic captured ($(wc -l < "$RUNNER_TEMP/production-smoke.log") lines)"
-            while IFS= read -r line; do echo "::error::production smoke: $line"; done < "$RUNNER_TEMP/production-smoke.log"
-          else
-            echo "::error::production smoke diagnostic file was not created before the main step failed"
-          fi
