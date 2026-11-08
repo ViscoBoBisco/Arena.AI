@@ -97,7 +97,7 @@ jobs:
             --read-only --tmpfs /tmp --cap-drop ALL --pids-limit 128 \
             --memory 256m --cpus 1.5 --security-opt no-new-privileges:true \
             unified-gateway:ci >"$tmp/docker-run.log" 2>&1 || { cat "$tmp/docker-run.log"; exit 1; }
-          API_TOKEN="$token" REVIEWER_TOKEN="$reviewer_token" python3 - >"$tmp/smoke.log" 2>&1 <<'PY'
+          if API_TOKEN="$token" REVIEWER_TOKEN="$reviewer_token" python3 - >"$tmp/smoke.log" 2>&1 <<'PY'
           import json, os, time, urllib.error, urllib.parse, urllib.request
           base = 'http://127.0.0.1:18080'
           token = os.environ['API_TOKEN']
@@ -165,3 +165,10 @@ jobs:
           assert status == 200 and audit['intact'], f'audit verification failed: {status} {audit}'
           print('production container smoke test passed')
           PY
+          then
+            :
+          else
+            status=$?
+            while IFS= read -r line; do echo "::error::smoke failure: $line"; done < "$tmp/smoke.log"
+            exit "$status"
+          fi
