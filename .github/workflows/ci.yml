@@ -40,7 +40,11 @@ jobs:
           cleanup() {
             status=$?
             trap - EXIT
-            if [[ "$status" -ne 0 ]]; then docker logs "$container" || true; fi
+            if [[ "$status" -ne 0 ]]; then
+              docker logs --tail 60 "$container" 2>&1 | while IFS= read -r line; do
+                echo "::error::container log: $line"
+              done
+            fi
             docker rm -f "$container" >/dev/null 2>&1 || true
             rm -rf "$tmp"
             exit "$status"
