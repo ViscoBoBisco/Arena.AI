@@ -98,7 +98,13 @@ jobs:
             --memory 256m --cpus 1.5 --security-opt no-new-privileges:true \
             unified-gateway:ci >"$tmp/docker-run.log" 2>&1 || { cat "$tmp/docker-run.log"; exit 1; }
           if API_TOKEN="$token" REVIEWER_TOKEN="$reviewer_token" python3 - >"$tmp/smoke.log" 2>&1 <<'PY'
-          import json, os, time, urllib.error, urllib.parse, urllib.request
+          import json, os, sys, time, traceback, urllib.error, urllib.parse, urllib.request
+          def report_uncaught(exc_type, exc, tb):
+              diagnostic = ''.join(traceback.format_exception(exc_type, exc, tb))
+              with open(os.path.join(os.environ['RUNNER_TEMP'], 'production-smoke.log'), 'w') as stream:
+                  stream.write(diagnostic)
+              sys.__excepthook__(exc_type, exc, tb)
+          sys.excepthook = report_uncaught
           base = 'http://127.0.0.1:18080'
           token = os.environ['API_TOKEN']
           reviewer_token = os.environ['REVIEWER_TOKEN']
