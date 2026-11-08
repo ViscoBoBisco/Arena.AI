@@ -130,11 +130,16 @@ jobs:
                                       body={'key': 'ci', 'value': {'ok': True}})
           assert status == 200, f'memory write failed: {status} {memory}'
           print('::notice::project memory write verified')
+          print('::notice::submitting scoped write task', flush=True)
           status, _, task = request('/v1/tasks?sync=1', method='POST', body={
               'idempotency_key': 'ci-production-smoke',
               'request': {'intent': 'write_file', 'path': 'ci.txt', 'content': 'isolated'},
               'permissions': ['workspace.write.sandbox']})
-          assert status == 201 and task['result']['state'] == 'WAITING_APPROVAL', f'task admission failed: {status} {task}'
+          print(f"::notice::write task response status={status} result={task}", flush=True)
+          if status != 201 or task.get('result', {}).get('state') != 'WAITING_APPROVAL':
+              message = f'task admission failed: {status} {task}'
+              print(f'::error title=production-smoke::{message}', flush=True)
+              raise AssertionError(message)
           print('::notice::task paused at approval boundary')
           status, _, reviewer_session = request('/v1/session', auth_token=reviewer_token)
           assert status == 200 and reviewer_session['grants'] == ['task.approve'], f'reviewer scope wrong: {reviewer_session}'
