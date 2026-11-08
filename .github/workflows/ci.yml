@@ -41,9 +41,11 @@ jobs:
             status=$?
             trap - EXIT
             if [[ "$status" -ne 0 ]]; then
-              if [[ -f "$tmp/smoke.log" ]]; then
-                while IFS= read -r line; do echo "::error::smoke log: $line"; done < <(tail -n 30 "$tmp/smoke.log")
-              fi
+              for diagnostic in compose.log docker-run.log smoke.log; do
+                if [[ -f "$tmp/$diagnostic" ]]; then
+                  while IFS= read -r line; do echo "::error::$diagnostic: $line"; done < <(tail -n 30 "$tmp/$diagnostic")
+                fi
+              done
               docker logs --tail 30 "$container" 2>&1 | while IFS= read -r line; do
                 echo "::error::container log: $line"
               done
@@ -75,7 +77,7 @@ jobs:
           export CALLBACK_SECRET_FILE="$tmp/secrets/callback_secret"
           export UNIFIED_API_KEYS_FILE="$tmp/secrets/api_keys.json"
           export UNIFIED_WEB_ALLOWLIST='[]'
-          docker compose config >/dev/null
+          docker compose config >"$tmp/compose.log" 2>&1 || { cat "$tmp/compose.log"; exit 1; }
           tokens="$(python3 - "$tmp/secrets/api_keys.json" <<'PY'
           import json, pathlib, sys
           profiles = json.loads(pathlib.Path(sys.argv[1]).read_text())
@@ -95,7 +97,7 @@ jobs:
             --volume "$tmp/data:/data" \
             --read-only --tmpfs /tmp --cap-drop ALL --pids-limit 128 \
             --memory 256m --cpus 1.5 --security-opt no-new-privileges:true \
-            unified-gateway:ci >/dev/null
+            unified-gateway:ci >"$tmp/docker-run.log" 2>&1 || { cat "$tmp/docker-run.log"; exit 1; }
           API_TOKEN="$token" REVIEWER_TOKEN="$reviewer_token" python3 - >"$tmp/smoke.log" 2>&1 <<'PY'
           import json, os, time, urllib.error, urllib.parse, urllib.request
           base = 'http://127.0.0.1:18080'
