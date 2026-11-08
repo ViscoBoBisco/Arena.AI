@@ -86,7 +86,7 @@ jobs:
             --publish 127.0.0.1:18080:8080 \
             --env UNIFIED_ENV=production \
             --env CALLBACK_SECRET_FILE=/run/secrets/callback_secret \
-            --env UNIFIED_API_KEYS_FILE=/run/secrets/api_keys \
+            --env UNIFIED_API_KEYS_FILE=/run/secrets/api_keys.json \
             --env UNIFIED_WEB_ALLOWLIST='[]' \
             --volume "$tmp/secrets:/run/secrets:ro" \
             --volume "$tmp/data:/data" \
