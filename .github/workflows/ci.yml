@@ -41,7 +41,10 @@ jobs:
             status=$?
             trap - EXIT
             if [[ "$status" -ne 0 ]]; then
-              docker logs --tail 60 "$container" 2>&1 | while IFS= read -r line; do
+              if [[ -f "$tmp/smoke.log" ]]; then
+                while IFS= read -r line; do echo "::error::smoke log: $line"; done < <(tail -n 30 "$tmp/smoke.log")
+              fi
+              docker logs --tail 30 "$container" 2>&1 | while IFS= read -r line; do
                 echo "::error::container log: $line"
               done
             fi
@@ -93,7 +96,7 @@ jobs:
             --read-only --tmpfs /tmp --cap-drop ALL --pids-limit 128 \
             --memory 256m --cpus 1.5 --security-opt no-new-privileges:true \
             unified-gateway:ci >/dev/null
-          API_TOKEN="$token" REVIEWER_TOKEN="$reviewer_token" python3 - <<'PY'
+          API_TOKEN="$token" REVIEWER_TOKEN="$reviewer_token" python3 - >"$tmp/smoke.log" 2>&1 <<'PY'
           import json, os, time, urllib.error, urllib.parse, urllib.request
           base = 'http://127.0.0.1:18080'
           token = os.environ['API_TOKEN']
