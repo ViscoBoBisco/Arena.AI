@@ -179,5 +179,8 @@ jobs:
         shell: bash
         run: |
           if [[ -f "$RUNNER_TEMP/production-smoke.log" ]]; then
+            echo "::error::production smoke diagnostic captured ($(wc -l < "$RUNNER_TEMP/production-smoke.log") lines)"
             while IFS= read -r line; do echo "::error::production smoke: $line"; done < "$RUNNER_TEMP/production-smoke.log"
+          else
+            echo "::error::production smoke diagnostic file was not created before the main step failed"
           fi
