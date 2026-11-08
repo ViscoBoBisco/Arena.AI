@@ -1,0 +1,10 @@
+.git
+.github
+arena-data/
+secrets/
+.env
+.env.*
+__pycache__/
+*.py[cod]
+tests/
+docs/
