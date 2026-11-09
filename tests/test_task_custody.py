@@ -46,6 +46,14 @@ class TaskCustodyTests(unittest.TestCase):
         self.assertEqual(saved["envelope"]["task_id"], task["task_id"])
         self.assertEqual(saved["envelope"]["envelope_version"], 1)
 
+    def test_accepted_admitted_tasks_are_recovered(self):
+        task_id = self._task("accepted-recovery")["task_id"]
+        self.assertEqual(self.ledger.get_task(task_id)["state"], TaskState.ADMITTED.value)
+        self.assertIn(task_id, [row["task_id"]
+                                for row in self.ledger.list_recoverable_tasks()])
+        self.assertIn(task_id, self.engine.recover([]))
+        self.assertEqual(self.ledger.get_task(task_id)["state"], TaskState.COMPLETED.value)
+
     def test_plan_snapshot_is_versioned_hashed_and_immutable_on_resume(self):
         task = self._task("immutable-plan")
         task_id = task["task_id"]
@@ -56,13 +64,102 @@ class TaskCustodyTests(unittest.TestCase):
         self.assertEqual(len(first["plan_hash"]), 64)
         self.assertEqual(first["planner_version"], PLANNER_VERSION)
 
-        changed = [Step(original[0].step_id, "native.echo", {"text": "different"})]
+        changed = [
+            Step("S-INVALID-A", "native.echo", {}, depends_on=["S-INVALID-B"]),
+            Step("S-INVALID-B", "native.echo", {}, depends_on=["S-INVALID-A"]),
+        ]
         resumed = self.ledger.persist_plan(task_id, changed, "future-planner-v2")
         self.assertEqual(resumed["version"], first["version"])
         self.assertEqual(resumed["plan_hash"], first["plan_hash"])
         self.assertEqual(resumed["planner_version"], PLANNER_VERSION)
         self.assertEqual(resumed["steps"][0].args, original[0].args)
         self.assertEqual(self.ledger.get_task(task_id)["current_plan_version"], 1)
+
+    def test_plan_validation_rejects_cycles_duplicate_edges_and_empty_plans(self):
+        task_id = self._task("invalid-dag")["task_id"]
+        cycle = [
+            Step("S-A", "native.echo", {}, depends_on=["S-B"]),
+            Step("S-B", "native.echo", {}, depends_on=["S-A"]),
+        ]
+        with self.assertRaisesRegex(LedgerError, "cycle"):
+            self.ledger.persist_plan(task_id, cycle, PLANNER_VERSION)
+        with self.assertRaisesRegex(LedgerError, "duplicate dependencies"):
+            self.ledger.persist_plan(task_id, [
+                Step("S-A", "native.echo", {}, depends_on=["S-B", "S-B"]),
+                Step("S-B", "native.echo", {}),
+            ], PLANNER_VERSION)
+        with self.assertRaisesRegex(LedgerError, "invalid dependency"):
+            self.ledger.persist_plan(task_id, [
+                Step("S-ORPHAN", "native.echo", {}, depends_on=["MISSING"]),
+            ], PLANNER_VERSION)
+        with self.assertRaisesRegex(LedgerError, "at least one step"):
+            self.ledger.persist_plan(task_id, [], PLANNER_VERSION)
+        self.assertIsNone(self.ledger.get_plan(task_id))
+
+    def test_engine_does_not_complete_a_cancelled_or_incomplete_step(self):
+        task_id = self._task("incomplete-dag")["task_id"]
+        step = Step("S-INCOMPLETE", "native.echo", {})
+        import unified.engine as engine_module
+        original_plan = engine_module.plan
+        original_call = self.broker.call
+        engine_module.plan = lambda _env: [step]
+
+        def cancelled_receipt(task_id, step_id, tool, args, permissions, policy,
+                              deadline_ms=45000, attempt_id=None, idempotency_key=None):
+            return ToolReceipt(task_id, step_id, attempt_id, "cancelled",
+                               "cancelled.v1", "adapter stopped before completion")
+
+        self.broker.call = cancelled_receipt
+        try:
+            result = self.engine.run(task_id, [])
+            self.assertEqual(result["state"], TaskState.FAILED.value)
+            self.assertIn(step.step_id, result["cancelled_steps"])
+            self.assertEqual(self.ledger.get_task(task_id)["state"], TaskState.FAILED.value)
+        finally:
+            engine_module.plan = original_plan
+            self.broker.call = original_call
+
+    def test_succeeded_step_state_without_receipt_is_not_completion_authority(self):
+        task_id = self._task("missing-success-receipt")["task_id"]
+        step = Step("S-NO-RECEIPT", "native.echo", {})
+        self.ledger.persist_plan(task_id, [step], PLANNER_VERSION)
+        self.ledger.set_step_state(task_id, step.step_id, StepState.SUCCEEDED)
+        import unified.engine as engine_module
+        original_plan = engine_module.plan
+        engine_module.plan = lambda _env: [step]
+        try:
+            result = self.engine.run(task_id, [])
+            self.assertEqual(result["state"], TaskState.FAILED.value)
+            self.assertEqual(result["incomplete_steps"], [step.step_id])
+            self.assertEqual(self.ledger.get_receipts(task_id), [])
+        finally:
+            engine_module.plan = original_plan
+
+    def test_failed_dependency_prevents_false_task_completion(self):
+        task_id = self._task("failed-dependency")["task_id"]
+        dependent_dispatches = []
+        self.broker.register(ToolSpec(
+            "test.failed", [], "read_only",
+            lambda _args: {"errors": [{"type": "expected_failure"}],
+                           "summary": "failed"}))
+        self.broker.register(ToolSpec(
+            "test.dependent", [], "read_only",
+            lambda _args: dependent_dispatches.append(True) or {
+                "summary": "must not run"}))
+        first = Step("S-FAIL", "test.failed", {})
+        second = Step("S-AFTER-FAIL", "test.dependent", {},
+                      depends_on=[first.step_id])
+        import unified.engine as engine_module
+        original_plan = engine_module.plan
+        engine_module.plan = lambda _env: [first, second]
+        try:
+            result = self.engine.run(task_id, [])
+            self.assertEqual(result["state"], TaskState.FAILED.value)
+            self.assertEqual(result["incomplete_steps"], [second.step_id])
+            self.assertEqual(dependent_dispatches, [])
+            self.assertEqual(self.ledger.get_task(task_id)["state"], TaskState.FAILED.value)
+        finally:
+            engine_module.plan = original_plan
 
     def test_compare_and_set_state_transition_serializes_multiple_connections(self):
         task_id = self._task("cas-transition")["task_id"]
@@ -267,6 +364,16 @@ class TaskCustodyTests(unittest.TestCase):
             self.assertEqual(self.ledger.get_attempts(task_id)[0]["state"], "UNKNOWN")
             self.assertEqual(self.ledger.get_task(task_id)["state"],
                              TaskState.RECOVERY_REQUIRED.value)
+            self.assertTrue(self.engine.cancel(task_id))
+            parked = self.ledger.get_task(task_id)
+            self.assertEqual(parked["state"], TaskState.RECOVERY_REQUIRED.value)
+            self.assertTrue(parked["result"]["cancellation_requested"])
+            reconciled = self.engine.reconcile_attempt(
+                task_id, self.ledger.get_attempts(task_id)[0]["attempt_id"],
+                "not_applied", grants=[])
+            self.assertEqual(reconciled["state"], TaskState.CANCELLED.value)
+            self.assertEqual(dispatches, [])
+            self.assertEqual(self.ledger.get_attempts(task_id)[0]["state"], "RETRYABLE")
         finally:
             engine_module.plan = original_plan
 

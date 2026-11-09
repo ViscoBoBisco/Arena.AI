@@ -79,7 +79,8 @@ class ConsoleApiTests(unittest.TestCase):
             page = response.read().decode()
         for phrase in ("Task composer", "Task queue", "Workspace", "Observability",
                        "Web research", "Repo change", "Binary triage", "DAG trace",
-                       "service_links", "model_complete"):
+                       "service_links", "model_complete", "Confirm completed",
+                       "Confirm not applied and allow retry"):
             self.assertIn(phrase, page)
         self.assertNotIn("JSON.stringify({ project_id: 'ui'", page)
 
@@ -252,6 +253,49 @@ class ConsoleApiTests(unittest.TestCase):
         self.assertEqual(out["result"]["state"], "COMPLETED")
         with open(os.path.join(self.workspace, "approved-by-reviewer.txt")) as f:
             self.assertEqual(f.read(), "approved")
+
+    def test_operator_reconciliation_endpoint_is_scoped_and_grant_protected(self):
+        from unified.contracts import TaskEnvelope, TaskState
+        from unified.planner import PLANNER_VERSION, plan
+
+        task = self.engine.submit("console-test", "operator-reconcile-api",
+                                  {"intent": "echo", "instructions": "reconcile"}, [], [])
+        task_id = task["task_id"]
+        token = self.engine.ledger.claim_run(task_id)
+        env = TaskEnvelope(**self.engine.ledger.get_task(task_id)["envelope"])
+        snapshot = self.engine.ledger.persist_plan(
+            task_id, plan(env), PLANNER_VERSION, run_token=token)
+        self.engine.ledger.set_state(task_id, TaskState.PLANNED,
+                                     expected_state=TaskState.ADMITTED, run_token=token)
+        self.engine.ledger.set_state(task_id, TaskState.RUNNING,
+                                     expected_state=TaskState.PLANNED, run_token=token)
+        attempt_id = self.engine.ledger.start_attempt(
+            task_id, snapshot["steps"][0].step_id, snapshot["version"], token)
+        self.engine.ledger.mark_interrupted_attempts(task_id, token)
+        self.engine.ledger.release_run_claim(task_id, token)
+
+        limited = {"projects": {"console-test"}, "grants": {"task.approve"}}
+        with patch("unified.gateway.API_KEYS", {"limited-key": limited}):
+            code, denied = self.request(
+                f"/v1/tasks/{task_id}/reconcile", method="POST", api_key="limited-key",
+                body={"attempt_id": attempt_id, "outcome": "applied",
+                      "receipt": {"status": "succeeded", "result_type": "operator.v1",
+                                  "summary": "confirmed"}})
+        self.assertEqual(code, 403)
+        self.assertIn("task.reconcile", denied["error"])
+
+        operator = {"projects": {"console-test"}, "grants": {"task.reconcile"}}
+        with patch("unified.gateway.API_KEYS", {"operator-key": operator}):
+            code, result = self.request(
+                f"/v1/tasks/{task_id}/reconcile", method="POST", api_key="operator-key",
+                body={"attempt_id": attempt_id, "outcome": "applied",
+                      "receipt": {"status": "succeeded", "result_type": "operator.v1",
+                                  "summary": "operator confirmed completion"}})
+        self.assertEqual(code, 200)
+        self.assertEqual(result["state"], "COMPLETED")
+        task = self.engine.get_task(task_id)
+        self.assertEqual(task["attempts"][0]["state"], "SUCCEEDED")
+        self.assertEqual(task["receipts"][0]["summary"], "operator confirmed completion")
 
     def test_cancel_endpoint_reports_terminal_task(self):
         code, out = self.request("/v1/tasks?sync=1", method="POST", body={
