@@ -8,15 +8,14 @@ This is the consolidated development direction for Conflux. Items are grouped by
 
 - [x] **1. Harden task custody and state transitions.** Establish authoritative task identities, versioned plans, atomic state transitions, durable step and attempt records, and correct handling of partial execution and concurrent workers.
 - [x] **2. Guarantee safe execution recovery.** Record operation identity before dispatch; reconcile interrupted side effects, reuse committed receipts, implement appropriate idempotency, and never blindly repeat actions with unknown outcomes.
-- [ ] **3. Enforce execution budgets and cancellation.** Apply real limits to tool calls, model calls, tokens, time, concurrency, CPU, memory, and external requests. Support cancellation, timeout propagation, and explicit budget-exceeded results.
+- [x] **3. Enforce execution budgets and cancellation.** Enforce tool/model-call, cumulative token, wall-clock, concurrency, CPU, address-space memory, and external-request limits. Run capability tools and model calls in supervised POSIX workers; propagate cancellation/deadlines, persist CPU usage, and preserve ambiguous side effects for recovery.
 - [ ] **4. Correct usage accounting and telemetry.** Preserve actual provider usage through the broker, receipts, ledger, and UI. Measure latency, errors, throughput, resource consumption, and costs, including after restarts.
 
 ### Deferred recovery qualification (items 1–2 remain accepted)
 
 - [ ] **Structured recovery reporting.** Return one outcome per task (`completed`, `resumed`, `still_unresolved`, `already_running`, or `recovery_failed`) and retain errors for inspection; never report unresolved tasks as recovered successes.
-- [ ] **Forced process-termination qualification.** Add an integration test that kills a separate worker process during an external side effect and verifies the recovered ledger state and absence of an unsafe duplicate action.
+- [x] **Forced process-termination qualification.** A separate supervised tool worker is terminated after a simulated durable external side effect and measurable CPU work; the attempt remains `UNKNOWN`/`RECOVERY_REQUIRED`, CPU usage remains ledgered, and recovery does not dispatch a duplicate.
 - [ ] **Adapter-specific idempotency contracts.** Document and qualify each side-effecting adapter's real service-side idempotency and reconciliation guarantees across crashes, timeouts, and network partitions; do not infer these guarantees from the generic broker key propagation test.
-- [ ] **Isolated CPU and memory enforcement for item 3.** The current threaded in-process tool runner cannot safely impose per-task hard CPU/RSS ceilings or forcibly stop a non-cooperative handler at its wall-clock deadline. Move untrusted or resource-heavy tool execution into supervised worker processes/containers with OS-enforced CPU and memory limits, kill-on-budget behavior, and ledger-aware recovery; do not mark item 3 complete until qualified.
 
 ## P1 — Intelligence, planning, and verification
 

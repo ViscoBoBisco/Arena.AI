@@ -1,4 +1,5 @@
 """Custody invariants: immutable plan snapshots, CAS state transitions and worker fencing."""
+import multiprocessing
 import os
 import sys
 import tempfile
@@ -112,9 +113,9 @@ class TaskCustodyTests(unittest.TestCase):
         self.broker.call = cancelled_receipt
         try:
             result = self.engine.run(task_id, [])
-            self.assertEqual(result["state"], TaskState.FAILED.value)
+            self.assertEqual(result["state"], TaskState.CANCELLED.value)
             self.assertIn(step.step_id, result["cancelled_steps"])
-            self.assertEqual(self.ledger.get_task(task_id)["state"], TaskState.FAILED.value)
+            self.assertEqual(self.ledger.get_task(task_id)["state"], TaskState.CANCELLED.value)
         finally:
             engine_module.plan = original_plan
             self.broker.call = original_call
@@ -183,6 +184,30 @@ class TaskCustodyTests(unittest.TestCase):
         finally:
             second_ledger.close()
 
+    def test_worker_cpu_accounting_survives_ledger_restart(self):
+        def burn(_args):
+            deadline = time.process_time() + 0.03
+            while time.process_time() < deadline:
+                pass
+            return {"summary": "cpu measured"}
+        self.broker.register(ToolSpec("test.cpu-persistent", [], "read_only", burn))
+        task_id = self._task("cpu-persistence")["task_id"]
+        import unified.engine as engine_module
+        original_plan = engine_module.plan
+        engine_module.plan = lambda _env: [Step("S-CPU-PERSIST", "test.cpu-persistent", {})]
+        try:
+            result = self.engine.run(task_id, [])
+        finally:
+            engine_module.plan = original_plan
+        self.assertEqual(result["state"], TaskState.COMPLETED.value)
+        before_restart = self.ledger.task_cpu_seconds_used(task_id)
+        self.assertGreater(before_restart, 0)
+        self.ledger.close()
+        self.ledger = Ledger(self.db_path)
+        self.engine = Engine(self.ledger, self.broker, self.evidence)
+        self.assertAlmostEqual(self.ledger.task_cpu_seconds_used(task_id),
+                               before_restart, places=6)
+
     def test_attempt_identity_is_durable_before_dispatch_and_completed_atomically(self):
         task_id = self._task("attempt-record")["task_id"]
         token = self.ledger.claim_run(task_id)
@@ -210,17 +235,142 @@ class TaskCustodyTests(unittest.TestCase):
         self.assertEqual(len(self.ledger.get_receipts(task_id)), 1)
         self.ledger.release_run_claim(task_id, token)
 
+    def test_mid_execution_cancellation_reaches_cooperative_tool(self):
+        entered = multiprocessing.get_context("fork").Event()
+
+        def cooperative(args):
+            entered.set()
+            while not args["_cancelled"]():
+                time.sleep(0.005)
+            return {"result_type": "cancelled.v1", "summary": "cancelled in handler",
+                    "errors": [{"type": "cancelled"}]}
+
+        self.broker.register(ToolSpec("test.cooperative", [], "read_only", cooperative,
+                                      supports_cancellation=True))
+        task_id = self._task("mid-execution-cancel")["task_id"]
+        import unified.engine as engine_module
+        original_plan = engine_module.plan
+        engine_module.plan = lambda _env: [Step("S-COOPERATIVE", "test.cooperative", {})]
+        result = {}
+        try:
+            worker = threading.Thread(
+                target=lambda: result.update(self.engine.run(task_id, [])), daemon=True)
+            worker.start()
+            self.assertTrue(entered.wait(2), "cooperative tool did not start")
+            self.assertTrue(self.engine.cancel(task_id))
+            worker.join(3)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result["state"], TaskState.CANCELLED.value)
+            receipts = self.ledger.get_receipts(task_id)
+            self.assertEqual(len(receipts), 1)
+            self.assertEqual(receipts[0].status, "cancelled")
+        finally:
+            engine_module.plan = original_plan
+
+    def test_killed_side_effect_worker_stays_unknown_and_is_not_replayed(self):
+        side_effect_path = os.path.join(self.tmp.name, "side-effect-marker")
+        effect_applied = multiprocessing.get_context("fork").Event()
+
+        def effect_then_wait(_args):
+            burn_until = time.process_time() + 0.03
+            while time.process_time() < burn_until:
+                pass
+            with open(side_effect_path, "w") as stream:
+                stream.write("applied")
+            effect_applied.set()
+            while True:
+                time.sleep(0.01)
+
+        self.broker.register(ToolSpec("test.kill-during-effect", [], "external_effect",
+                                      effect_then_wait))
+        task_id = self._task("kill-during-effect")["task_id"]
+        import unified.engine as engine_module
+        original_plan = engine_module.plan
+        engine_module.plan = lambda _env: [
+            Step("S-KILLED-EFFECT", "test.kill-during-effect", {}, read_only=False)]
+        result = {}
+        try:
+            waiting = self.engine.run(task_id, [])
+            self.assertEqual(waiting["state"], TaskState.WAITING_APPROVAL.value)
+            runner = threading.Thread(
+                target=lambda: result.update(self.engine.approve(task_id, "approved", [])),
+                daemon=True)
+            runner.start()
+            self.assertTrue(effect_applied.wait(3), "external side effect did not occur")
+            self.assertTrue(self.engine.cancel(task_id))
+            runner.join(3)
+            self.assertFalse(runner.is_alive())
+            execution_result = result["result"]
+            self.assertEqual(execution_result["state"], TaskState.RECOVERY_REQUIRED.value)
+            self.assertTrue(execution_result["cancellation_requested"])
+            self.assertEqual(self.ledger.get_receipts(task_id), [])
+            attempts = self.ledger.get_attempts(task_id)
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(attempts[0]["state"], "UNKNOWN")
+            self.assertGreater(self.ledger.task_cpu_seconds_used(task_id), 0)
+            with open(side_effect_path) as stream:
+                self.assertEqual(stream.read(), "applied")
+            self.engine.recover([])
+            self.assertEqual(len(self.ledger.get_attempts(task_id)), 1)
+            with open(side_effect_path) as stream:
+                self.assertEqual(stream.read(), "applied")
+        finally:
+            engine_module.plan = original_plan
+
+    def test_killed_billable_read_is_not_automatically_retried(self):
+        marker = os.path.join(self.tmp.name, "billable-model-call")
+        began = multiprocessing.get_context("fork").Event()
+
+        def billable_call(_args):
+            with open(marker, "a") as stream:
+                stream.write("charged\n")
+            began.set()
+            while True:
+                time.sleep(0.01)
+
+        self.broker.register(ToolSpec(
+            "model.complete", ["model.infer"], "read_only", billable_call,
+            resource_effectful=True))
+        submitted = self.engine.submit(
+            "custody-project", "killed-billable-model",
+            {"intent": "model_complete", "instructions": "x"},
+            ["model.infer"], ["model.infer"])
+        task_id = submitted["task_id"]
+        import unified.engine as engine_module
+        original_plan = engine_module.plan
+        engine_module.plan = lambda _env: [Step(
+            "S-BILLABLE-MODEL", "model.complete", {"prompt": "x"},
+            permissions_used=["model.infer"])]
+        result = {}
+        try:
+            runner = threading.Thread(
+                target=lambda: result.update(self.engine.run(task_id, ["model.infer"])),
+                daemon=True)
+            runner.start()
+            self.assertTrue(began.wait(3), "billable model invocation did not start")
+            self.assertTrue(self.engine.cancel(task_id))
+            runner.join(3)
+            self.assertFalse(runner.is_alive())
+            self.assertEqual(result["state"], TaskState.RECOVERY_REQUIRED.value)
+            self.engine.recover(["model.infer"])
+            attempts = self.ledger.get_attempts(task_id)
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(attempts[0]["state"], "UNKNOWN")
+            with open(marker) as stream:
+                self.assertEqual(stream.readlines(), ["charged\n"])
+        finally:
+            engine_module.plan = original_plan
+
     def test_concurrent_engines_cannot_dispatch_the_same_task(self):
         second_ledger = Ledger(self.db_path)
         second_engine = Engine(second_ledger, self.broker, self.evidence)
-        entered = threading.Event()
-        release = threading.Event()
-        calls = []
-        calls_lock = threading.Lock()
+        entered = multiprocessing.get_context("fork").Event()
+        release = multiprocessing.get_context("fork").Event()
+        calls = multiprocessing.get_context("fork").Value("i", 0)
 
         def slow_tool(_args):
-            with calls_lock:
-                calls.append(1)
+            with calls.get_lock():
+                calls.value += 1
             entered.set()
             if not release.wait(5):
                 raise TimeoutError("test tool was not released")
@@ -244,7 +394,7 @@ class TaskCustodyTests(unittest.TestCase):
             worker.join(5)
             self.assertFalse(worker.is_alive())
             self.assertEqual(result["state"], TaskState.COMPLETED.value)
-            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls.value, 1)
             attempts = self.ledger.get_attempts(task_id)
             self.assertEqual(len(attempts), 1)
             self.assertEqual(attempts[0]["state"], "SUCCEEDED")

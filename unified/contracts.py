@@ -18,6 +18,8 @@ DEFAULT_BUDGETS = {
     "time_seconds": 600,
     "concurrency": 4,
     "external_requests": 10,
+    "cpu_seconds": 60,
+    "memory_mb": 512,
 }
 
 

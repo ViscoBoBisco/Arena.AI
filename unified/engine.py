@@ -9,6 +9,7 @@ import hashlib
 import inspect
 import json
 import math
+import multiprocessing
 import threading
 import time
 
@@ -27,6 +28,7 @@ from .ledger import Ledger, LedgerError
 from .planner import plan
 from .policy import PolicyEngine, PolicyViolation
 from .verifier import verify
+from .workers import WorkerDispatch, dispatch_isolated
 
 
 def _new_metrics() -> dict:
@@ -37,10 +39,6 @@ def _new_metrics() -> dict:
 def _normalize_budgets(budgets: dict | None) -> dict:
     if budgets is not None and not isinstance(budgets, dict):
         raise ValueError("budgets must be an object")
-    unsupported = {"cpu_seconds", "memory_mb"}.intersection(budgets or {})
-    if unsupported:
-        names = ", ".join(sorted(unsupported))
-        raise ValueError(f"{names} budgets require isolated worker enforcement and are not yet supported")
     unknown = set(budgets or {}) - set(DEFAULT_BUDGETS)
     if unknown:
         raise ValueError(f"unknown budget(s): {', '.join(sorted(unknown))}")
@@ -54,6 +52,12 @@ def _normalize_budgets(budgets: dict | None) -> dict:
             raise ValueError(f"budget {key} must be an integer")
         if key != "time_seconds":
             out[key] = int(value)
+        if key == "memory_mb" and value <= 0:
+            raise ValueError("budget memory_mb must be greater than zero")
+        if key != "time_seconds" and key != "cpu_seconds" and value < 0:
+            raise ValueError(f"budget {key} must not be negative")
+        if key == "cpu_seconds" and value < 0:
+            raise ValueError("budget cpu_seconds must not be negative")
     return out
 
 
@@ -63,7 +67,7 @@ def _request_fingerprint(env: TaskEnvelope) -> str:
         "request": env.request,
         "inputs": env.inputs,
         "permissions": env.permissions,
-        "budgets": env.budgets,
+        "budgets": _normalize_budgets(env.budgets),
         "delivery": env.delivery,
     }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -82,13 +86,31 @@ class Engine:
         self.memory = memory
         self.delivery = delivery
         self._cancel = set()
+        self._cancel_events: dict[str, object] = {}
         # Per-task concurrency is also capped by a process-wide dispatch gate,
         # so many concurrently running tasks cannot multiply the configured
         # worker pool without bound.
         self._tool_slots = threading.BoundedSemaphore(DEFAULT_BUDGETS["concurrency"])
+        self._model_slots = threading.BoundedSemaphore(
+            max(1, int(getattr(model_router, "max_concurrent", 1))))
         self._lock = threading.RLock()
         self.metrics = _new_metrics()  # aggregate, internal/operator use
         self._project_metrics: dict[str, dict] = {}
+
+    def _cancel_event(self, task_id: str):
+        with self._lock:
+            event = self._cancel_events.get(task_id)
+            if event is None:
+                event = multiprocessing.get_context("fork").Event()
+                self._cancel_events[task_id] = event
+            return event
+
+    def _clear_cancel_signal(self, task_id: str) -> None:
+        with self._lock:
+            self._cancel.discard(task_id)
+            event = self._cancel_events.pop(task_id, None)
+            if event is not None:
+                event.clear()
 
     def metrics_for_project(self, project_id: str) -> dict:
         """Return only the requesting project’s in-process metrics."""
@@ -252,7 +274,8 @@ class Engine:
                 elif outcome == "not_applied":
                     self.ledger.resolve_unknown_attempt(
                         attempt["attempt_id"], "retryable", run_token)
-                elif spec and (spec.side_effect_class == "read_only"
+                elif spec and ((spec.side_effect_class == "read_only"
+                                and not spec.resource_effectful)
                                or spec.supports_idempotency):
                     # Reads are repeatable; keyed adapters can safely replay the
                     # exact persisted operation key to obtain the original result.
@@ -297,8 +320,7 @@ class Engine:
             result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
                       "reason": "recovered cancellation"}
             self.ledger.set_result(task_id, result, run_token=run_token)
-            with self._lock:
-                self._cancel.discard(task_id)
+            self._clear_cancel_signal(task_id)
             if self.model_router and hasattr(self.model_router, "forget_task"):
                 self.model_router.forget_task(task_id)
             return result
@@ -344,7 +366,9 @@ class Engine:
             bool(self.broker.get(step_tools.get(a["step_id"], ""))
                  and self.broker.get(step_tools.get(a["step_id"], "")).external_request)
             for a in previous_attempts)
-        max_concurrency = min(4, budgets["concurrency"])
+        cpu_seconds_used = self.ledger.task_cpu_seconds_used(task_id)
+        max_concurrency = min(4, budgets["concurrency"],
+                              max(1, budgets["memory_mb"] // 64))
         resolved_steps = {receipt.step_id for receipt in receipts}
         remaining = ([] if cur == TaskState.VERIFYING else
                      [s for s in steps if s.step_id not in done
@@ -388,7 +412,7 @@ class Engine:
                         for approval in self.ledger.pending_approvals(task_id):
                             self.ledger.save_approval(task_id, approval["step_id"], "cancelled")
                         self.ledger.set_result(task_id, result, run_token=run_token)
-                        self._cancel.discard(task_id)
+                        self._clear_cancel_signal(task_id)
                         if self.model_router and hasattr(self.model_router, "forget_task"):
                             self.model_router.forget_task(task_id)
                         return result
@@ -434,6 +458,10 @@ class Engine:
             if max_concurrency <= 0:
                 record_budget_failure(ready[0], "concurrency")
                 break
+            cpu_remaining = budgets["cpu_seconds"] - cpu_seconds_used
+            if cpu_remaining <= 0:
+                record_budget_failure(ready[0], "cpu_seconds")
+                break
 
             dispatch_steps = []
             blocked_budget = None
@@ -456,7 +484,9 @@ class Engine:
                 dispatch_steps.append(step)
                 model_reservations += int(step.tool == "model.complete")
                 external_reservations += int(bool(spec and spec.external_request))
-                if len(dispatch_steps) >= max_concurrency:
+                # Reserve one model call per wave so the next call receives the
+                # exact cumulative token balance from the preceding receipt.
+                if step.tool == "model.complete" or len(dispatch_steps) >= max_concurrency:
                     break
             if not dispatch_steps:
                 if blocked_budget:
@@ -465,27 +495,52 @@ class Engine:
                     break
                 break
 
-            def call_with_global_slot(*args, deadline_at, cancel_check, **kwargs):
+            cpu_per_worker = cpu_remaining / len(dispatch_steps)
+            memory_per_worker = max(1, budgets["memory_mb"] // len(dispatch_steps))
+            cancel_signal = self._cancel_event(task_id)
+
+            def call_with_global_slot(*args, deadline_at, cancel_check,
+                                      worker_cpu_seconds, memory_mb, **kwargs):
                 while not self._tool_slots.acquire(timeout=0.05):
                     if cancel_check():
-                        return ToolReceipt(args[0], args[1], kwargs.get("attempt_id", ""),
-                                           "cancelled", "cancelled.v1",
-                                           "cancelled while waiting for a tool slot")
+                        return WorkerDispatch(ToolReceipt(
+                            args[0], args[1], kwargs.get("attempt_id", ""),
+                            "cancelled", "cancelled.v1",
+                            "cancelled while waiting for a tool slot"), 0.0)
                     if time.time() >= deadline_at:
-                        return ToolReceipt(
+                        return WorkerDispatch(ToolReceipt(
                             args[0], args[1], kwargs.get("attempt_id", ""), "failed",
                             "error.budget.v1", "execution time budget exceeded",
-                            errors=[{"type": "budget_exceeded", "budget": "time_seconds"}])
+                            errors=[{"type": "budget_exceeded", "budget": "time_seconds"}]), 0.0)
+                model_slot_acquired = False
                 try:
                     if cancel_check():
-                        return ToolReceipt(args[0], args[1], kwargs.get("attempt_id", ""),
-                                           "cancelled", "cancelled.v1",
-                                           "cancelled before tool dispatch")
+                        return WorkerDispatch(ToolReceipt(
+                            args[0], args[1], kwargs.get("attempt_id", ""),
+                            "cancelled", "cancelled.v1",
+                            "cancelled before tool dispatch"), 0.0)
                     if time.time() >= deadline_at:
-                        return ToolReceipt(
+                        return WorkerDispatch(ToolReceipt(
                             args[0], args[1], kwargs.get("attempt_id", ""), "failed",
                             "error.budget.v1", "execution time budget exceeded",
-                            errors=[{"type": "budget_exceeded", "budget": "time_seconds"}])
+                            errors=[{"type": "budget_exceeded", "budget": "time_seconds"}]), 0.0)
+                    if args[2] == "model.complete":
+                        while not model_slot_acquired:
+                            model_slot_acquired = self._model_slots.acquire(timeout=0.05)
+                            if model_slot_acquired:
+                                break
+                            if cancel_check():
+                                return WorkerDispatch(ToolReceipt(
+                                    args[0], args[1], kwargs.get("attempt_id", ""),
+                                    "cancelled", "cancelled.v1",
+                                    "cancelled while waiting for model capacity"), 0.0)
+                            if time.time() >= deadline_at:
+                                return WorkerDispatch(ToolReceipt(
+                                    args[0], args[1], kwargs.get("attempt_id", ""),
+                                    "failed", "error.budget.v1",
+                                    "model capacity deadline exceeded",
+                                    errors=[{"type": "budget_exceeded",
+                                             "budget": "time_seconds"}]), 0.0)
                     call = self.broker.call
                     parameters = inspect.signature(call).parameters.values()
                     accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD
@@ -496,8 +551,17 @@ class Engine:
                         extra["deadline_at"] = deadline_at
                     if accepts_kwargs or "cancel_check" in names:
                         extra["cancel_check"] = cancel_check
-                    return call(*args, **extra, **kwargs)
+                    call_kwargs = {**kwargs, **extra}
+                    spec = self.broker.get(args[2])
+                    return dispatch_isolated(
+                        self.broker, args, call_kwargs, deadline_at=deadline_at,
+                        cancel_check=cancel_check, cpu_seconds=worker_cpu_seconds,
+                        memory_mb=memory_mb,
+                        mutating=bool(spec and (spec.side_effect_class != "read_only"
+                                                or spec.resource_effectful)))
                 finally:
+                    if model_slot_acquired:
+                        self._model_slots.release()
                     self._tool_slots.release()
 
             with ThreadPoolExecutor(max_workers=min(max_concurrency, len(dispatch_steps))) as pool:
@@ -510,28 +574,49 @@ class Engine:
                     call_args["_project_id"] = env.project_id
                     call_args.setdefault("_task_id", task_id)
                     if step.tool == "model.complete":
-                        persisted_tokens = sum(int(r.usage.get("model_tokens", 0))
-                                               for r in receipts)
+                        # Each supervised model call has a fresh child copy of
+                        # the router. Engine receipts are the durable cumulative
+                        # counter, so pass this invocation's remaining balance.
+                        persisted_tokens = sum(
+                            int(r.usage.get("model_tokens", 0)) for r in receipts)
                         call_args["budget_tokens"] = max(
                             0, budgets["model_tokens"] - persisted_tokens)
+                        call_args["_supervised_model"] = True
                     remaining_seconds = max(0.0, deadline_at - time.time())
                     tool_deadline = min(deadline_at, time.time() + 45.0)
-                    cancel_check = lambda tid=task_id: tid in self._cancel
+                    cancel_check = lambda tid=task_id, signal=cancel_signal: (
+                        tid in self._cancel or signal.is_set())
                     futs[pool.submit(call_with_global_slot, task_id, step.step_id, step.tool,
                                      call_args, step.permissions_used, policy,
                                      deadline_ms=max(1, int(remaining_seconds * 1000)),
                                      attempt_id=attempt_id, idempotency_key=operation_key,
-                                     deadline_at=tool_deadline,
-                                     cancel_check=cancel_check)] = step
+                                     deadline_at=tool_deadline, cancel_check=cancel_check,
+                                     worker_cpu_seconds=cpu_per_worker,
+                                     memory_mb=memory_per_worker)] = step
                     tool_calls_used += 1
                     model_calls_used += int(step.tool == "model.complete")
                     spec = self.broker.get(step.tool)
                     external_requests_used += int(bool(spec and spec.external_request))
+                ambiguous_worker_exit = False
                 for fut in futs:
                     step = futs[fut]
-                    receipt = fut.result()
+                    dispatch = fut.result()
+                    if isinstance(dispatch, ToolReceipt):  # compatibility for patched brokers
+                        dispatch = WorkerDispatch(dispatch, 0.0)
+                    if dispatch.cpu_seconds:
+                        self.ledger.add_task_cpu_seconds(task_id, run_token,
+                                                         dispatch.cpu_seconds)
+                        cpu_seconds_used += dispatch.cpu_seconds
+                    if dispatch.receipt is None:
+                        ambiguous_worker_exit = ambiguous_worker_exit or dispatch.ambiguous
+                        continue
+                    receipt = dispatch.receipt
                     self.ledger.save_receipt(receipt, committed=(receipt.status == "succeeded"), run_token=run_token)
                     receipts.append(receipt)
+                    if (step.tool == "model.complete" and self.model_router
+                            and hasattr(self.model_router, "restore_task_usage")):
+                        self.model_router.restore_task_usage(
+                            task_id, sum(int(r.usage.get("model_tokens", 0)) for r in receipts))
                     with self._lock:
                         for metrics in (self.metrics, self._project_metric(env.project_id)):
                             metrics["tool_calls"] += 1
@@ -542,18 +627,32 @@ class Engine:
                             metrics["model_tokens"] += receipt.usage.get("model_tokens", 0)
                     if receipt.status == "succeeded":
                         done.add(step.step_id)
+                if ambiguous_worker_exit:
+                    cancellation_requested = task_id in self._cancel or cancel_signal.is_set()
+                    unresolved = self.ledger.mark_interrupted_attempts(task_id, run_token)
+                    result = {"task_id": task_id,
+                              "state": TaskState.RECOVERY_REQUIRED.value,
+                              "reason": "isolated worker terminated during an operation",
+                              "cancellation_requested": cancellation_requested,
+                              "unresolved_attempts": unresolved}
+                    self.ledger.set_result(task_id, result, run_token=run_token)
+                    return result
             resolved = {receipt.step_id for receipt in receipts}
             remaining = [s for s in remaining
                          if s.step_id not in done and s.step_id not in resolved]
 
         with self._lock:
             current = TaskState(self.ledger.get_task(task_id)["state"])
-            if task_id in self._cancel or current == TaskState.CANCELLING:
+            receipt_cancelled = any(receipt.status == "cancelled" for receipt in receipts)
+            if (task_id in self._cancel or current == TaskState.CANCELLING
+                    or receipt_cancelled):
                 if current != TaskState.CANCELLING:
                     self.ledger.set_state(task_id, TaskState.CANCELLING, run_token=run_token)
                 self.ledger.set_state(task_id, TaskState.CANCELLED, run_token=run_token)
                 result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
-                          "receipts": [r.to_dict() for r in receipts]}
+                          "receipts": [r.to_dict() for r in receipts],
+                          "cancelled_steps": [r.step_id for r in receipts
+                                              if r.status == "cancelled"]}
             else:
                 step_states = {step.step_id: step.state
                                for step in self.ledger.get_steps(task_id)}
@@ -584,7 +683,7 @@ class Engine:
                     result["state"] = TaskState.COMPLETED.value
                     self.ledger.set_state(task_id, TaskState.COMPLETED, run_token=run_token)
             self.ledger.set_result(task_id, result, run_token=run_token)
-            self._cancel.discard(task_id)
+            self._clear_cancel_signal(task_id)
 
         exceeded = []
         for receipt in receipts:
@@ -708,7 +807,7 @@ class Engine:
             state = TaskState(task["state"])
             if state in {TaskState.COMPLETED, TaskState.FAILED,
                          TaskState.CANCELLED, TaskState.REJECTED}:
-                self._cancel.discard(task_id)
+                self._clear_cancel_signal(task_id)
                 return False
             if state == TaskState.WAITING_APPROVAL:
                 self.ledger.set_state(task_id, TaskState.CANCELLED,
@@ -718,7 +817,7 @@ class Engine:
                 result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
                           "reason": "cancelled by caller"}
                 self.ledger.set_result(task_id, result)
-                self._cancel.discard(task_id)
+                self._clear_cancel_signal(task_id)
                 if self.model_router and hasattr(self.model_router, "forget_task"):
                     self.model_router.forget_task(task_id)
                 return True
@@ -733,8 +832,10 @@ class Engine:
                             TaskState.CANCELLED.value, TaskState.REJECTED.value}:
                         return False
                     self._cancel.add(task_id)
+                    self._cancel_event(task_id).set()
                     return True
             self._cancel.add(task_id)
+            self._cancel_event(task_id).set()
             return True
 
     def approve(self, task_id: str, decision: str = "approved", grants: list | None = None) -> dict:

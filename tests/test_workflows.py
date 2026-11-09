@@ -2,13 +2,14 @@
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unified.adapters import AdapterContext, register_adapters
 from unified.broker import CapabilityBroker
-from unified.contracts import TaskState
+from unified.contracts import Step, TaskState
 from unified.engine import Engine
 from unified.evidence import EvidenceStore
 from unified.ledger import Ledger
@@ -38,8 +39,10 @@ class WorkflowTests(unittest.TestCase):
         register_adapters(self.broker, AdapterContext(
             evidence=self.evidence, workspace_root=self.ws, fixture_dir=self.fix,
             graph_db=os.path.join(d, "graph.db")))
-        self.broker.register_model_tool(ModelRouter(max_concurrent=1))
-        self.engine = Engine(self.ledger, self.broker, self.evidence)
+        self.router = ModelRouter(max_concurrent=1)
+        self.broker.register_model_tool(self.router)
+        self.engine = Engine(self.ledger, self.broker, self.evidence,
+                             model_router=self.router)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -73,6 +76,52 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(r["failures"][0]["errors"][0]["budget"], "time_seconds")
         self.assertEqual(r["budget_exceeded"][0]["budget"], "time_seconds")
 
+    def test_worker_cpu_usage_is_persisted_with_task(self):
+        import unified.engine as engine_module
+        from unified.broker import ToolSpec
+        def consume_cpu(_args):
+            deadline = time.process_time() + 0.05
+            while time.process_time() < deadline:
+                pass
+            return {"summary": "measured"}
+        self.broker.register(ToolSpec("test.cpu-account", [], "read_only", consume_cpu))
+        original_plan = engine_module.plan
+        engine_module.plan = lambda _env: [Step("S-CPU-ACCOUNT", "test.cpu-account", {})]
+        try:
+            submitted = self.engine.submit(
+                "p", "wf-cpu-accounting", {"intent": "echo", "instructions": "measure"},
+                [], GRANTS, budgets={"memory_mb": 2048})
+            result = self.engine.run(submitted["task_id"], GRANTS)
+        finally:
+            engine_module.plan = original_plan
+        self.assertEqual(result["state"], TaskState.COMPLETED.value,
+                         msg=f"{result}; receipts={self.ledger.get_receipts(submitted['task_id'])}")
+        task_cpu = self.ledger.task_cpu_seconds_used(submitted["task_id"])
+        receipt_cpu = sum(r.usage.get("cpu_seconds", 0)
+                          for r in self.ledger.get_receipts(submitted["task_id"]))
+        self.assertGreater(task_cpu, 0)
+        self.assertAlmostEqual(task_cpu, receipt_cpu, places=3)
+
+    def test_engine_worker_memory_limit_returns_budget_result(self):
+        import unified.engine as engine_module
+        from unified.broker import ToolSpec
+        self.broker.register(ToolSpec(
+            "test.engine-memory", [], "read_only",
+            lambda _args: {"summary": len(bytearray(128 * 1024 * 1024))}))
+        original_plan = engine_module.plan
+        engine_module.plan = lambda _env: [Step("S-ENGINE-MEM", "test.engine-memory", {})]
+        try:
+            submitted = self.engine.submit(
+                "p", "wf-engine-memory-budget",
+                {"intent": "echo", "instructions": "memory"}, [], GRANTS,
+                budgets={"memory_mb": 48})
+            result = self.engine.run(submitted["task_id"], GRANTS)
+        finally:
+            engine_module.plan = original_plan
+        self.assertEqual(result["state"], TaskState.FAILED.value)
+        self.assertIn({"step_id": "S-ENGINE-MEM", "budget": "memory_mb"},
+                      result["budget_exceeded"])
+
     def test_budget_model_call_limit(self):
         r = self._run("wf-model-call-budget", {"intent": "research", "name": "demo.html",
                                                "instructions": "summarize"},
@@ -89,15 +138,40 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(r["state"], TaskState.FAILED.value)
         self.assertEqual(r["budget_exceeded"][0]["budget"], "model_tokens")
 
-    def test_cpu_and_memory_budgets_are_not_silently_ignored(self):
-        with self.assertRaisesRegex(ValueError, "isolated worker enforcement"):
-            self.engine.submit("p", "wf-cpu-unavailable",
+    def test_repeated_model_calls_share_one_cumulative_token_ceiling(self):
+        import unified.engine as engine_module
+        original_plan = engine_module.plan
+        model_steps = [
+            Step("S-MODEL-1", "model.complete", {"prompt": "hi"},
+                 permissions_used=["model.infer"]),
+            Step("S-MODEL-2", "model.complete", {"prompt": "hi"},
+                 depends_on=["S-MODEL-1"], permissions_used=["model.infer"]),
+        ]
+        engine_module.plan = lambda _env: model_steps
+        try:
+            submitted = self.engine.submit(
+                "p", "wf-repeated-model-budget",
+                {"intent": "echo", "instructions": "two model calls"},
+                ["model.infer"], GRANTS, budgets={"model_tokens": 8})
+            result = self.engine.run(submitted["task_id"], GRANTS)
+        finally:
+            engine_module.plan = original_plan
+        self.assertEqual(result["state"], TaskState.COMPLETED.value)
+        receipts = self.ledger.get_receipts(submitted["task_id"])
+        self.assertEqual(sum(r.usage["model_tokens"] for r in receipts), 6)
+        self.assertEqual(self.router._tokens_used, 6)
+
+    def test_cpu_and_memory_budgets_are_enforced_or_validated(self):
+        submitted = self.engine.submit(
+            "p", "wf-cpu-budget-zero", {"intent": "echo", "instructions": "x"},
+            [], GRANTS, budgets={"cpu_seconds": 0})
+        result = self.engine.run(submitted["task_id"], GRANTS)
+        self.assertEqual(result["state"], TaskState.FAILED.value)
+        self.assertEqual(result["budget_exceeded"][0]["budget"], "cpu_seconds")
+        with self.assertRaisesRegex(ValueError, "memory_mb must be greater than zero"):
+            self.engine.submit("p", "wf-memory-zero",
                                {"intent": "echo", "instructions": "x"}, [], GRANTS,
-                               budgets={"cpu_seconds": 1})
-        with self.assertRaisesRegex(ValueError, "isolated worker enforcement"):
-            self.engine.submit("p", "wf-memory-unavailable",
-                               {"intent": "echo", "instructions": "x"}, [], GRANTS,
-                               budgets={"memory_mb": 128})
+                               budgets={"memory_mb": 0})
 
     def test_budget_external_request_limit(self):
         spec = self.broker.get("scrapling.fetch_fixture")

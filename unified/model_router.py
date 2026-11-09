@@ -23,8 +23,10 @@ class ModelRouter:
     def restore_task_usage(self, task_id: str, tokens_used: int) -> None:
         """Reconcile in-memory accounting from durable committed receipts."""
         with self._lock:
-            self._task_tokens[task_id] = max(
-                self._task_tokens.get(task_id, 0), max(0, int(tokens_used)))
+            prior = self._task_tokens.get(task_id, 0)
+            reconciled = max(prior, max(0, int(tokens_used)))
+            self._task_tokens[task_id] = reconciled
+            self._tokens_used += reconciled - prior
 
     def forget_task(self, task_id: str) -> None:
         """Release per-task budget state after a durable terminal outcome."""
@@ -33,11 +35,20 @@ class ModelRouter:
 
     def complete(self, prompt: str, budget_tokens: int = 4096,
                  task_id: str | None = None, deadline_at: float | None = None,
-                 cancel_check=None) -> dict:
-        """Run under task cancellation, deadline, and cumulative token limits."""
+                 cancel_check=None, supervised: bool = False) -> dict:
+        """Run under task cancellation, deadline, and cumulative token limits.
+
+        A supervised call skips this process-local semaphore because the Engine
+        holds its model admission slot in the parent while the child executes.
+        """
         queued_at = time.monotonic()
+        acquired = False
         wait_deadline = min(deadline_at or (time.time() + 30), time.time() + 30)
-        while not self._sem.acquire(timeout=min(0.05, max(0.0, wait_deadline - time.time()))):
+        while not supervised and not acquired:
+            acquired = self._sem.acquire(
+                timeout=min(0.05, max(0.0, wait_deadline - time.time())))
+            if acquired:
+                break
             if cancel_check and cancel_check():
                 return {"ok": False, "cancelled": True, "error": "model call cancelled",
                         "usage": {"queued_seconds": time.monotonic() - queued_at}}
@@ -58,20 +69,34 @@ class ModelRouter:
             # deterministic mock completion: echo + length stats
             completion = f"[model.complete] {prompt[:200]}"
             used = len(prompt.split()) + len(completion.split())
-            with self._lock:
-                task_used = self._task_tokens.get(budget_scope, 0)
-                if task_used + used > max(0, budget_tokens):
+            if supervised:
+                # The parent serializes supervised inference and advances the
+                # durable cumulative count from each returned receipt. A child
+                # must not consult a forked, potentially stale router counter.
+                task_used = 0
+                if used > max(0, budget_tokens):
                     return {"ok": False, "budget": "model_tokens",
                             "error": "model token budget exhausted",
-                            "usage": {"tokens_used": task_used,
+                            "usage": {"tokens_used": 0,
                                       "budget_tokens": max(0, budget_tokens)}}
-                task_used += used
-                self._task_tokens[budget_scope] = task_used
-                self._tokens_used += used
-                total_used = self._tokens_used
+                task_used = used
+                total_used = self._tokens_used + used
+            else:
+                with self._lock:
+                    task_used = self._task_tokens.get(budget_scope, 0)
+                    if task_used + used > max(0, budget_tokens):
+                        return {"ok": False, "budget": "model_tokens",
+                                "error": "model token budget exhausted",
+                                "usage": {"tokens_used": task_used,
+                                          "budget_tokens": max(0, budget_tokens)}}
+                    task_used += used
+                    self._task_tokens[budget_scope] = task_used
+                    self._tokens_used += used
+                    total_used = self._tokens_used
             return {"ok": True, "completion": completion,
                     "usage": {"elapsed_ms": 1, "model_tokens": used,
                               "tokens_used": task_used,
                               "tokens_used_total": total_used}}
         finally:
-            self._sem.release()
+            if acquired:
+                self._sem.release()
