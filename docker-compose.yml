@@ -10,9 +10,23 @@ services:
       - CALLBACK_SECRET_FILE=/run/secrets/callback_secret
       - UNIFIED_API_KEYS_FILE=/run/secrets/api_keys
       - UNIFIED_WEB_ALLOWLIST=${UNIFIED_WEB_ALLOWLIST:-[]}
+      # Inference. Production refuses "simulated" per model call; set a real
+      # provider in .env. Ollama on the Docker host: use
+      # CONFLUX_MODEL_BASE_URL=http://host.docker.internal:11434 (see extra_hosts).
+      - CONFLUX_MODEL_PROVIDER=${CONFLUX_MODEL_PROVIDER:-simulated}
+      - CONFLUX_MODEL_BASE_URL=${CONFLUX_MODEL_BASE_URL:-}
+      - CONFLUX_MODEL_NAME=${CONFLUX_MODEL_NAME:-}
+      - CONFLUX_MODEL_BILLABLE=${CONFLUX_MODEL_BILLABLE:-true}
+      - CONFLUX_MODEL_INPUT_COST_PER_MILLION=${CONFLUX_MODEL_INPUT_COST_PER_MILLION:-}
+      - CONFLUX_MODEL_OUTPUT_COST_PER_MILLION=${CONFLUX_MODEL_OUTPUT_COST_PER_MILLION:-}
+      - CONFLUX_MODEL_API_KEY_FILE=/run/secrets/model_api_key
     secrets:
       - callback_secret
       - api_keys
+      - model_api_key
+    extra_hosts:
+      # Lets the container reach an Ollama or other model server on the Docker host.
+      - "host.docker.internal:host-gateway"
     volumes:
       - arena-data:/data     # ledger, artifacts, memory, graph
     networks:
@@ -46,3 +60,7 @@ secrets:
     file: ${CALLBACK_SECRET_FILE:?set CALLBACK_SECRET_FILE to a protected local file}
   api_keys:
     file: ${UNIFIED_API_KEYS_FILE:?set UNIFIED_API_KEYS_FILE to a protected JSON file}
+  # Optional: set CONFLUX_MODEL_API_KEY_FILE for hosted OpenAI-compatible APIs.
+  # Without it, an empty secret is mounted and no Authorization header is sent.
+  model_api_key:
+    file: ${CONFLUX_MODEL_API_KEY_FILE:-/dev/null}
