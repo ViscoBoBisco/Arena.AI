@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     current_plan_version INTEGER NOT NULL DEFAULT 0,
+    execution_started_at REAL,
     UNIQUE (project_id, idempotency_key)
 );
 CREATE TABLE IF NOT EXISTS plans (
@@ -131,6 +132,8 @@ class Ledger:
             if "current_plan_version" not in task_columns:
                 self._db.execute(
                     "ALTER TABLE tasks ADD COLUMN current_plan_version INTEGER NOT NULL DEFAULT 0")
+            if "execution_started_at" not in task_columns:
+                self._db.execute("ALTER TABLE tasks ADD COLUMN execution_started_at REAL")
             attempt_columns = {row["name"] for row in self._db.execute("PRAGMA table_info(attempts)")}
             if "operation_key" not in attempt_columns:
                 self._db.execute("ALTER TABLE attempts ADD COLUMN operation_key TEXT")
@@ -206,6 +209,21 @@ class Ledger:
         with self._write_transaction():
             self._db.execute(
                 "DELETE FROM run_claims WHERE task_id=? AND token=?", (task_id, token))
+
+    def begin_execution(self, task_id: str, run_token: str) -> float:
+        """Return a durable task execution start time, initialized once."""
+        with self._write_transaction():
+            self._assert_run_claim_locked(task_id, run_token)
+            now = time.time()
+            self._db.execute(
+                "UPDATE tasks SET execution_started_at=COALESCE(execution_started_at,?) "
+                "WHERE task_id=?", (now, task_id))
+            row = self._db.execute(
+                "SELECT execution_started_at FROM tasks WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if not row or row["execution_started_at"] is None:
+                raise LedgerError(f"could not initialize execution time for {task_id}")
+            return float(row["execution_started_at"])
 
     # ---- tasks -------------------------------------------------------
     def find_by_idempotency(self, project_id: str, key: str) -> Optional[str]:

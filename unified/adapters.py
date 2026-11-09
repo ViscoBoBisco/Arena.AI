@@ -13,6 +13,7 @@ import os
 import re
 import socket
 import sqlite3
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -58,6 +59,14 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
     # ---- scrapling.fetch (manual 2.2) --------------------------------
     def scrapling_fetch(args):
         url = args.get("url", "")
+        cancel_check = args.get("_cancelled") or (lambda: False)
+        deadline_at = args.get("_deadline_at")
+        if cancel_check():
+            return {"result_type": "cancelled.v1", "summary": "fetch cancelled before dispatch",
+                    "errors": [{"type": "cancelled"}]}
+        if deadline_at is not None and time.time() >= deadline_at:
+            return {"result_type": "error.budget.v1", "summary": "task time budget exceeded",
+                    "errors": [{"type": "budget_exceeded", "budget": "time_seconds"}]}
         try:
             parsed = urllib.parse.urlsplit(url)
             host = (parsed.hostname or "").lower().rstrip(".")
@@ -82,16 +91,51 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
             return {"result_type": "error.policy.v1", "summary": "host resolution failed or was not public",
                     "errors": [{"type": "policy_denied", "detail": type(exc).__name__}]}
         try:
+            if cancel_check():
+                return {"result_type": "cancelled.v1", "summary": "fetch cancelled",
+                        "errors": [{"type": "cancelled"}]}
             req = urllib.request.Request(url, headers={"User-Agent": "arena-gateway/0.1"})
             timeout = min(30.0, max(1.0, float(args.get("timeout_s", 10))))
+            if deadline_at is not None:
+                timeout = min(timeout, max(0.1, deadline_at - time.time()))
             opener = urllib.request.build_opener(_NoRedirectHandler())
+            chunks = []
+            total_bytes = 0
             with opener.open(req, timeout=timeout) as resp:
-                body = resp.read(MAX_FETCH_BYTES + 1)
                 final_url = resp.geturl()
+                while total_bytes <= MAX_FETCH_BYTES:
+                    if cancel_check():
+                        return {"result_type": "cancelled.v1", "summary": "fetch cancelled",
+                                "errors": [{"type": "cancelled"}]}
+                    if deadline_at is not None:
+                        remaining = deadline_at - time.time()
+                        if remaining <= 0:
+                            return {"result_type": "error.budget.v1",
+                                    "summary": "task time budget exceeded",
+                                    "errors": [{"type": "budget_exceeded",
+                                                "budget": "time_seconds"}]}
+                        sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+                        if sock is not None:
+                            sock.settimeout(min(30.0, remaining))
+                    chunk = resp.read(min(64 * 1024, MAX_FETCH_BYTES + 1 - total_bytes))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total_bytes += len(chunk)
+            body = b"".join(chunks)
+            if deadline_at is not None and time.time() >= deadline_at:
+                return {"result_type": "error.budget.v1", "summary": "task time budget exceeded",
+                        "errors": [{"type": "budget_exceeded", "budget": "time_seconds"}]}
             if len(body) > MAX_FETCH_BYTES:
                 return {"result_type": "error.resource.v1", "summary": "web response exceeds 2 MiB limit",
                         "errors": [{"type": "resource_limit", "limit_bytes": MAX_FETCH_BYTES}]}
         except Exception as exc:
+            if cancel_check():
+                return {"result_type": "cancelled.v1", "summary": "fetch cancelled",
+                        "errors": [{"type": "cancelled"}]}
+            if deadline_at is not None and time.time() >= deadline_at:
+                return {"result_type": "error.budget.v1", "summary": "task time budget exceeded",
+                        "errors": [{"type": "budget_exceeded", "budget": "time_seconds"}]}
             return {"result_type": "error.fetch.v1", "summary": "outbound fetch failed",
                     "errors": [{"type": "fetch_error", "detail": type(exc).__name__}]}
         art = ev.put_artifact(args.get("_task_id", "adhoc"), args.get("_step_id", "adhoc"),
@@ -376,7 +420,8 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
                 "evidence": [ev.evidence_ref(f"file://{path}", f"sha256:{digest}")]}
 
     broker.register(ToolSpec("scrapling.fetch", ["web.read.public"], "read_only",
-                             scrapling_fetch, "Allowlist-guarded web page capture."))
+                             scrapling_fetch, "Allowlist-guarded web page capture.",
+                             external_request=True, supports_cancellation=True))
     broker.register(ToolSpec("scrapling.fetch_fixture", ["web.read.public"], "read_only",
                              fixture_fetch, "Offline captured-page fixture (demo)."))
     broker.register(ToolSpec("openbb.query", ["data.market.read"], "read_only",

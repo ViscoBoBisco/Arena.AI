@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -115,6 +116,26 @@ class ExpansionTests(unittest.TestCase):
         self.assertTrue(ok["ok"])
         exhausted = self.router.complete("more text here", budget_tokens=1)
         self.assertFalse(exhausted["ok"])
+
+    def test_model_router_queue_wait_propagates_cancellation_and_deadline(self):
+        router = ModelRouter(max_concurrent=1)
+        self.assertTrue(router._sem.acquire(blocking=False))
+        cancelled = threading.Event()
+        result = {}
+        worker = threading.Thread(target=lambda: result.setdefault(
+            "cancel", router.complete("hello", task_id="cancel-test",
+                                       cancel_check=cancelled.is_set)))
+        worker.start()
+        time.sleep(0.03)
+        cancelled.set()
+        worker.join(timeout=1)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(result["cancel"]["cancelled"])
+
+        timed = router.complete("hello", task_id="deadline-test",
+                                deadline_at=time.time() + 0.03)
+        self.assertEqual(timed.get("budget"), "time_seconds")
+        router._sem.release()
 
     def test_model_router_budgets_are_isolated_by_task(self):
         router = ModelRouter(max_concurrent=1)

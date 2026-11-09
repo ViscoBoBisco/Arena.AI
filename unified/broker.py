@@ -27,6 +27,8 @@ class ToolSpec:
     read_only: bool = True
     supports_idempotency: bool = False
     reconcile: Optional[Callable] = None
+    external_request: bool = False
+    supports_cancellation: bool = False
 
 
 class CapabilityBroker:
@@ -45,7 +47,10 @@ class CapabilityBroker:
     def list_tools(self) -> list[dict]:
         return [{"name": t.name, "permissions": t.required_permissions,
                  "side_effect_class": t.side_effect_class,
-                 "read_only": t.read_only, "description": t.description}
+                 "read_only": t.read_only,
+                 "external_request": t.external_request,
+                 "supports_cancellation": t.supports_cancellation,
+                 "description": t.description}
                 for t in self._tools.values()]
 
     def get(self, name: str) -> Optional[ToolSpec]:
@@ -55,7 +60,9 @@ class CapabilityBroker:
     def call(self, task_id: str, step_id: str, tool: str, args: dict,
              permissions_used: list[str], policy: PolicyEngine,
              deadline_ms: int = 45000, attempt_id: str | None = None,
-             idempotency_key: str | None = None) -> ToolReceipt:
+             idempotency_key: str | None = None,
+             deadline_at: float | None = None,
+             cancel_check: Callable[[], bool] | None = None) -> ToolReceipt:
         """Execute one typed tool call (manual 5.2 envelope)."""
         attempt_id = attempt_id or new_id("A")
         spec = self._tools.get(tool)
@@ -63,6 +70,16 @@ class CapabilityBroker:
             return ToolReceipt(task_id, step_id, attempt_id, "failed",
                                "error.v1", f"unknown tool: {tool}",
                                errors=[{"type": "unknown_tool", "tool": tool}])
+        if cancel_check and cancel_check():
+            return ToolReceipt(task_id, step_id, attempt_id, "cancelled",
+                               "cancelled.v1", "cancelled before dispatch")
+        now_wall = time.time()
+        effective_deadline = min(deadline_at or now_wall + deadline_ms / 1000,
+                                 now_wall + deadline_ms / 1000)
+        if effective_deadline <= now_wall:
+            return ToolReceipt(task_id, step_id, attempt_id, "failed",
+                               "error.budget.v1", "execution time budget exceeded",
+                               errors=[{"type": "budget_exceeded", "budget": "time_seconds"}])
         # Manual 3.3: re-evaluate policy immediately before execution.
         try:
             policy.authorize_tool(spec.required_permissions)
@@ -74,20 +91,24 @@ class CapabilityBroker:
         call_args = dict(args)
         if spec.supports_idempotency and idempotency_key:
             call_args["_idempotency_key"] = idempotency_key
+        if spec.supports_cancellation:
+            call_args["_cancelled"] = cancel_check or (lambda: False)
+            call_args["_deadline_at"] = effective_deadline
         try:
             result = spec.handler(call_args)
             # Adapters signal failure through the typed error channel; a
             # transport-successful response with errors is NOT a success
             # (manual 5.3: receipt status reflects the tool, not the transport).
             status = "failed" if result.get("errors") else "succeeded"
+            usage = dict(result.get("usage", {}))
+            usage.setdefault("elapsed_ms", int((time.monotonic() - start) * 1000))
+            usage.setdefault("model_tokens", 0)
             receipt = ToolReceipt(
                 task_id=task_id, step_id=step_id, attempt_id=attempt_id,
                 status=status, result_type=result.get("result_type", "native.v1"),
                 summary=result.get("summary", ""), data=result.get("data", {}),
                 artifacts=result.get("artifacts", []), evidence=result.get("evidence", []),
-                errors=result.get("errors", []),
-                usage={"elapsed_ms": int((time.monotonic() - start) * 1000),
-                       "model_tokens": 0})
+                errors=result.get("errors", []), usage=usage)
             return receipt
         except Exception as e:  # typed failure, never fabricated findings (manual 2.7)
             return ToolReceipt(task_id, step_id, attempt_id, "failed",
@@ -133,11 +154,17 @@ class CapabilityBroker:
         def model_complete(args):
             out = router.complete(args.get("prompt", ""),
                                   budget_tokens=args.get("budget_tokens", 4096),
-                                  task_id=args.get("_task_id"))
+                                  task_id=args.get("_task_id"),
+                                  deadline_at=args.get("_deadline_at"),
+                                  cancel_check=args.get("_cancelled"))
             if not out["ok"]:
+                error_type = ("budget_exceeded" if out.get("budget") else
+                              "cancelled" if out.get("cancelled") else "resource")
+                error = {"type": error_type, "detail": out["error"]}
+                if out.get("budget"):
+                    error["budget"] = out["budget"]
                 return {"result_type": "error.resource.v1", "summary": out["error"],
-                        "errors": [{"type": "resource", "detail": out["error"]}],
-                        "usage": out.get("usage", {})}
+                        "errors": [error], "usage": out.get("usage", {})}
             return {"result_type": "model.complete.v1",
                     "summary": "model completion",
                     "data": {"completion": out["completion"]},
@@ -145,7 +172,7 @@ class CapabilityBroker:
 
         self.register(ToolSpec("model.complete", ["model.infer"], "read_only",
                                model_complete, "Shared model router (bounded queue).",
-                               read_only=True))
+                               read_only=True, supports_cancellation=True))
 
     # ---- native tools --------------------------------------------------
     def workspace_for_project(self, project_id: str | None = None) -> str:

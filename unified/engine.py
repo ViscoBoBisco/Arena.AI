@@ -6,11 +6,15 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import inspect
 import json
+import math
 import threading
+import time
 
 from .broker import CapabilityBroker
 from .contracts import (
+    DEFAULT_BUDGETS,
     Step,
     StepState,
     TaskEnvelope,
@@ -28,6 +32,29 @@ from .verifier import verify
 def _new_metrics() -> dict:
     return {"tasks_by_state": {}, "tool_calls": 0, "tool_failures": 0,
             "model_tokens": 0, "errors_by_tool": {}, "latencies_ms": []}
+
+
+def _normalize_budgets(budgets: dict | None) -> dict:
+    if budgets is not None and not isinstance(budgets, dict):
+        raise ValueError("budgets must be an object")
+    unsupported = {"cpu_seconds", "memory_mb"}.intersection(budgets or {})
+    if unsupported:
+        names = ", ".join(sorted(unsupported))
+        raise ValueError(f"{names} budgets require isolated worker enforcement and are not yet supported")
+    unknown = set(budgets or {}) - set(DEFAULT_BUDGETS)
+    if unknown:
+        raise ValueError(f"unknown budget(s): {', '.join(sorted(unknown))}")
+    out = {**DEFAULT_BUDGETS, **(budgets or {})}
+    for key in DEFAULT_BUDGETS:
+        value = out[key]
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value)):
+            raise ValueError(f"budget {key} must be a finite number")
+        if key != "time_seconds" and int(value) != value:
+            raise ValueError(f"budget {key} must be an integer")
+        if key != "time_seconds":
+            out[key] = int(value)
+    return out
 
 
 def _request_fingerprint(env: TaskEnvelope) -> str:
@@ -55,6 +82,10 @@ class Engine:
         self.memory = memory
         self.delivery = delivery
         self._cancel = set()
+        # Per-task concurrency is also capped by a process-wide dispatch gate,
+        # so many concurrently running tasks cannot multiply the configured
+        # worker pool without bound.
+        self._tool_slots = threading.BoundedSemaphore(DEFAULT_BUDGETS["concurrency"])
         self._lock = threading.RLock()
         self.metrics = _new_metrics()  # aggregate, internal/operator use
         self._project_metrics: dict[str, dict] = {}
@@ -86,8 +117,7 @@ class Engine:
         env = TaskEnvelope(task_id=new_id("T"), idempotency_key=idempotency_key,
                            project_id=project_id, request=request,
                            inputs=inputs or [], permissions=permissions,
-                           budgets=budgets or {"model_calls": 12, "tool_calls": 30,
-                                              "time_seconds": 600})
+                           budgets=_normalize_budgets(budgets))
         fingerprint = _request_fingerprint(env)
         existing = self.ledger.find_by_idempotency(project_id, idempotency_key)
         if existing:
@@ -283,6 +313,10 @@ class Engine:
         elif cur not in {TaskState.RUNNING, TaskState.VERIFYING}:
             raise LedgerError(f"task {task_id} cannot run from state {cur.value}")
 
+        budgets = _normalize_budgets(env.budgets)
+        execution_started_at = self.ledger.begin_execution(task_id, run_token)
+        deadline_at = execution_started_at + float(budgets["time_seconds"])
+
         # Receipts are the durable success authority; step state alone cannot
         # certify completion. Reconcile legacy receipt rows to their runtime state.
         receipts: list[ToolReceipt] = self.ledger.get_receipts(task_id)
@@ -301,7 +335,16 @@ class Engine:
         import time as _time
         from concurrent.futures import ThreadPoolExecutor
         started = _time.monotonic()
-        budgets = env.budgets or {}
+        step_tools = {step.step_id: step.tool for step in self.ledger.get_steps(task_id)}
+        previous_attempts = self.ledger.get_attempts(task_id)
+        tool_calls_used = len(previous_attempts)
+        model_calls_used = sum(step_tools.get(a["step_id"]) == "model.complete"
+                               for a in previous_attempts)
+        external_requests_used = sum(
+            bool(self.broker.get(step_tools.get(a["step_id"], ""))
+                 and self.broker.get(step_tools.get(a["step_id"], "")).external_request)
+            for a in previous_attempts)
+        max_concurrency = min(4, budgets["concurrency"])
         resolved_steps = {receipt.step_id for receipt in receipts}
         remaining = ([] if cur == TaskState.VERIFYING else
                      [s for s in steps if s.step_id not in done
@@ -354,42 +397,136 @@ class Engine:
                               "pending_step": pause.step_id, "tool": pause.tool}
                     self.ledger.set_result(task_id, result, run_token=run_token)
                     return result
-            budget_hit = None
-            if _time.monotonic() - started > budgets.get("time_seconds", 600):
-                budget_hit = "time_seconds"
-            elif len(receipts) + len(wave_receipts) >= budgets.get("tool_calls", 30):
-                budget_hit = "tool_calls"
-            if task_id in self._cancel or budget_hit:
-                reason = "cancelled" if task_id in self._cancel else "budget_exceeded"
+            # A previously committed step is free: reuse its receipt before
+            # reserving any new tool-call budget.
+            for step in ready:
+                committed = self.ledger.committed_receipt(task_id, step.step_id)
+                if committed is not None:
+                    receipts.append(committed)
+                    done.add(step.step_id)
+            ready = [step for step in ready if step.step_id not in done]
+            if not ready:
+                remaining = [s for s in remaining if s.step_id not in done]
+                continue
+
+            def record_budget_failure(step, budget_name):
+                attempt_id = self.ledger.start_attempt(
+                    task_id, step.step_id, plan_version, run_token)
+                receipt = ToolReceipt(
+                    task_id, step.step_id, attempt_id, "failed", "error.budget.v1",
+                    f"{budget_name} budget exceeded",
+                    errors=[{"type": "budget_exceeded", "budget": budget_name}])
+                self.ledger.save_receipt(receipt, committed=False, run_token=run_token)
+                receipts.append(receipt)
+
+            if task_id in self._cancel:
                 for step in ready:
                     attempt_id = self.ledger.start_attempt(
                         task_id, step.step_id, plan_version, run_token)
                     receipt = ToolReceipt(task_id, step.step_id, attempt_id,
-                                          "failed" if budget_hit else "cancelled",
-                                          "error.budget.v1" if budget_hit else "cancelled.v1",
-                                          reason,
-                                          errors=[] if not budget_hit else
-                                          [{"type": "budget_exceeded", "budget": budget_hit}])
+                                          "cancelled", "cancelled.v1", "cancelled before dispatch")
                     self.ledger.save_receipt(receipt, committed=False, run_token=run_token)
                     receipts.append(receipt)
                 break
-            with ThreadPoolExecutor(max_workers=4) as pool:
+            if time.time() >= deadline_at:
+                record_budget_failure(ready[0], "time_seconds")
+                break
+            if max_concurrency <= 0:
+                record_budget_failure(ready[0], "concurrency")
+                break
+
+            dispatch_steps = []
+            blocked_budget = None
+            model_reservations = 0
+            external_reservations = 0
+            for step in ready:
+                if tool_calls_used + len(dispatch_steps) >= budgets["tool_calls"]:
+                    blocked_budget = (step, "tool_calls")
+                    break
+                spec = self.broker.get(step.tool)
+                if (step.tool == "model.complete"
+                        and model_calls_used + model_reservations >= budgets["model_calls"]):
+                    blocked_budget = (step, "model_calls")
+                    continue
+                if (spec and spec.external_request
+                        and external_requests_used + external_reservations
+                        >= budgets["external_requests"]):
+                    blocked_budget = (step, "external_requests")
+                    continue
+                dispatch_steps.append(step)
+                model_reservations += int(step.tool == "model.complete")
+                external_reservations += int(bool(spec and spec.external_request))
+                if len(dispatch_steps) >= max_concurrency:
+                    break
+            if not dispatch_steps:
+                if blocked_budget:
+                    record_budget_failure(*blocked_budget)
+                else:
+                    break
+                break
+
+            def call_with_global_slot(*args, deadline_at, cancel_check, **kwargs):
+                while not self._tool_slots.acquire(timeout=0.05):
+                    if cancel_check():
+                        return ToolReceipt(args[0], args[1], kwargs.get("attempt_id", ""),
+                                           "cancelled", "cancelled.v1",
+                                           "cancelled while waiting for a tool slot")
+                    if time.time() >= deadline_at:
+                        return ToolReceipt(
+                            args[0], args[1], kwargs.get("attempt_id", ""), "failed",
+                            "error.budget.v1", "execution time budget exceeded",
+                            errors=[{"type": "budget_exceeded", "budget": "time_seconds"}])
+                try:
+                    if cancel_check():
+                        return ToolReceipt(args[0], args[1], kwargs.get("attempt_id", ""),
+                                           "cancelled", "cancelled.v1",
+                                           "cancelled before tool dispatch")
+                    if time.time() >= deadline_at:
+                        return ToolReceipt(
+                            args[0], args[1], kwargs.get("attempt_id", ""), "failed",
+                            "error.budget.v1", "execution time budget exceeded",
+                            errors=[{"type": "budget_exceeded", "budget": "time_seconds"}])
+                    call = self.broker.call
+                    parameters = inspect.signature(call).parameters.values()
+                    accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD
+                                         for p in parameters)
+                    names = {p.name for p in parameters}
+                    extra = {}
+                    if accepts_kwargs or "deadline_at" in names:
+                        extra["deadline_at"] = deadline_at
+                    if accepts_kwargs or "cancel_check" in names:
+                        extra["cancel_check"] = cancel_check
+                    return call(*args, **extra, **kwargs)
+                finally:
+                    self._tool_slots.release()
+
+            with ThreadPoolExecutor(max_workers=min(max_concurrency, len(dispatch_steps))) as pool:
                 futs = {}
-                for step in ready:
-                    committed = self.ledger.committed_receipt(task_id, step.step_id)
-                    if committed is not None:
-                        receipts.append(committed)
-                        done.add(step.step_id)
-                        continue
+                for step in dispatch_steps:
                     attempt_id = self.ledger.start_attempt(
                         task_id, step.step_id, plan_version, run_token)
                     operation_key = self.ledger.attempt_operation_key(attempt_id)
                     call_args = dict(step.args)
                     call_args["_project_id"] = env.project_id
-                    futs[pool.submit(self.broker.call, task_id, step.step_id, step.tool,
+                    call_args.setdefault("_task_id", task_id)
+                    if step.tool == "model.complete":
+                        persisted_tokens = sum(int(r.usage.get("model_tokens", 0))
+                                               for r in receipts)
+                        call_args["budget_tokens"] = max(
+                            0, budgets["model_tokens"] - persisted_tokens)
+                    remaining_seconds = max(0.0, deadline_at - time.time())
+                    tool_deadline = min(deadline_at, time.time() + 45.0)
+                    cancel_check = lambda tid=task_id: tid in self._cancel
+                    futs[pool.submit(call_with_global_slot, task_id, step.step_id, step.tool,
                                      call_args, step.permissions_used, policy,
-                                     attempt_id=attempt_id,
-                                     idempotency_key=operation_key)] = step
+                                     deadline_ms=max(1, int(remaining_seconds * 1000)),
+                                     attempt_id=attempt_id, idempotency_key=operation_key,
+                                     deadline_at=tool_deadline,
+                                     cancel_check=cancel_check)] = step
+                    tool_calls_used += 1
+                    model_calls_used += int(step.tool == "model.complete")
+                    spec = self.broker.get(step.tool)
+                    external_requests_used += int(bool(spec and spec.external_request))
                 for fut in futs:
                     step = futs[fut]
                     receipt = fut.result()
@@ -448,6 +585,18 @@ class Engine:
                     self.ledger.set_state(task_id, TaskState.COMPLETED, run_token=run_token)
             self.ledger.set_result(task_id, result, run_token=run_token)
             self._cancel.discard(task_id)
+
+        exceeded = []
+        for receipt in receipts:
+            for error in receipt.errors:
+                if error.get("type") == "budget_exceeded":
+                    item = {"step_id": receipt.step_id,
+                            "budget": error.get("budget", "unknown")}
+                    if item not in exceeded:
+                        exceeded.append(item)
+        if exceeded:
+            result["budget_exceeded"] = exceeded
+            self.ledger.set_result(task_id, result, run_token=run_token)
 
         # Keep network delivery outside the engine lock; terminal state is
         # durable before potentially slow callback attempts begin.

@@ -71,6 +71,47 @@ class WorkflowTests(unittest.TestCase):
                       budgets={"tool_calls": 30, "time_seconds": -1, "model_calls": 12})
         self.assertEqual(r["state"], TaskState.FAILED.value)
         self.assertEqual(r["failures"][0]["errors"][0]["budget"], "time_seconds")
+        self.assertEqual(r["budget_exceeded"][0]["budget"], "time_seconds")
+
+    def test_budget_model_call_limit(self):
+        r = self._run("wf-model-call-budget", {"intent": "research", "name": "demo.html",
+                                               "instructions": "summarize"},
+                      ["web.read.public", "model.infer"],
+                      budgets={"model_calls": 0})
+        self.assertEqual(r["state"], TaskState.FAILED.value)
+        self.assertEqual(r["budget_exceeded"][0]["budget"], "model_calls")
+
+    def test_budget_model_token_limit(self):
+        r = self._run("wf-model-token-budget", {"intent": "research", "name": "demo.html",
+                                                "instructions": "summarize"},
+                      ["web.read.public", "model.infer"],
+                      budgets={"model_tokens": 0})
+        self.assertEqual(r["state"], TaskState.FAILED.value)
+        self.assertEqual(r["budget_exceeded"][0]["budget"], "model_tokens")
+
+    def test_cpu_and_memory_budgets_are_not_silently_ignored(self):
+        with self.assertRaisesRegex(ValueError, "isolated worker enforcement"):
+            self.engine.submit("p", "wf-cpu-unavailable",
+                               {"intent": "echo", "instructions": "x"}, [], GRANTS,
+                               budgets={"cpu_seconds": 1})
+        with self.assertRaisesRegex(ValueError, "isolated worker enforcement"):
+            self.engine.submit("p", "wf-memory-unavailable",
+                               {"intent": "echo", "instructions": "x"}, [], GRANTS,
+                               budgets={"memory_mb": 128})
+
+    def test_budget_external_request_limit(self):
+        spec = self.broker.get("scrapling.fetch_fixture")
+        old = spec.external_request
+        spec.external_request = True
+        try:
+            r = self._run("wf-external-budget", {"intent": "research", "name": "demo.html",
+                                                  "instructions": "summarize"},
+                          ["web.read.public", "model.infer"],
+                          budgets={"external_requests": 0})
+        finally:
+            spec.external_request = old
+        self.assertEqual(r["state"], TaskState.FAILED.value)
+        self.assertEqual(r["budget_exceeded"][0]["budget"], "external_requests")
 
     def test_impact_trace(self):
         pol = PolicyEngine(set(GRANTS))
