@@ -6,6 +6,7 @@ HTTP API using stdlib only, exposing the recommended endpoints:
   GET  /v1/tasks/{id}/events
   POST /v1/tasks/{id}/approve
   POST /v1/tasks/{id}/cancel
+  POST /v1/tasks/{id}/reconcile
   GET  /v1/tasks/{id}/artifacts
   GET  /v1/tools
 Binds to 0.0.0.0 for the sandbox preview proxy.
@@ -19,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from .engine import Engine
+from .ledger import LedgerError
 from .policy import KNOWN_GRANTS
 from .ratelimit import TokenBucket
 
@@ -27,7 +29,8 @@ from .ratelimit import TokenBucket
 OPERATOR_GRANTS = [
     "web.read.public", "data.market.read", "repo.read",
     "workspace.write.sandbox", "binary.inspect.static", "model.infer",
-    "task.approve", "task.cancel", "ops.read", "memory.read", "memory.write",
+    "task.approve", "task.cancel", "task.reconcile", "ops.read",
+    "memory.read", "memory.write",
 ]
 
 
@@ -519,6 +522,34 @@ def make_handler(engine: Engine):
                 if decision not in ("approved", "rejected"):
                     return self._send(400, {"error": "decision must be approved or rejected"})
                 return self._send(200, engine.approve(parts[2], decision, sorted(self._caller_grants)))
+            if len(parts) == 4 and parts[:2] == ["v1", "tasks"] and parts[3] == "reconcile":
+                task, scope_err = self._task_for_caller(parts[2])
+                if scope_err:
+                    return scope_err
+                if "task.reconcile" not in self._caller_grants:
+                    return self._send(403, {"error": "API key lacks task.reconcile grant"})
+                body = self._body()
+                attempt_id = body.get("attempt_id")
+                outcome = body.get("outcome")
+                receipt = body.get("receipt")
+                if not isinstance(attempt_id, str) or not attempt_id:
+                    return self._send(400, {"error": "attempt_id is required"})
+                if outcome not in {"applied", "not_applied"}:
+                    return self._send(400, {"error": "outcome must be applied or not_applied"})
+                if receipt is not None and not isinstance(receipt, dict):
+                    return self._send(400, {"error": "receipt must be an object"})
+                try:
+                    result = engine.reconcile_attempt(
+                        parts[2], attempt_id, outcome, receipt,
+                        sorted(self._caller_grants))
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+                except LedgerError as exc:
+                    return self._send(409, {"error": str(exc)})
+                return self._send(200, {"task_id": parts[2],
+                                        "attempt_id": attempt_id,
+                                        "outcome": outcome, "result": result,
+                                        "state": result.get("state")})
             if len(parts) == 3 and parts[:2] == ["v1", "memory"]:
                 if parts[2] != self._caller_project():
                     return self._send(403, {"error": "cross-project access denied"})

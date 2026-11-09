@@ -370,9 +370,9 @@ class Ledger:
 
     def list_recoverable_tasks(self) -> list[dict]:
         """Fetch only interrupted tasks for recovery, not the full task history."""
-        states = (TaskState.PLANNED.value, TaskState.RUNNING.value,
-                  TaskState.VERIFYING.value, TaskState.CANCELLING.value,
-                  TaskState.RECOVERY_REQUIRED.value)
+        states = (TaskState.ADMITTED.value, TaskState.PLANNED.value,
+                  TaskState.RUNNING.value, TaskState.VERIFYING.value,
+                  TaskState.CANCELLING.value, TaskState.RECOVERY_REQUIRED.value)
         placeholders = ",".join("?" for _ in states)
         with self._lock:
             rows = self._db.execute(
@@ -383,9 +383,17 @@ class Ledger:
     # ---- plans and steps ---------------------------------------------
     @staticmethod
     def _step_definition(step: Step | dict) -> dict:
-        row = step.to_dict() if isinstance(step, Step) else dict(step)
-        return {key: row[key] for key in (
-            "step_id", "tool", "args", "depends_on", "read_only", "permissions_used")}
+        if isinstance(step, Step):
+            row = step.to_dict()
+        elif isinstance(step, dict):
+            row = dict(step)
+        else:
+            raise LedgerError("plan steps must be Step objects or dictionaries")
+        required = ("step_id", "tool", "args", "depends_on", "read_only",
+                    "permissions_used")
+        if any(key not in row for key in required):
+            raise LedgerError("plan step is missing required fields")
+        return {key: row[key] for key in required}
 
     @staticmethod
     def _plan_digest(definitions: list[dict]) -> tuple[str, str]:
@@ -393,20 +401,69 @@ class Ledger:
                                ensure_ascii=False)
         return canonical, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    def persist_plan(self, task_id: str, steps: list[Step],
-                     planner_version: str = "rules-v1",
-                     run_token: str | None = None) -> dict:
-        """Persist the first plan atomically and never replace it implicitly."""
-        definitions = [self._step_definition(step) for step in steps]
-        ids = [step["step_id"] for step in definitions]
+    @staticmethod
+    def _validate_plan_definitions(definitions: list[dict]) -> None:
+        """Validate a complete DAG before it can become executable state."""
+        if not isinstance(definitions, list) or not definitions:
+            raise LedgerError("plan must contain at least one step")
+        ids = []
+        for step in definitions:
+            if not isinstance(step, dict):
+                raise LedgerError("plan steps must be objects")
+            required = {"step_id", "tool", "args", "depends_on",
+                        "read_only", "permissions_used"}
+            if not required.issubset(step):
+                raise LedgerError("plan step is missing required fields")
+            if not isinstance(step["step_id"], str) or not step["step_id"].strip():
+                raise LedgerError("step_id must be a non-empty string")
+            if not isinstance(step["tool"], str) or not step["tool"].strip():
+                raise LedgerError(f"step {step['step_id']} has an invalid tool name")
+            if not isinstance(step["args"], dict):
+                raise LedgerError(f"step {step['step_id']} args must be an object")
+            if not isinstance(step["read_only"], bool):
+                raise LedgerError(f"step {step['step_id']} read_only must be boolean")
+            if (not isinstance(step["permissions_used"], list)
+                    or any(not isinstance(p, str) or not p
+                           for p in step["permissions_used"])):
+                raise LedgerError(f"step {step['step_id']} permissions_used must be strings")
+            if (not isinstance(step["depends_on"], list)
+                    or any(not isinstance(dep, str) or not dep
+                           for dep in step["depends_on"])):
+                raise LedgerError(f"step {step['step_id']} dependencies must be step IDs")
+            if len(step["depends_on"]) != len(set(step["depends_on"])):
+                raise LedgerError(f"step {step['step_id']} has duplicate dependencies")
+            ids.append(step["step_id"])
         if len(ids) != len(set(ids)):
             raise LedgerError("plan contains duplicate step IDs")
         known = set(ids)
+        dependents = {step_id: [] for step_id in ids}
+        indegree = {step_id: 0 for step_id in ids}
         for step in definitions:
-            if any(dep not in known or dep == step["step_id"]
-                   for dep in step["depends_on"]):
-                raise LedgerError(f"plan has invalid dependencies for {step['step_id']}")
-        serialized, digest = self._plan_digest(definitions)
+            step_id = step["step_id"]
+            for dep in step["depends_on"]:
+                if dep not in known or dep == step_id:
+                    raise LedgerError(f"plan has invalid dependency {dep!r} for {step_id}")
+                dependents[dep].append(step_id)
+                indegree[step_id] += 1
+        ready = [step_id for step_id, degree in indegree.items() if degree == 0]
+        visited = 0
+        while ready:
+            current = ready.pop()
+            visited += 1
+            for child in dependents[current]:
+                indegree[child] -= 1
+                if indegree[child] == 0:
+                    ready.append(child)
+        if visited != len(ids):
+            raise LedgerError("plan dependencies contain a cycle")
+
+    def persist_plan(self, task_id: str, steps: list[Step],
+                     planner_version: str = "rules-v1",
+                     run_token: str | None = None) -> dict:
+        """Persist the first validated DAG and never replace it implicitly."""
+        if not isinstance(steps, list):
+            raise LedgerError("plan must be a list of steps")
+        proposed = [self._step_definition(step) for step in steps]
         with self._write_transaction():
             task = self._db.execute(
                 "SELECT current_plan_version FROM tasks WHERE task_id=?", (task_id,)
@@ -422,18 +479,18 @@ class Ledger:
                     (task_id, version)).fetchone()
                 if not existing:
                     raise LedgerError(f"task {task_id} references a missing plan")
-                stored = json.loads(existing["steps_json"])
-                _, stored_digest = self._plan_digest(stored)
+                definitions = json.loads(existing["steps_json"])
+                _, stored_digest = self._plan_digest(definitions)
                 if stored_digest != existing["plan_hash"]:
                     raise LedgerError(f"persisted plan {version} for {task_id} is corrupt")
-                # The caller's newly generated plan is intentionally ignored;
-                # resumes execute the immutable, originally admitted snapshot.
+                self._validate_plan_definitions(definitions)
+                # On resume the newly generated plan is intentionally ignored;
+                # only the original, validated snapshot is executable.
             else:
+                definitions = proposed
+                self._validate_plan_definitions(definitions)
+                serialized, digest = self._plan_digest(definitions)
                 version = 1
-                self._db.execute(
-                    "INSERT INTO plans(task_id,plan_version,planner_version,plan_hash,steps_json,created_at) "
-                    "VALUES(?,?,?,?,?,?)",
-                    (task_id, version, planner_version, digest, serialized, utcnow()))
                 existing_steps = self._db.execute(
                     "SELECT step_id,tool,args,depends_on,read_only,permissions_used "
                     "FROM steps WHERE task_id=? ORDER BY rowid", (task_id,)).fetchall()
@@ -450,6 +507,10 @@ class Ledger:
                 else:
                     for step in definitions:
                         self._insert_step_locked(task_id, step)
+                self._db.execute(
+                    "INSERT INTO plans(task_id,plan_version,planner_version,plan_hash,steps_json,created_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (task_id, version, planner_version, digest, serialized, utcnow()))
                 self._db.execute(
                     "UPDATE tasks SET current_plan_version=? WHERE task_id=? AND current_plan_version=0",
                     (version, task_id))
@@ -475,6 +536,7 @@ class Ledger:
             if not row:
                 raise LedgerError(f"task {task_id} references a missing plan")
             definitions = json.loads(row["steps_json"])
+            self._validate_plan_definitions(definitions)
             _, digest = self._plan_digest(definitions)
             if digest != row["plan_hash"]:
                 raise LedgerError(f"persisted plan {version} for {task_id} is corrupt")
@@ -645,6 +707,84 @@ class Ledger:
                 "WHERE a.task_id=? AND a.state='UNKNOWN' ORDER BY a.started_at,a.attempt_number",
                 (task_id,)).fetchall()
             return [dict(row) for row in rows]
+
+    def request_recovery_cancel(self, task_id: str) -> dict:
+        """Persist cancellation intent without hiding unresolved side effects."""
+        with self._write_transaction():
+            task = self._db.execute(
+                "SELECT state,result FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if not task:
+                raise LedgerError(f"unknown task {task_id}")
+            if task["state"] != TaskState.RECOVERY_REQUIRED.value:
+                raise LedgerError("task is not recovery-required")
+            result = json.loads(task["result"]) if task["result"] else {}
+            unresolved = self._db.execute(
+                "SELECT COUNT(*) AS n FROM attempts WHERE task_id=? AND state='UNKNOWN'",
+                (task_id,)).fetchone()["n"]
+            if unresolved:
+                result["cancellation_requested"] = True
+                result["reason"] = "cancellation requested; unresolved tool outcomes still require reconciliation"
+                self._db.execute("UPDATE tasks SET result=?,updated_at=? WHERE task_id=?",
+                                 (json.dumps(result), utcnow(), task_id))
+                self._log(task_id, "task.cancellation_requested", {
+                    "state": TaskState.RECOVERY_REQUIRED.value,
+                    "unresolved_attempts": int(unresolved)})
+                return {"state": TaskState.RECOVERY_REQUIRED.value,
+                        "cancel_requested": True, "unresolved_attempts": int(unresolved)}
+            if not can_transition(TaskState.RECOVERY_REQUIRED, TaskState.CANCELLED):
+                raise LedgerError("invalid cancellation transition")
+            result.update({"state": TaskState.CANCELLED.value,
+                           "cancellation_requested": True,
+                           "reason": "cancelled after all tool outcomes were reconciled"})
+            self._db.execute("UPDATE tasks SET state=?,result=?,updated_at=? WHERE task_id=?",
+                             (TaskState.CANCELLED.value, json.dumps(result), utcnow(), task_id))
+            self._log(task_id, "task.state", {"from": TaskState.RECOVERY_REQUIRED.value,
+                                               "to": TaskState.CANCELLED.value})
+            return {"state": TaskState.CANCELLED.value, "cancel_requested": True,
+                    "unresolved_attempts": 0}
+
+    def set_recovery_result(self, task_id: str, result: dict, run_token: str) -> None:
+        """Update unresolved diagnostics without losing a concurrent cancel request."""
+        with self._write_transaction():
+            self._assert_run_claim_locked(task_id, run_token)
+            row = self._db.execute(
+                "SELECT state,result FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if not row or row["state"] != TaskState.RECOVERY_REQUIRED.value:
+                raise LedgerError("task is no longer recovery-required")
+            previous = json.loads(row["result"]) if row["result"] else {}
+            if previous.get("cancellation_requested"):
+                result["cancellation_requested"] = True
+            self._db.execute("UPDATE tasks SET result=?,updated_at=? WHERE task_id=?",
+                             (json.dumps(result), utcnow(), task_id))
+
+    def finish_recovery(self, task_id: str, run_token: str) -> str:
+        """Atomically choose resume versus cancel once ambiguity is removed."""
+        with self._write_transaction():
+            self._assert_run_claim_locked(task_id, run_token)
+            task = self._db.execute(
+                "SELECT state,result FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if not task or task["state"] != TaskState.RECOVERY_REQUIRED.value:
+                raise LedgerError("task is no longer recovery-required")
+            unresolved = self._db.execute(
+                "SELECT COUNT(*) AS n FROM attempts WHERE task_id=? AND state='UNKNOWN'",
+                (task_id,)).fetchone()["n"]
+            if unresolved:
+                return "unresolved"
+            result = json.loads(task["result"]) if task["result"] else {}
+            target = (TaskState.CANCELLED if result.get("cancellation_requested")
+                      else TaskState.RUNNING)
+            if not can_transition(TaskState.RECOVERY_REQUIRED, target):
+                raise LedgerError("invalid recovery completion transition")
+            result["state"] = target.value
+            if target == TaskState.CANCELLED:
+                result["reason"] = "cancelled after all tool outcomes were reconciled"
+            self._db.execute(
+                "UPDATE tasks SET state=?,result=?,updated_at=? WHERE task_id=? AND state=?",
+                (target.value, json.dumps(result), utcnow(), task_id,
+                 TaskState.RECOVERY_REQUIRED.value))
+            self._log(task_id, "task.state", {"from": TaskState.RECOVERY_REQUIRED.value,
+                                               "to": target.value})
+            return "cancelled" if target == TaskState.CANCELLED else "running"
 
     def resolve_unknown_attempt(self, attempt_id: str, outcome: str,
                                 run_token: str, receipt: ToolReceipt | None = None) -> None:
