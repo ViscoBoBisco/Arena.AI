@@ -111,45 +111,167 @@ class Engine:
                 raise PolicyViolation(
                     f"request omitted required permissions: {omitted}")
         except PolicyViolation as e:
-            self.ledger.set_state(env.task_id, TaskState.REJECTED)
+            self.ledger.set_state(env.task_id, TaskState.REJECTED,
+                                  expected_state=TaskState.CREATED)
             self.ledger.set_result(env.task_id, {"error": str(e)})
             return {"task_id": env.task_id, "duplicate": False,
                     "state": TaskState.REJECTED.value, "error": str(e)}
-        self.ledger.set_state(env.task_id, TaskState.ADMITTED)
+        self.ledger.set_state(env.task_id, TaskState.ADMITTED,
+                              expected_state=TaskState.CREATED)
         return {"task_id": env.task_id, "duplicate": False,
                 "state": TaskState.ADMITTED.value}
 
     # ---- execution -----------------------------------------------------
-    def run(self, task_id: str, grants: list[str]) -> dict:
-        """Plan and execute a task synchronously through the canonical path."""
+    def run(self, task_id: str, grants: list[str], *, reconcile_recovery: bool = False) -> dict:
+        """Run a task under a durable, lease-based single-worker claim.
+
+        Recovery-required tasks are deliberately inert unless the caller enters
+        through the explicit startup recovery path.
+        """
+        task = self.ledger.get_task(task_id)
+        if task is None:
+            raise LedgerError(f"unknown task {task_id}")
+        state = TaskState(task["state"])
+        if state in {TaskState.REJECTED, TaskState.FAILED, TaskState.CANCELLED,
+                     TaskState.COMPLETED} or (
+                     state == TaskState.RECOVERY_REQUIRED and not reconcile_recovery):
+            return task.get("result") or {"task_id": task_id, "state": state.value}
+        run_token = self.ledger.claim_run(task_id)
+        if run_token is None:
+            current = self.ledger.get_task(task_id)
+            return {"task_id": task_id, "state": current["state"],
+                    "already_running": True}
+        stop_heartbeat = threading.Event()
+        lost_claim = threading.Event()
+
+        def heartbeat():
+            while not stop_heartbeat.wait(10.0):
+                try:
+                    if not self.ledger.renew_run_claim(task_id, run_token):
+                        lost_claim.set()
+                        return
+                except Exception:
+                    lost_claim.set()
+                    return
+
+        heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
+        heartbeat_thread.start()
+        try:
+            return self._run_claimed(task_id, grants, run_token, lost_claim,
+                                    reconcile_recovery=reconcile_recovery)
+        finally:
+            stop_heartbeat.set()
+            heartbeat_thread.join(timeout=1)
+            self.ledger.release_run_claim(task_id, run_token)
+
+    def _run_claimed(self, task_id: str, grants: list[str], run_token: str,
+                     lost_claim: threading.Event, *,
+                     reconcile_recovery: bool = False) -> dict:
+        """Execute only while this worker retains the durable task claim."""
         task = self.ledger.get_task(task_id)
         if task is None:
             raise LedgerError(f"unknown task {task_id}")
         if task["state"] == TaskState.REJECTED.value:
             return task["result"]
+        if (task["state"] == TaskState.RECOVERY_REQUIRED.value
+                and not reconcile_recovery):
+            return task.get("result") or {
+                "task_id": task_id, "state": TaskState.RECOVERY_REQUIRED.value}
         env = TaskEnvelope(**task["envelope"])
         # Admission validated these requested capabilities against the caller's
         # grants. Persisted task permissions are the attenuated execution scope;
         # a later approver need not inherit the original tool authority.
         policy = PolicyEngine(set(env.permissions))
-        steps = plan(env)
-        self.ledger.save_steps(task_id, steps)
+        from .planner import PLANNER_VERSION
+        persisted_plan = self.ledger.persist_plan(
+            task_id, plan(env), planner_version=PLANNER_VERSION, run_token=run_token)
+        steps = persisted_plan["steps"]
+        cancellation_was_requested = task["state"] == TaskState.CANCELLING.value
+        interrupted = self.ledger.mark_interrupted_attempts(task_id, run_token)
+        if interrupted:
+            result = {"task_id": task_id,
+                      "state": TaskState.RECOVERY_REQUIRED.value,
+                      "reason": "worker stopped during a tool attempt; outcome requires reconciliation",
+                      "cancellation_requested": cancellation_was_requested,
+                      "unresolved_attempts": interrupted}
+            self.ledger.set_result(task_id, result, run_token=run_token)
+            if not reconcile_recovery:
+                return result
+            task = self.ledger.get_task(task_id)
+        plan_version = persisted_plan["version"]
         cur = TaskState(task["state"])
+        recovered_from_recovery = cur == TaskState.RECOVERY_REQUIRED
+        if recovered_from_recovery:
+            if not reconcile_recovery:
+                return task.get("result") or {
+                    "task_id": task_id, "state": TaskState.RECOVERY_REQUIRED.value}
+            for attempt in self.ledger.unresolved_attempts(task_id):
+                spec = self.broker.get(attempt["tool"])
+                attempt_args = json.loads(attempt["args"])
+                attempt_args["_project_id"] = env.project_id
+                permissions = json.loads(attempt["permissions_used"])
+                operation_key = attempt.get("operation_key")
+                if not operation_key:
+                    continue
+                outcome, receipt = self.broker.reconcile(
+                    task_id, attempt["step_id"], attempt["attempt_id"],
+                    attempt["tool"], attempt_args, permissions, policy, operation_key)
+                if outcome == "applied":
+                    self.ledger.resolve_unknown_attempt(
+                        attempt["attempt_id"], "applied", run_token, receipt)
+                elif outcome == "not_applied":
+                    self.ledger.resolve_unknown_attempt(
+                        attempt["attempt_id"], "retryable", run_token)
+                elif spec and (spec.side_effect_class == "read_only"
+                               or spec.supports_idempotency):
+                    # Reads are repeatable; keyed adapters can safely replay the
+                    # exact persisted operation key to obtain the original result.
+                    self.ledger.resolve_unknown_attempt(
+                        attempt["attempt_id"], "retryable", run_token)
+            still_unknown = self.ledger.unresolved_attempts(task_id)
+            if still_unknown:
+                result = {"task_id": task_id,
+                          "state": TaskState.RECOVERY_REQUIRED.value,
+                          "reason": "one or more tool outcomes remain unresolved",
+                          "unresolved_attempts": [
+                              {"attempt_id": a["attempt_id"], "step_id": a["step_id"],
+                               "tool": a["tool"]} for a in still_unknown]}
+                self.ledger.set_result(task_id, result, run_token=run_token)
+                return result
+            prior_result = task.get("result") or {}
+            if prior_result.get("cancellation_requested"):
+                self.ledger.set_state(task_id, TaskState.CANCELLED,
+                                      expected_state=TaskState.RECOVERY_REQUIRED,
+                                      run_token=run_token)
+                result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
+                          "reason": "cancelled after reconciling the in-flight operation",
+                          "receipts": [r.to_dict() for r in self.ledger.get_receipts(task_id)]}
+                self.ledger.set_result(task_id, result, run_token=run_token)
+                return result
+            self.ledger.set_state(task_id, TaskState.RUNNING,
+                                  expected_state=TaskState.RECOVERY_REQUIRED,
+                                  run_token=run_token)
+            cur = TaskState.RUNNING
         if cur == TaskState.CANCELLING:
-            self.ledger.set_state(task_id, TaskState.CANCELLED)
+            self.ledger.set_state(task_id, TaskState.CANCELLED, run_token=run_token)
             result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
                       "reason": "recovered cancellation"}
-            self.ledger.set_result(task_id, result)
+            self.ledger.set_result(task_id, result, run_token=run_token)
             with self._lock:
                 self._cancel.discard(task_id)
             if self.model_router and hasattr(self.model_router, "forget_task"):
                 self.model_router.forget_task(task_id)
             return result
         if cur == TaskState.ADMITTED:
-            self.ledger.set_state(task_id, TaskState.PLANNED)
-            self.ledger.set_state(task_id, TaskState.RUNNING)
-        elif cur == TaskState.WAITING_APPROVAL:
-            self.ledger.set_state(task_id, TaskState.RUNNING)  # resumed after approval
+            self.ledger.set_state(task_id, TaskState.PLANNED,
+                                  expected_state=TaskState.ADMITTED, run_token=run_token)
+            self.ledger.set_state(task_id, TaskState.RUNNING,
+                                  expected_state=TaskState.PLANNED, run_token=run_token)
+        elif cur in {TaskState.PLANNED, TaskState.WAITING_APPROVAL}:
+            self.ledger.set_state(task_id, TaskState.RUNNING,
+                                  expected_state=cur, run_token=run_token)
+        elif cur not in {TaskState.RUNNING, TaskState.VERIFYING}:
+            raise LedgerError(f"task {task_id} cannot run from state {cur.value}")
 
         # Resumable: steps already SUCCEEDED (after approval pause or restart)
         # are not re-executed.
@@ -163,11 +285,16 @@ class Engine:
         from concurrent.futures import ThreadPoolExecutor
         started = _time.monotonic()
         budgets = env.budgets or {}
-        remaining = [s for s in steps if s.step_id not in done]
+        resolved_steps = {receipt.step_id for receipt in receipts}
+        remaining = ([] if cur == TaskState.VERIFYING else
+                     [s for s in steps if s.step_id not in done
+                      and s.step_id not in resolved_steps])
         # Wave-based DAG execution (manual 4.5): independent ready steps run
         # in parallel (tool parallelism); model calls serialize on the shared
         # router queue. Approval pauses break the wave loop sequentially.
         while remaining:
+            if lost_claim.is_set():
+                raise LedgerError(f"worker lost execution claim for {task_id}")
             ready = [s for s in remaining
                      if all(dep in done for dep in s.depends_on)]
             if not ready:
@@ -181,11 +308,11 @@ class Engine:
                     if decision is None:
                         self.ledger.save_approval(task_id, step.step_id, "pending")
                     if decision == "rejected":
-                        self.ledger.set_state(task_id, TaskState.CANCELLING)
-                        self.ledger.set_state(task_id, TaskState.CANCELLED)
+                        self.ledger.set_state(task_id, TaskState.CANCELLING, run_token=run_token)
+                        self.ledger.set_state(task_id, TaskState.CANCELLED, run_token=run_token)
                         result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
                                   "reason": "approval rejected", "pending_step": step.step_id}
-                        self.ledger.set_result(task_id, result)
+                        self.ledger.set_result(task_id, result, run_token=run_token)
                         return result
                     if decision != "approved":
                         pause = step
@@ -193,21 +320,21 @@ class Engine:
             if pause is not None:
                 with self._lock:
                     if task_id in self._cancel:
-                        self.ledger.set_state(task_id, TaskState.CANCELLING)
-                        self.ledger.set_state(task_id, TaskState.CANCELLED)
+                        self.ledger.set_state(task_id, TaskState.CANCELLING, run_token=run_token)
+                        self.ledger.set_state(task_id, TaskState.CANCELLED, run_token=run_token)
                         result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
                                   "reason": "cancelled before approval"}
                         for approval in self.ledger.pending_approvals(task_id):
                             self.ledger.save_approval(task_id, approval["step_id"], "cancelled")
-                        self.ledger.set_result(task_id, result)
+                        self.ledger.set_result(task_id, result, run_token=run_token)
                         self._cancel.discard(task_id)
                         if self.model_router and hasattr(self.model_router, "forget_task"):
                             self.model_router.forget_task(task_id)
                         return result
-                    self.ledger.set_state(task_id, TaskState.WAITING_APPROVAL)
+                    self.ledger.set_state(task_id, TaskState.WAITING_APPROVAL, run_token=run_token)
                     result = {"task_id": task_id, "state": TaskState.WAITING_APPROVAL.value,
                               "pending_step": pause.step_id, "tool": pause.tool}
-                    self.ledger.set_result(task_id, result)
+                    self.ledger.set_result(task_id, result, run_token=run_token)
                     return result
             budget_hit = None
             if _time.monotonic() - started > budgets.get("time_seconds", 600):
@@ -217,14 +344,15 @@ class Engine:
             if task_id in self._cancel or budget_hit:
                 reason = "cancelled" if task_id in self._cancel else "budget_exceeded"
                 for step in ready:
-                    receipt = ToolReceipt(task_id, step.step_id, new_id("A"),
+                    attempt_id = self.ledger.start_attempt(
+                        task_id, step.step_id, plan_version, run_token)
+                    receipt = ToolReceipt(task_id, step.step_id, attempt_id,
                                           "failed" if budget_hit else "cancelled",
                                           "error.budget.v1" if budget_hit else "cancelled.v1",
                                           reason,
                                           errors=[] if not budget_hit else
                                           [{"type": "budget_exceeded", "budget": budget_hit}])
-                    self.ledger.save_receipt(receipt, committed=False)
-                    self.ledger.set_step_state(task_id, step.step_id, StepState.FAILED)
+                    self.ledger.save_receipt(receipt, committed=False, run_token=run_token)
                     receipts.append(receipt)
                 break
             with ThreadPoolExecutor(max_workers=4) as pool:
@@ -235,18 +363,19 @@ class Engine:
                         receipts.append(committed)
                         done.add(step.step_id)
                         continue
-                    self.ledger.set_step_state(task_id, step.step_id, StepState.RUNNING)
+                    attempt_id = self.ledger.start_attempt(
+                        task_id, step.step_id, plan_version, run_token)
+                    operation_key = self.ledger.attempt_operation_key(attempt_id)
                     call_args = dict(step.args)
                     call_args["_project_id"] = env.project_id
                     futs[pool.submit(self.broker.call, task_id, step.step_id, step.tool,
-                                     call_args, step.permissions_used, policy)] = step
+                                     call_args, step.permissions_used, policy,
+                                     attempt_id=attempt_id,
+                                     idempotency_key=operation_key)] = step
                 for fut in futs:
                     step = futs[fut]
                     receipt = fut.result()
-                    self.ledger.save_receipt(receipt, committed=(receipt.status == "succeeded"))
-                    self.ledger.set_step_state(
-                        task_id, step.step_id,
-                        StepState.SUCCEEDED if receipt.status == "succeeded" else StepState.FAILED)
+                    self.ledger.save_receipt(receipt, committed=(receipt.status == "succeeded"), run_token=run_token)
                     receipts.append(receipt)
                     with self._lock:
                         for metrics in (self.metrics, self._project_metric(env.project_id)):
@@ -258,26 +387,29 @@ class Engine:
                             metrics["model_tokens"] += receipt.usage.get("model_tokens", 0)
                     if receipt.status == "succeeded":
                         done.add(step.step_id)
-            remaining = [s for s in remaining if s.step_id not in done]
+            resolved = {receipt.step_id for receipt in receipts}
+            remaining = [s for s in remaining
+                         if s.step_id not in done and s.step_id not in resolved]
 
         with self._lock:
             current = TaskState(self.ledger.get_task(task_id)["state"])
             if task_id in self._cancel or current == TaskState.CANCELLING:
                 if current != TaskState.CANCELLING:
-                    self.ledger.set_state(task_id, TaskState.CANCELLING)
-                self.ledger.set_state(task_id, TaskState.CANCELLED)
+                    self.ledger.set_state(task_id, TaskState.CANCELLING, run_token=run_token)
+                self.ledger.set_state(task_id, TaskState.CANCELLED, run_token=run_token)
                 result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
                           "receipts": [r.to_dict() for r in receipts]}
             elif any(r.status == "failed" for r in receipts):
-                self.ledger.set_state(task_id, TaskState.FAILED)
+                self.ledger.set_state(task_id, TaskState.FAILED, run_token=run_token)
                 result = verify(task_id, receipts)
                 result["state"] = TaskState.FAILED.value
             else:
-                self.ledger.set_state(task_id, TaskState.VERIFYING)
+                if current != TaskState.VERIFYING:
+                    self.ledger.set_state(task_id, TaskState.VERIFYING, run_token=run_token)
                 result = verify(task_id, receipts)
                 result["state"] = TaskState.COMPLETED.value
-                self.ledger.set_state(task_id, TaskState.COMPLETED)
-            self.ledger.set_result(task_id, result)
+                self.ledger.set_state(task_id, TaskState.COMPLETED, run_token=run_token)
+            self.ledger.set_result(task_id, result, run_token=run_token)
             self._cancel.discard(task_id)
 
         # Keep network delivery outside the engine lock; terminal state is
@@ -285,7 +417,7 @@ class Engine:
         if result.get("state") == TaskState.COMPLETED.value and self.delivery \
                 and env.delivery.get("webhook_url"):
             result["delivery"] = self.delivery.deliver(env.delivery["webhook_url"], result)
-            self.ledger.set_result(task_id, result)
+            self.ledger.set_result(task_id, result, run_token=run_token)
         if self.model_router and hasattr(self.model_router, "forget_task"):
             self.model_router.forget_task(task_id)
         with self._lock:
@@ -304,13 +436,16 @@ class Engine:
         return t
 
     def recover(self, grants: list[str]) -> list:
-        """Startup recovery (manual 5.4): reconcile tasks left in non-terminal
-        states by re-running them; committed receipts are reused, so side
-        effects are never repeated (at-least-once + idempotency)."""
+        """Recover interrupted tasks without replaying ambiguous side effects.
+
+        Committed receipts are reused. Unknown outcomes require an adapter
+        reconciliation callback, a read-only operation, or a guaranteed
+        idempotency key; otherwise the task stays recovery-required.
+        """
         recovered = []
         for task in self.ledger.list_recoverable_tasks():
             try:
-                self.run(task["task_id"], grants)
+                self.run(task["task_id"], grants, reconcile_recovery=True)
                 recovered.append(task["task_id"])
             except Exception:
                 pass
@@ -332,15 +467,24 @@ class Engine:
                 self._cancel.discard(task_id)
                 return False
             if state == TaskState.WAITING_APPROVAL:
+                self.ledger.set_state(task_id, TaskState.CANCELLED,
+                                      expected_state=TaskState.WAITING_APPROVAL)
                 for approval in self.ledger.pending_approvals(task_id):
                     self.ledger.save_approval(task_id, approval["step_id"], "cancelled")
-                self.ledger.set_state(task_id, TaskState.CANCELLED)
                 result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
                           "reason": "cancelled by caller"}
                 self.ledger.set_result(task_id, result)
                 self._cancel.discard(task_id)
                 if self.model_router and hasattr(self.model_router, "forget_task"):
                     self.model_router.forget_task(task_id)
+                return True
+            if state == TaskState.RECOVERY_REQUIRED:
+                self.ledger.set_state(task_id, TaskState.CANCELLED,
+                                      expected_state=TaskState.RECOVERY_REQUIRED)
+                result = copy.deepcopy(task.get("result") or {})
+                result.update({"state": TaskState.CANCELLED.value,
+                               "reason": "cancelled with unresolved tool outcomes"})
+                self.ledger.set_result(task_id, result)
                 return True
             self._cancel.add(task_id)
             return True
@@ -353,14 +497,24 @@ class Engine:
         task = self.ledger.get_task(task_id)
         if not task:
             raise LedgerError(f"unknown task {task_id}")
-        for ap in self.ledger.pending_approvals(task_id):
-            self.ledger.save_approval(task_id, ap["step_id"], decision)
         if task["state"] == TaskState.WAITING_APPROVAL.value:
+            target = TaskState.RUNNING if decision == "approved" else TaskState.CANCELLED
+            try:
+                self.ledger.set_state(task_id, target,
+                                      expected_state=TaskState.WAITING_APPROVAL)
+            except LedgerError:
+                current = self.ledger.get_task(task_id)
+                return {"task_id": task_id, "decision": decision,
+                        "state": current["state"] if current else "UNKNOWN",
+                        "already_resolved": True}
+            for approval in self.ledger.pending_approvals(task_id):
+                self.ledger.save_approval(task_id, approval["step_id"], decision)
             if decision == "approved":
-                self.ledger.set_state(task_id, TaskState.RUNNING)
                 result = self.run(task_id, grants or [])
                 return {"task_id": task_id, "decision": decision, "result": result}
-            self.ledger.set_state(task_id, TaskState.CANCELLED)  # legal per 5.4
+            result = {"task_id": task_id, "state": TaskState.CANCELLED.value,
+                      "reason": "approval rejected"}
+            self.ledger.set_result(task_id, result)
             return {"task_id": task_id, "decision": decision,
                     "state": TaskState.CANCELLED.value}
         return {"task_id": task_id, "decision": decision, "state": task["state"]}

@@ -1,9 +1,13 @@
-# Arena.AI
+# Conflux
 
-## Unified Agentic Intelligence Platform — core build
+> A unified agentic intelligence platform that transforms objectives into coordinated, resource-efficient, independently verifiable execution across AI models, specialist agents, software tools, data systems, and persistent workflows, under centralized governance and durable task custody.
 
-A working implementation of the Phase 1–2 vertical slice from the architecture
-manual in [`docs/unified-agentic-system/`](docs/unified-agentic-system/):
+## Current implementation
+
+Conflux is the project implementation of the architecture described in
+[`docs/unified-agentic-system/`](docs/unified-agentic-system/). The prioritized
+remaining development goals are tracked in the
+[Conflux development checklist](docs/DEVELOPMENT_CHECKLIST.md):
 
 ```
 unified/
@@ -160,6 +164,6 @@ conflict surfacing and typed tool failures are all covered by the tests.
 
 ## Documentation
 
-- **Unified Agentic Intelligence Platform — Architecture Manual** in
+- **Conflux — Unified Agentic Intelligence Platform Manual** in
   [`docs/unified-agentic-system/`](docs/unified-agentic-system/). Start with
   `Unified_Agentic_System_Manual.html` (fully self-contained, works offline).

@@ -12,7 +12,8 @@ from typing import Any
 
 
 def new_id(prefix: str) -> str:
-    return f"{prefix}-{uuid.uuid4().hex[:12].upper()}"
+    """Create a collision-resistant, server-owned identifier."""
+    return f"{prefix}-{uuid.uuid4().hex.upper()}"
 
 
 class TaskState(str, enum.Enum):
@@ -26,6 +27,7 @@ class TaskState(str, enum.Enum):
     CANCELLING = "CANCELLING"
     CANCELLED = "CANCELLED"
     FAILED = "FAILED"
+    RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
     COMPLETED = "COMPLETED"
 
 
@@ -36,6 +38,7 @@ class StepState(str, enum.Enum):
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+    INTERRUPTED = "INTERRUPTED"
 
 
 # Allowed transitions per manual 5.4. No undocumented transition may move a
@@ -49,9 +52,11 @@ ALLOWED_TRANSITIONS = {
         TaskState.WAITING_APPROVAL,
         TaskState.CANCELLING,
         TaskState.FAILED,
+        TaskState.RECOVERY_REQUIRED,
     },
     TaskState.WAITING_APPROVAL: {TaskState.RUNNING, TaskState.CANCELLED},
-    TaskState.CANCELLING: {TaskState.CANCELLED},
+    TaskState.CANCELLING: {TaskState.CANCELLED, TaskState.RECOVERY_REQUIRED},
+    TaskState.RECOVERY_REQUIRED: {TaskState.RUNNING, TaskState.CANCELLED},
     TaskState.VERIFYING: {TaskState.COMPLETED, TaskState.FAILED},
 }
 for _t in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED, TaskState.REJECTED):
@@ -68,7 +73,7 @@ def utcnow() -> str:
 
 @dataclass
 class TaskEnvelope:
-    """Canonical task envelope (manual 5.1)."""
+    """Canonical, versioned task envelope (manual 5.1)."""
     task_id: str
     idempotency_key: str
     project_id: str
@@ -77,6 +82,7 @@ class TaskEnvelope:
     permissions: list = field(default_factory=list)
     budgets: dict = field(default_factory=lambda: {"model_calls": 12, "tool_calls": 30, "time_seconds": 600})
     delivery: dict = field(default_factory=lambda: {"format": "report_with_evidence"})
+    envelope_version: int = 1
 
 
 @dataclass

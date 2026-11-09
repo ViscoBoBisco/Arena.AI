@@ -1,4 +1,4 @@
-UNIFIED AGENTIC SYSTEM — FULLY ILLUSTRATED TECHNICAL MANUAL
+CONFLUX — UNIFIED AGENTIC SYSTEM TECHNICAL MANUAL
 
 START HERE
 1. Easiest: open Unified_Agentic_System_Manual.html in Firefox, Chrome or another browser. All 9 architecture diagrams and all 7 original diagrams are embedded inside the HTML; it works offline by itself.
