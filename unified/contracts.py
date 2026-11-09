@@ -11,6 +11,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+DEFAULT_BUDGETS = {
+    "tool_calls": 30,
+    "model_calls": 12,
+    "model_tokens": 4096,
+    "time_seconds": 600,
+    "concurrency": 4,
+    "external_requests": 10,
+}
+
+
 def new_id(prefix: str) -> str:
     """Create a collision-resistant, server-owned identifier."""
     return f"{prefix}-{uuid.uuid4().hex.upper()}"
@@ -80,7 +90,7 @@ class TaskEnvelope:
     request: dict
     inputs: list = field(default_factory=list)
     permissions: list = field(default_factory=list)
-    budgets: dict = field(default_factory=lambda: {"model_calls": 12, "tool_calls": 30, "time_seconds": 600})
+    budgets: dict = field(default_factory=lambda: dict(DEFAULT_BUDGETS))
     delivery: dict = field(default_factory=lambda: {"format": "report_with_evidence"})
     envelope_version: int = 1
 

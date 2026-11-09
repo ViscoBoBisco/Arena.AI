@@ -499,6 +499,8 @@ def make_handler(engine: Engine):
                         budgets=b.get("budgets"))
                 except KeyError as e:
                     return self._send(400, {"error": f"missing field: {e}"})
+                except ValueError as e:
+                    return self._send(400, {"error": str(e)})
                 if out.get("conflict"):
                     return self._send(409, out)
                 if out.get("state") == "REJECTED":

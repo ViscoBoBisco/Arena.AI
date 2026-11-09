@@ -11,6 +11,13 @@ This is the consolidated development direction for Conflux. Items are grouped by
 - [ ] **3. Enforce execution budgets and cancellation.** Apply real limits to tool calls, model calls, tokens, time, concurrency, CPU, memory, and external requests. Support cancellation, timeout propagation, and explicit budget-exceeded results.
 - [ ] **4. Correct usage accounting and telemetry.** Preserve actual provider usage through the broker, receipts, ledger, and UI. Measure latency, errors, throughput, resource consumption, and costs, including after restarts.
 
+### Deferred recovery qualification (items 1–2 remain accepted)
+
+- [ ] **Structured recovery reporting.** Return one outcome per task (`completed`, `resumed`, `still_unresolved`, `already_running`, or `recovery_failed`) and retain errors for inspection; never report unresolved tasks as recovered successes.
+- [ ] **Forced process-termination qualification.** Add an integration test that kills a separate worker process during an external side effect and verifies the recovered ledger state and absence of an unsafe duplicate action.
+- [ ] **Adapter-specific idempotency contracts.** Document and qualify each side-effecting adapter's real service-side idempotency and reconciliation guarantees across crashes, timeouts, and network partitions; do not infer these guarantees from the generic broker key propagation test.
+- [ ] **Isolated CPU and memory enforcement for item 3.** The current threaded in-process tool runner cannot safely impose per-task hard CPU/RSS ceilings or forcibly stop a non-cooperative handler at its wall-clock deadline. Move untrusted or resource-heavy tool execution into supervised worker processes/containers with OS-enforced CPU and memory limits, kill-on-budget behavior, and ledger-aware recovery; do not mark item 3 complete until qualified.
+
 ## P1 — Intelligence, planning, and verification
 
 - [ ] **5. Integrate actual AI inference.** Replace the simulated model with working local and/or hosted models through a provider-independent interface supporting discovery, context limits, streaming, cancellation, errors, and usage reporting.

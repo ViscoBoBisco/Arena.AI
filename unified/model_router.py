@@ -32,14 +32,26 @@ class ModelRouter:
             self._task_tokens.pop(task_id, None)
 
     def complete(self, prompt: str, budget_tokens: int = 4096,
-                 task_id: str | None = None) -> dict:
-        """Deterministic local stand-in for a model generation. Queues on the
-        semaphore and fails gracefully with a resource receipt when the budget
-        is exhausted (manual 5.10, test 9)."""
-        if not self._sem.acquire(timeout=30):
-            return {"ok": False, "error": "model queue saturated",
-                    "usage": {"queued_seconds": 30}}
+                 task_id: str | None = None, deadline_at: float | None = None,
+                 cancel_check=None) -> dict:
+        """Run under task cancellation, deadline, and cumulative token limits."""
+        queued_at = time.monotonic()
+        wait_deadline = min(deadline_at or (time.time() + 30), time.time() + 30)
+        while not self._sem.acquire(timeout=min(0.05, max(0.0, wait_deadline - time.time()))):
+            if cancel_check and cancel_check():
+                return {"ok": False, "cancelled": True, "error": "model call cancelled",
+                        "usage": {"queued_seconds": time.monotonic() - queued_at}}
+            if time.time() >= wait_deadline:
+                return {"ok": False, "budget": "time_seconds",
+                        "error": "model queue/deadline budget exceeded",
+                        "usage": {"queued_seconds": time.monotonic() - queued_at}}
         try:
+            if cancel_check and cancel_check():
+                return {"ok": False, "cancelled": True, "error": "model call cancelled",
+                        "usage": {"queued_seconds": 0}}
+            if deadline_at is not None and time.time() >= deadline_at:
+                return {"ok": False, "budget": "time_seconds",
+                        "error": "task time budget exceeded", "usage": {"queued_seconds": 0}}
             # The default identity keeps direct/legacy calls in one budget
             # scope; production tool calls always pass their durable task ID.
             budget_scope = task_id or "_unscoped"
@@ -49,7 +61,8 @@ class ModelRouter:
             with self._lock:
                 task_used = self._task_tokens.get(budget_scope, 0)
                 if task_used + used > max(0, budget_tokens):
-                    return {"ok": False, "error": "token budget exhausted",
+                    return {"ok": False, "budget": "model_tokens",
+                            "error": "model token budget exhausted",
                             "usage": {"tokens_used": task_used,
                                       "budget_tokens": max(0, budget_tokens)}}
                 task_used += used
