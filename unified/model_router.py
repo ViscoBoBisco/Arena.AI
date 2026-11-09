@@ -206,9 +206,11 @@ class ModelRouter:
         if self.max_concurrent < 1:
             raise ValueError("max_concurrent must be at least one")
         self.provider = self.provider or provider_from_environment()
-        if (os.environ.get("UNIFIED_ENV", "").strip().lower() in {"prod", "production"}
-                and isinstance(self.provider, SimulatedProvider)):
-            raise RuntimeError("production requires a real CONFLUX_MODEL_PROVIDER")
+        # Production startup must not depend on inference being configured; the
+        # simulated provider is refused per model call in complete() instead.
+        self._simulated_refused = (
+            os.environ.get("UNIFIED_ENV", "").strip().lower() in {"prod", "production"}
+            and isinstance(self.provider, SimulatedProvider))
         self._sem = threading.BoundedSemaphore(self.max_concurrent)
         self._lock = threading.Lock()
         self._tokens_used = 0
@@ -236,6 +238,9 @@ class ModelRouter:
         provider's max-token parameter, but input/context limits remain
         provider-specific and need model metadata qualification.
         """
+        if self._simulated_refused:
+            return {"ok": False, "error": "production requires a real CONFLUX_MODEL_PROVIDER",
+                    "usage": {"queued_seconds": 0, "provider_calls": 0}}
         queued_at = time.monotonic()
         acquired = False
         wait_deadline = min(deadline_at or (time.time() + 30), time.time() + 30)

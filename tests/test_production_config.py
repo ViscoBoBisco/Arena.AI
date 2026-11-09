@@ -85,6 +85,15 @@ class ProductionConfigurationTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     _load_web_allowlist()
 
+    def test_production_router_constructs_but_refuses_simulated_inference(self):
+        from unified.model_router import ModelRouter
+        with patch.dict(os.environ, {"UNIFIED_ENV": "production",
+                                     "CONFLUX_MODEL_PROVIDER": "simulated"}, clear=False):
+            router = ModelRouter(max_concurrent=1)
+            result = router.complete("hello", task_id="T-prod")
+        self.assertFalse(result["ok"])
+        self.assertIn("production requires a real", result["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
