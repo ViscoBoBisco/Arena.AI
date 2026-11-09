@@ -1,4 +1,4 @@
-# Unified Agentic Intelligence and Execution Platform
+# Conflux — Unified Agentic Intelligence and Execution Platform
 
 **Complete architecture manual — seven original subsystems plus the integration layer**  
 **Revision:** 2026-11-06 · **Status:** architecture / implementation specification (not a claim of completed integration)  
