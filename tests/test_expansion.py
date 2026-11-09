@@ -59,6 +59,13 @@ class ExpansionTests(unittest.TestCase):
     def _call(self, tool, args, perms):
         return self.broker.call("T", "S", tool, args, perms, self.policy)
 
+    def test_codegraph_index_is_declared_as_repeatable_internal_write(self):
+        spec = self.broker.get("codegraph.index")
+        self.assertEqual(spec.side_effect_class, "internal_write")
+        self.assertFalse(spec.read_only)
+        self.assertTrue(spec.repeatable)
+        self.assertFalse(spec.requires_approval)
+
     def test_web_allowlist_fails_closed(self):
         r = self._call("scrapling.fetch", {"url": "https://example.org/x"}, ["web.read.public"])
         self.assertEqual(r.status, "failed")
@@ -146,12 +153,37 @@ class ExpansionTests(unittest.TestCase):
         self.assertTrue(other["ok"])
         self.assertEqual(first["usage"]["model_tokens"], other["usage"]["model_tokens"])
         self.assertFalse(repeated["ok"])
-        self.assertEqual(repeated["usage"]["tokens_used"], first["usage"]["model_tokens"])
+        # The over-budget inference call still consumed provider/simulated
+        # tokens; accounting reports the actual cumulative amount, not the
+        # pre-call balance.
+        self.assertEqual(repeated["usage"]["tokens_used"],
+                         first["usage"]["model_tokens"] + repeated["usage"]["model_tokens"])
         router.forget_task("task-a")
         self.assertTrue(router.complete("hi", budget_tokens=5, task_id="task-a")["ok"])
         router.restore_task_usage("task-recovered", 3)
         self.assertFalse(router.complete("hi", budget_tokens=5,
                                          task_id="task-recovered")["ok"])
+
+    def test_model_router_preserves_provider_reported_usage_and_cost(self):
+        from unified.model_router import OpenAICompatibleProvider
+        provider = OpenAICompatibleProvider(
+            "https://example.invalid/v1", "qualified-test-model", "not-used",
+            True, 2.0, 4.0)
+        provider.complete = lambda *_args, **_kwargs: {
+            "completion": "answer", "usage": {
+                "provider": "openai_compatible", "provider_calls": 1,
+                "usage_source": "provider", "input_tokens": 12,
+                "output_tokens": 8, "model_tokens": 20,
+                "cost_usd": 0.000056, "cost_source": "configured_rate_card",
+                "cost_consumption_uncertain": False}}
+        router = ModelRouter(provider=provider)
+        result = router.complete("prompt", task_id="metered", budget_tokens=100)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["usage"]["model_tokens"], 20)
+        self.assertEqual(result["usage"]["input_tokens"], 12)
+        self.assertEqual(result["usage"]["output_tokens"], 8)
+        self.assertEqual(result["usage"]["provider_calls"], 1)
+        self.assertEqual(result["usage"]["cost_usd"], 0.000056)
 
     def test_model_tool(self):
         r = self._call("model.complete", {"prompt": "summarize", "budget_tokens": 100},

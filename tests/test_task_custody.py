@@ -52,8 +52,37 @@ class TaskCustodyTests(unittest.TestCase):
         self.assertEqual(self.ledger.get_task(task_id)["state"], TaskState.ADMITTED.value)
         self.assertIn(task_id, [row["task_id"]
                                 for row in self.ledger.list_recoverable_tasks()])
-        self.assertIn(task_id, self.engine.recover([]))
+        outcomes = self.engine.recover([])
+        self.assertEqual(len(outcomes), 1)
+        self.assertEqual(outcomes[0]["task_id"], task_id)
+        self.assertEqual(outcomes[0]["outcome"], "completed")
         self.assertEqual(self.ledger.get_task(task_id)["state"], TaskState.COMPLETED.value)
+        self.assertEqual(self.ledger.recovery_outcomes(outcomes[0]["recovery_id"])[0]["outcome"],
+                         "completed")
+
+    def test_recovery_reports_already_running_and_persists_exception_details(self):
+        active_task = self._task("already-active-recovery")["task_id"]
+        active_token = self.ledger.claim_run(active_task)
+        outcomes = self.engine.recover([])
+        active = next(item for item in outcomes if item["task_id"] == active_task)
+        self.assertEqual(active["outcome"], "already_running")
+        self.ledger.release_run_claim(active_task, active_token)
+
+        failed_task = self._task("failed-recovery-report")["task_id"]
+        original_run = self.engine.run
+        self.engine.run = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("qualification failure"))
+        try:
+            outcomes = self.engine.recover([])
+        finally:
+            self.engine.run = original_run
+        failed = next(item for item in outcomes if item["task_id"] == failed_task)
+        self.assertEqual(failed["outcome"], "recovery_failed")
+        self.assertEqual(failed["error"]["type"], "RuntimeError")
+        self.assertEqual(failed["error"]["message"], "qualification failure")
+        persisted = self.ledger.recovery_outcomes(failed["recovery_id"], failed_task)[0]
+        self.assertEqual(persisted["detail"]["error"]["message"],
+                         "qualification failure")
 
     def test_plan_snapshot_is_versioned_hashed_and_immutable_on_resume(self):
         task = self._task("immutable-plan")
@@ -446,8 +475,12 @@ class TaskCustodyTests(unittest.TestCase):
                 side_effects.append(key)
             return {"result_type": "test.idempotent.v1", "summary": "deduplicated"}
 
-        self.broker.register(ToolSpec("test.idempotent", [], "external_effect",
-                                      idempotent_tool, supports_idempotency=True))
+        # Test-only contract declaration exercises the gated retry path; it is
+        # not service-side qualification evidence for any deployed adapter.
+        self.broker.register(ToolSpec(
+            "test.idempotent", [], "external_effect", idempotent_tool,
+            supports_idempotency=True, idempotency_qualified=True,
+            idempotency_evidence="test-only fixture; not deployment qualification"))
         step = Step("S-IDEMPOTENT", "test.idempotent", {}, read_only=False)
         import unified.engine as engine_module
         original_plan = engine_module.plan
@@ -473,7 +506,8 @@ class TaskCustodyTests(unittest.TestCase):
                 self.ledger._db.execute(
                     "UPDATE run_claims SET lease_until=0 WHERE task_id=?", (task_id,))
             recovered = self.engine.recover([])
-            self.assertIn(task_id, recovered)
+            self.assertEqual(recovered[0]["task_id"], task_id)
+            self.assertEqual(recovered[0]["outcome"], "completed")
             self.assertEqual(side_effects, [first_key])
             attempts = self.ledger.get_attempts(task_id)
             self.assertEqual(len(attempts), 2,
@@ -488,10 +522,14 @@ class TaskCustodyTests(unittest.TestCase):
     def test_unknown_non_idempotent_side_effect_remains_parked(self):
         task_id = self._task("park-unknown-effect")["task_id"]
         dispatches = []
+        def reconciliation_failure(_args, _operation_key):
+            raise RuntimeError("provider reconciliation unavailable")
+
         self.broker.register(ToolSpec(
             "test.ambiguous", [], "external_effect",
             lambda _args: dispatches.append(True) or {
-                "result_type": "test.ambiguous.v1", "summary": "should not rerun"}))
+                "result_type": "test.ambiguous.v1", "summary": "should not rerun"},
+            reconcile=reconciliation_failure))
         step = Step("S-AMBIGUOUS", "test.ambiguous", {}, read_only=False)
         import unified.engine as engine_module
         original_plan = engine_module.plan
@@ -508,7 +546,14 @@ class TaskCustodyTests(unittest.TestCase):
             self.ledger.start_attempt(task_id, step.step_id, snapshot["version"], token)
             self.ledger.release_run_claim(task_id, token)
             recovered = self.engine.recover([])
-            self.assertIn(task_id, recovered)
+            self.assertEqual(recovered[0]["task_id"], task_id)
+            self.assertEqual(recovered[0]["outcome"], "still_unresolved")
+            self.assertEqual(recovered[0]["result"]["reconciliation_errors"][0]["error"]["type"],
+                             "RuntimeError")
+            persisted = self.ledger.recovery_outcomes(
+                recovered[0]["recovery_id"], task_id)[0]
+            self.assertEqual(persisted["detail"]["result"]["reconciliation_errors"][0]
+                             ["error"]["type"], "RuntimeError")
             self.assertEqual(dispatches, [])
             self.assertEqual(len(self.ledger.get_attempts(task_id)), 1)
             self.assertEqual(self.ledger.get_attempts(task_id)[0]["state"], "UNKNOWN")
@@ -564,7 +609,8 @@ class TaskCustodyTests(unittest.TestCase):
                 self.ledger._db.execute(
                     "UPDATE run_claims SET lease_until=0 WHERE task_id=?", (task_id,))
             recovered = self.engine.recover([])
-            self.assertIn(task_id, recovered)
+            self.assertEqual(recovered[0]["task_id"], task_id)
+            self.assertEqual(recovered[0]["outcome"], "completed")
             self.assertEqual(reconciled, [operation_key])
             self.assertEqual(dispatched, [])
             self.assertEqual(self.ledger.get_task(task_id)["state"], TaskState.COMPLETED.value)

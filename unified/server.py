@@ -87,9 +87,13 @@ def main() -> None:
     args = ap.parse_args()
     from .gateway import OPERATOR_GRANTS
     engine = build_engine(args.data)
-    recovered = engine.recover(OPERATOR_GRANTS)
-    if recovered:
-        print(f"recovered {len(recovered)} interrupted task(s): {recovered}")
+    recovery_outcomes = engine.recover(OPERATOR_GRANTS)
+    if recovery_outcomes:
+        counts = {}
+        for item in recovery_outcomes:
+            name = item["outcome"]
+            counts[name] = counts.get(name, 0) + 1
+        print(f"recovery {recovery_outcomes[0]['recovery_id']}: {counts}")
     server = serve(engine, args.host, args.port)
     print(f"Unified gateway listening on http://{args.host}:{args.port}")
     try:

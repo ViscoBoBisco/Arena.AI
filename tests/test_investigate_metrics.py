@@ -27,7 +27,8 @@ class InvestigateMetricsTests(unittest.TestCase):
             f.write(b"\x7fELF" + b"\x00" * 40 + b"visit http://evil.example.com/x from 10.0.0.1 now")
         with open(os.path.join(self.ws, "m.py"), "w") as f:
             f.write("def f():\n    pass\n")
-        self.ledger = Ledger()
+        self.db_path = os.path.join(d, "ledger.db")
+        self.ledger = Ledger(self.db_path)
         self.evidence = EvidenceStore(os.path.join(d, "art"))
         self.broker = CapabilityBroker(self.evidence, workspace_root=self.ws)
         register_adapters(self.broker, AdapterContext(
@@ -68,6 +69,30 @@ class InvestigateMetricsTests(unittest.TestCase):
         self.assertEqual(len(lat), 3)
         self.assertEqual(m["tasks_by_state"].get("COMPLETED"), 3)
         self.assertEqual(m["tool_calls"], 3)
+
+    def test_durable_accounting_survives_engine_restart(self):
+        out = self.engine.submit("durable", "usage-1",
+                                 {"intent": "echo", "instructions": "usage"}, [], GRANTS,
+                                 budgets={"memory_mb": 256})
+        task_id = out["task_id"]
+        result = self.engine.run(task_id, GRANTS)
+        self.assertEqual(result["state"], TaskState.COMPLETED.value)
+        receipt = self.ledger.get_receipts(task_id)[0]
+        self.assertIn("elapsed_ms", receipt.usage)
+        self.assertIn("cpu_seconds", receipt.usage)
+        self.assertIn("peak_rss_bytes", receipt.usage)
+        self.assertIn("memory_limit_bytes", receipt.usage)
+        self.assertEqual(receipt.usage["memory_limit_bytes"], 256 * 1024 * 1024)
+        self.assertGreaterEqual(self.ledger.usage_metrics("durable")["tool_calls"], 1)
+        restarted_ledger = Ledger(self.db_path)
+        restarted = Engine(restarted_ledger, self.broker, self.evidence)
+        metrics = restarted.metrics_for_project("durable")
+        restarted_ledger.close()
+        self.assertEqual(metrics["tool_calls"], 1)
+        self.assertEqual(metrics["receipt_count"], 1)
+        self.assertGreaterEqual(metrics["cpu_seconds"], 0)
+        self.assertGreaterEqual(metrics["max_worker_peak_rss_bytes"],
+                                receipt.usage["peak_rss_bytes"])
 
 
 if __name__ == "__main__":
