@@ -12,6 +12,7 @@ import json
 import sqlite3
 import threading
 import time
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from typing import Optional
 
@@ -26,6 +27,32 @@ from .contracts import (
     utcnow,
 )
 
+def _empty_usage_metrics() -> dict:
+    return {
+        "tasks_by_state": {}, "cpu_seconds": 0.0,
+        "max_worker_peak_rss_bytes": 0,
+        "max_worker_address_space_limit_bytes": 0,
+        "task_memory_limit_mb": 0,
+        "execution_time_seconds": 0.0, "uncertain_execution_seconds": 0.0,
+        "attempts": 0, "retries": 0,
+        "tool_calls": 0, "model_calls": 0, "provider_calls": 0,
+        "provider_reported_tokens": 0, "estimated_model_tokens": 0,
+        "unclassified_model_tokens": 0, "model_tokens": 0,
+        "input_tokens": 0, "output_tokens": 0,
+        "cost_usd": 0.0, "provider_reported_cost_usd": 0.0,
+        "rate_card_estimated_cost_usd": 0.0,
+        "priced_provider_calls": 0, "unpriced_provider_calls": 0,
+        "unknown_attempts": 0,
+        "unknown_resource_effectful_calls": 0, "uncertain_provider_calls": 0,
+        "uncertain_token_consumption_calls": 0,
+        "uncertain_cost_consumption_calls": 0,
+        "uncertain_external_effects": 0, "receipt_count": 0,
+        "elapsed_ms": 0, "latencies_ms": [], "tool_failures": 0,
+        "cancelled_calls": 0, "budget_exceeded": 0,
+        "calls_by_tool": {}, "errors_by_tool": {},
+    }
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
     task_id TEXT PRIMARY KEY,
@@ -39,6 +66,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     current_plan_version INTEGER NOT NULL DEFAULT 0,
     execution_started_at REAL,
     cpu_seconds_used REAL NOT NULL DEFAULT 0,
+    max_worker_peak_rss_bytes INTEGER NOT NULL DEFAULT 0,
     UNIQUE (project_id, idempotency_key)
 );
 CREATE TABLE IF NOT EXISTS plans (
@@ -80,6 +108,7 @@ CREATE TABLE IF NOT EXISTS attempts (
     operation_key TEXT,
     state TEXT NOT NULL,
     started_at TEXT NOT NULL,
+    dispatched_at TEXT,
     finished_at TEXT,
     receipt_json TEXT,
     UNIQUE (task_id, step_id, attempt_number),
@@ -109,6 +138,16 @@ CREATE TABLE IF NOT EXISTS events (
     prev_hash TEXT,
     entry_hash TEXT
 );
+CREATE TABLE IF NOT EXISTS recovery_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recovery_id TEXT NOT NULL,
+    task_id TEXT,
+    outcome TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS recovery_reports_task_idx
+    ON recovery_reports(task_id, id DESC);
 """
 
 
@@ -138,9 +177,14 @@ class Ledger:
             if "cpu_seconds_used" not in task_columns:
                 self._db.execute(
                     "ALTER TABLE tasks ADD COLUMN cpu_seconds_used REAL NOT NULL DEFAULT 0")
+            if "max_worker_peak_rss_bytes" not in task_columns:
+                self._db.execute(
+                    "ALTER TABLE tasks ADD COLUMN max_worker_peak_rss_bytes INTEGER NOT NULL DEFAULT 0")
             attempt_columns = {row["name"] for row in self._db.execute("PRAGMA table_info(attempts)")}
             if "operation_key" not in attempt_columns:
                 self._db.execute("ALTER TABLE attempts ADD COLUMN operation_key TEXT")
+            if "dispatched_at" not in attempt_columns:
+                self._db.execute("ALTER TABLE attempts ADD COLUMN dispatched_at TEXT")
             for col in ("prev_hash", "entry_hash"):
                 try:
                     self._db.execute(f"ALTER TABLE events ADD COLUMN {col} TEXT")
@@ -240,13 +284,22 @@ class Ledger:
 
     def add_task_cpu_seconds(self, task_id: str, run_token: str, seconds: float) -> None:
         """Persist measured worker CPU so restarts cannot reset the CPU budget."""
-        seconds = max(0.0, float(seconds))
+        self.add_task_worker_usage(task_id, run_token, seconds, 0)
+
+    def add_task_worker_usage(self, task_id: str, run_token: str,
+                              cpu_seconds: float, peak_rss_bytes: int) -> None:
+        """Persist cumulative CPU and the maximum per-worker RSS observation."""
+        cpu_seconds = max(0.0, float(cpu_seconds))
+        peak_rss_bytes = max(0, int(peak_rss_bytes))
         with self._write_transaction():
             self._assert_run_claim_locked(task_id, run_token)
             self._db.execute(
-                "UPDATE tasks SET cpu_seconds_used=cpu_seconds_used+?,updated_at=? "
-                "WHERE task_id=?", (seconds, utcnow(), task_id))
-            self._log(task_id, "task.cpu_usage", {"cpu_seconds": seconds})
+                "UPDATE tasks SET cpu_seconds_used=cpu_seconds_used+?, "
+                "max_worker_peak_rss_bytes=MAX(max_worker_peak_rss_bytes,?),updated_at=? "
+                "WHERE task_id=?", (cpu_seconds, peak_rss_bytes, utcnow(), task_id))
+            self._log(task_id, "task.worker_usage", {
+                "cpu_seconds": cpu_seconds,
+                "worker_peak_rss_bytes": peak_rss_bytes})
 
     # ---- tasks -------------------------------------------------------
     def find_by_idempotency(self, project_id: str, key: str) -> Optional[str]:
@@ -420,6 +473,179 @@ class Ledger:
                 f"SELECT task_id,state FROM tasks WHERE state IN ({placeholders}) ORDER BY rowid",
                 states).fetchall()
             return [dict(row) for row in rows]
+
+    def usage_metrics(self, project_id: str,
+                      resource_effectful_tools: set[str] | None = None,
+                      billable_tools: set[str] | None = None,
+                      external_effect_tools: set[str] | None = None) -> dict:
+        """Rebuild project usage and reliability metrics from durable rows."""
+        with self._lock:
+            tasks = self._db.execute(
+                "SELECT task_id,state,envelope,created_at,updated_at,execution_started_at,"
+                "cpu_seconds_used,max_worker_peak_rss_bytes FROM tasks WHERE project_id=?",
+                (project_id,)).fetchall()
+            if not tasks:
+                return _empty_usage_metrics()
+            attempts = self._db.execute(
+                "SELECT a.*,s.tool FROM attempts a JOIN steps s "
+                "ON s.task_id=a.task_id AND s.step_id=a.step_id "
+                "JOIN tasks t ON t.task_id=a.task_id WHERE t.project_id=?",
+                (project_id,)).fetchall()
+            receipts = self._db.execute(
+                "SELECT r.receipt,s.tool FROM receipts r JOIN steps s "
+                "ON s.task_id=r.task_id AND s.step_id=r.step_id "
+                "JOIN tasks t ON t.task_id=r.task_id WHERE t.project_id=?",
+                (project_id,)).fetchall()
+
+        metrics = _empty_usage_metrics()
+        metrics["tasks_by_state"] = {}
+        metrics["cpu_seconds"] = sum(float(row["cpu_seconds_used"] or 0) for row in tasks)
+        metrics["max_worker_peak_rss_bytes"] = max(
+            (int(row["max_worker_peak_rss_bytes"] or 0) for row in tasks), default=0)
+        metrics["task_memory_limit_mb"] = max(
+            (int(json.loads(row["envelope"]).get("budgets", {}).get("memory_mb", 0))
+             for row in tasks), default=0)
+        for row in tasks:
+            state = row["state"]
+            metrics["tasks_by_state"][state] = metrics["tasks_by_state"].get(state, 0) + 1
+
+        unknown_resource = set(resource_effectful_tools or ())
+        unknown_billable = set(billable_tools or ())
+        unknown_external = set(external_effect_tools or ())
+        for attempt in attempts:
+            tool = attempt["tool"]
+            metrics["attempts"] += 1
+            metrics["retries"] += max(0, int(attempt["attempt_number"]) - 1)
+            if attempt["dispatched_at"]:
+                metrics["tool_calls"] += 1
+                metrics["calls_by_tool"][tool] = metrics["calls_by_tool"].get(tool, 0) + 1
+                if tool == "model.complete":
+                    metrics["model_calls"] += 1
+            if attempt["state"] == "UNKNOWN":
+                metrics["unknown_attempts"] += 1
+                if attempt["dispatched_at"] and tool in unknown_resource:
+                    metrics["unknown_resource_effectful_calls"] += 1
+                if attempt["dispatched_at"] and tool in unknown_billable:
+                    metrics["uncertain_provider_calls"] += 1
+                if attempt["dispatched_at"] and tool in unknown_external:
+                    metrics["uncertain_external_effects"] += 1
+                if attempt["dispatched_at"]:
+                    try:
+                        dispatched = datetime.strptime(
+                            attempt["dispatched_at"], "%Y-%m-%dT%H:%M:%SZ"
+                        ).replace(tzinfo=timezone.utc)
+                        metrics["uncertain_execution_seconds"] += max(
+                            0.0, (datetime.now(timezone.utc) - dispatched).total_seconds())
+                    except (ValueError, TypeError):
+                        pass
+
+        for row in receipts:
+            try:
+                receipt = json.loads(row["receipt"])
+            except (ValueError, TypeError):
+                continue
+            tool = row["tool"]
+            status = receipt.get("status")
+            usage = receipt.get("usage") or {}
+            metrics["receipt_count"] += 1
+            metrics["max_worker_peak_rss_bytes"] = max(
+                metrics["max_worker_peak_rss_bytes"],
+                max(0, int(usage.get("peak_rss_bytes", 0) or 0)))
+            metrics["max_worker_address_space_limit_bytes"] = max(
+                metrics["max_worker_address_space_limit_bytes"],
+                max(0, int(usage.get("memory_limit_bytes", 0) or 0)))
+            elapsed_ms = max(0, int(usage.get("elapsed_ms", 0) or 0))
+            metrics["elapsed_ms"] += elapsed_ms
+            metrics["execution_time_seconds"] += elapsed_ms / 1000.0
+            metrics["latencies_ms"].append(elapsed_ms)
+            if status == "failed":
+                metrics["tool_failures"] += 1
+                metrics["errors_by_tool"][tool] = metrics["errors_by_tool"].get(tool, 0) + 1
+            elif status == "cancelled":
+                metrics["cancelled_calls"] += 1
+            errors = receipt.get("errors") or []
+            if any(isinstance(error, dict) and error.get("type") == "budget_exceeded"
+                   for error in errors):
+                metrics["budget_exceeded"] += 1
+            token_count = max(0, int(usage.get("model_tokens", 0) or 0))
+            metrics["model_tokens"] += token_count
+            source = usage.get("usage_source", "unclassified")
+            if source == "provider":
+                metrics["provider_reported_tokens"] += token_count
+            elif source == "estimated":
+                metrics["estimated_model_tokens"] += token_count
+            elif token_count:
+                metrics["unclassified_model_tokens"] += token_count
+            metrics["input_tokens"] += max(0, int(usage.get("input_tokens", 0) or 0))
+            metrics["output_tokens"] += max(0, int(usage.get("output_tokens", 0) or 0))
+            calls = max(0, int(usage.get("provider_calls", 0) or 0))
+            metrics["provider_calls"] += calls
+            metrics["uncertain_token_consumption_calls"] += int(bool(
+                usage.get("token_consumption_uncertain")))
+            metrics["uncertain_cost_consumption_calls"] += int(bool(
+                usage.get("cost_consumption_uncertain")))
+            metrics["uncertain_provider_calls"] += max(0, int(
+                usage.get("uncertain_provider_calls", 0) or 0))
+            cost = usage.get("cost_usd")
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+                amount = max(0.0, float(cost))
+                metrics["cost_usd"] += amount
+                metrics["priced_provider_calls"] += calls
+                if usage.get("cost_source") == "provider_reported":
+                    metrics["provider_reported_cost_usd"] += amount
+                elif usage.get("cost_source") == "configured_rate_card":
+                    metrics["rate_card_estimated_cost_usd"] += amount
+            elif calls:
+                metrics["unpriced_provider_calls"] += calls
+        metrics["latencies_ms"].sort()
+        return metrics
+
+    def record_recovery_outcome(self, recovery_id: str, task_id: str | None,
+                                outcome: str, detail: dict) -> dict:
+        """Persist a structured recovery outcome and audit task-scoped reports."""
+        if outcome not in {"completed", "resumed", "still_unresolved",
+                           "already_running", "recovery_failed"}:
+            raise ValueError(f"unsupported recovery outcome: {outcome}")
+        payload = json.dumps(detail, sort_keys=True)
+        created_at = utcnow()
+        with self._write_transaction():
+            cursor = self._db.execute(
+                "INSERT INTO recovery_reports(recovery_id,task_id,outcome,detail,created_at) "
+                "VALUES(?,?,?,?,?)", (recovery_id, task_id, outcome, payload, created_at))
+            if task_id:
+                self._log(task_id, "recovery.outcome", {
+                    "recovery_id": recovery_id, "outcome": outcome, **detail})
+            row = self._db.execute(
+                "SELECT * FROM recovery_reports WHERE id=?", (cursor.lastrowid,)
+            ).fetchone()
+        return {**dict(row), "detail": json.loads(row["detail"])}
+
+    def recovery_outcomes(self, recovery_id: str | None = None,
+                          task_id: str | None = None, limit: int = 100,
+                          project_id: str | None = None) -> list[dict]:
+        clauses, params = [], []
+        if recovery_id is not None:
+            clauses.append("r.recovery_id=?")
+            params.append(recovery_id)
+        if task_id is not None:
+            clauses.append("r.task_id=?")
+            params.append(task_id)
+        if project_id is not None:
+            clauses.append("t.project_id=?")
+            params.append(project_id)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(max(1, min(int(limit), 1000)))
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT r.* FROM recovery_reports r LEFT JOIN tasks t "
+                "ON t.task_id=r.task_id" + where +
+                " ORDER BY r.id DESC LIMIT ?", params).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["detail"] = json.loads(item["detail"])
+            out.append(item)
+        return out
 
     # ---- plans and steps ---------------------------------------------
     @staticmethod
@@ -721,6 +947,19 @@ class Ledger:
                 "attempt_number": row["next_attempt"], "plan_version": plan_version,
                 "operation_key": operation_key})
         return attempt_id
+
+    def mark_attempt_dispatched(self, attempt_id: str, task_id: str,
+                                run_token: str) -> None:
+        """Persist the dispatch boundary before a worker can call a provider."""
+        with self._write_transaction():
+            self._assert_run_claim_locked(task_id, run_token)
+            cursor = self._db.execute(
+                "UPDATE attempts SET dispatched_at=COALESCE(dispatched_at,?) "
+                "WHERE attempt_id=? AND task_id=? AND state='RUNNING'",
+                (utcnow(), attempt_id, task_id))
+            if cursor.rowcount != 1:
+                raise LedgerError(f"attempt {attempt_id} is not dispatchable")
+            self._log(task_id, "attempt.dispatched", {"attempt_id": attempt_id})
 
     def get_attempts(self, task_id: str) -> list[dict]:
         with self._lock:

@@ -113,9 +113,15 @@ class Engine:
                 event.clear()
 
     def metrics_for_project(self, project_id: str) -> dict:
-        """Return only the requesting project’s in-process metrics."""
-        with self._lock:
-            return copy.deepcopy(self._project_metrics.get(project_id, _new_metrics()))
+        """Return project usage reconstructed from durable attempts and receipts."""
+        tools = self.broker.list_tools()
+        resource_effectful = {item["name"] for item in tools
+                              if item.get("resource_effectful")}
+        billable = {item["name"] for item in tools if item.get("billable")}
+        external = {item["name"] for item in tools
+                    if item.get("side_effect_class") == "external_effect"}
+        return self.ledger.usage_metrics(project_id, resource_effectful,
+                                         billable, external)
 
     def _project_metric(self, project_id: str) -> dict:
         return self._project_metrics.setdefault(project_id, _new_metrics())
@@ -257,6 +263,7 @@ class Engine:
             if not reconcile_recovery:
                 return task.get("result") or {
                     "task_id": task_id, "state": TaskState.RECOVERY_REQUIRED.value}
+            reconciliation_errors = []
             for attempt in self.ledger.unresolved_attempts(task_id):
                 spec = self.broker.get(attempt["tool"])
                 attempt_args = json.loads(attempt["args"])
@@ -265,20 +272,29 @@ class Engine:
                 operation_key = attempt.get("operation_key")
                 if not operation_key:
                     continue
-                outcome, receipt = self.broker.reconcile(
+                outcome, receipt, reconciliation_error = self.broker.reconcile(
                     task_id, attempt["step_id"], attempt["attempt_id"],
                     attempt["tool"], attempt_args, permissions, policy, operation_key)
+                if reconciliation_error:
+                    reconciliation_errors.append({
+                        "attempt_id": attempt["attempt_id"],
+                        "tool": attempt["tool"],
+                        "error": reconciliation_error,
+                    })
                 if outcome == "applied":
                     self.ledger.resolve_unknown_attempt(
                         attempt["attempt_id"], "applied", run_token, receipt)
                 elif outcome == "not_applied":
                     self.ledger.resolve_unknown_attempt(
                         attempt["attempt_id"], "retryable", run_token)
-                elif spec and ((spec.side_effect_class == "read_only"
-                                and not spec.resource_effectful)
-                               or spec.supports_idempotency):
-                    # Reads are repeatable; keyed adapters can safely replay the
-                    # exact persisted operation key to obtain the original result.
+                elif spec and (spec.repeatable or
+                               (spec.side_effect_class == "read_only"
+                                and not spec.resource_effectful and not spec.billable)
+                               or (spec.supports_idempotency
+                                   and spec.idempotency_qualified
+                                   and bool(spec.idempotency_evidence))):
+                    # Key propagation alone is not replay qualification; require
+                    # a declared service-side contract plus evidence reference.
                     self.ledger.resolve_unknown_attempt(
                         attempt["attempt_id"], "retryable", run_token)
             still_unknown = self.ledger.unresolved_attempts(task_id)
@@ -294,6 +310,8 @@ class Engine:
                                "tool": a["tool"],
                                "operation_key": a.get("operation_key")}
                               for a in still_unknown]}
+                if reconciliation_errors:
+                    result["reconciliation_errors"] = reconciliation_errors
                 self.ledger.set_recovery_result(task_id, result, run_token)
                 return self.ledger.get_task(task_id)["result"]
             try:
@@ -388,7 +406,10 @@ class Engine:
             pause = None
             for step in ready:
                 spec = self.broker.get(step.tool)
-                if spec and spec.side_effect_class != "read_only":
+                requires_approval = bool(spec and (
+                    spec.requires_approval if spec.requires_approval is not None else
+                    spec.side_effect_class in {"sandbox_write", "external_effect"}))
+                if requires_approval:
                     decision = self.ledger.get_approval(task_id, step.step_id)
                     if decision is None:
                         self.ledger.save_approval(task_id, step.step_id, "pending")
@@ -558,7 +579,9 @@ class Engine:
                         cancel_check=cancel_check, cpu_seconds=worker_cpu_seconds,
                         memory_mb=memory_mb,
                         mutating=bool(spec and (spec.side_effect_class != "read_only"
-                                                or spec.resource_effectful)))
+                                                or spec.resource_effectful)),
+                        on_dispatch=lambda: self.ledger.mark_attempt_dispatched(
+                            kwargs["attempt_id"], args[0], run_token))
                 finally:
                     if model_slot_acquired:
                         self._model_slots.release()
@@ -603,9 +626,10 @@ class Engine:
                     dispatch = fut.result()
                     if isinstance(dispatch, ToolReceipt):  # compatibility for patched brokers
                         dispatch = WorkerDispatch(dispatch, 0.0)
-                    if dispatch.cpu_seconds:
-                        self.ledger.add_task_cpu_seconds(task_id, run_token,
-                                                         dispatch.cpu_seconds)
+                    if dispatch.cpu_seconds or dispatch.peak_rss_bytes:
+                        self.ledger.add_task_worker_usage(
+                            task_id, run_token, dispatch.cpu_seconds,
+                            dispatch.peak_rss_bytes)
                         cpu_seconds_used += dispatch.cpu_seconds
                     if dispatch.receipt is None:
                         ambiguous_worker_exit = ambiguous_worker_exit or dispatch.ambiguous
@@ -720,21 +744,72 @@ class Engine:
         t.start()
         return t
 
-    def recover(self, grants: list[str]) -> list:
-        """Recover interrupted tasks without replaying ambiguous side effects.
+    def recover(self, grants: list[str]) -> list[dict]:
+        """Recover tasks and durably report every outcome and failure.
 
-        Committed receipts are reused. Unknown outcomes require an adapter
-        reconciliation callback, a read-only operation, or a guaranteed
-        idempotency key; otherwise the task stays recovery-required.
+        A successful terminal recovery is ``completed``; a task that was
+        resumed but remains active or pauses for approval is ``resumed``.
+        Unknown operations remain ``still_unresolved`` and failures retain
+        their exception type/message in the recovery ledger.
         """
-        recovered = []
-        for task in self.ledger.list_recoverable_tasks():
+        recovery_id = new_id("R")
+        outcomes = []
+        try:
+            tasks = self.ledger.list_recoverable_tasks()
+        except Exception as exc:
+            outcome = {
+                "recovery_id": recovery_id, "task_id": None,
+                "outcome": "recovery_failed", "state": None,
+                "error": {"type": type(exc).__name__, "message": str(exc)},
+            }
+            self.ledger.record_recovery_outcome(
+                recovery_id, None, outcome["outcome"], {"error": outcome["error"]})
+            return [outcome]
+
+        for candidate in tasks:
+            task_id = candidate["task_id"]
+            outcome = {
+                "recovery_id": recovery_id,
+                "task_id": task_id,
+                "initial_state": candidate.get("state"),
+                "state": None,
+                "outcome": "recovery_failed",
+            }
             try:
-                self.run(task["task_id"], grants, reconcile_recovery=True)
-                recovered.append(task["task_id"])
-            except Exception:
-                pass
-        return recovered
+                result = self.run(task_id, grants, reconcile_recovery=True)
+                current = self.ledger.get_task(task_id)
+                final_state = current["state"] if current else result.get("state")
+                outcome["state"] = final_state
+                if result.get("already_running"):
+                    outcome["outcome"] = "already_running"
+                elif final_state == TaskState.RECOVERY_REQUIRED.value:
+                    outcome["outcome"] = "still_unresolved"
+                    outcome["unresolved_attempts"] = result.get(
+                        "unresolved_attempts", self.ledger.unresolved_attempts(task_id))
+                    if result.get("reason"):
+                        outcome["reason"] = result["reason"]
+                elif final_state in {TaskState.COMPLETED.value, TaskState.CANCELLED.value}:
+                    outcome["outcome"] = "completed"
+                elif final_state == TaskState.FAILED.value:
+                    outcome["outcome"] = "recovery_failed"
+                    outcome["error"] = {
+                        "type": "task_failed_during_recovery",
+                        "message": (result.get("reason") or
+                                    result.get("error") or "task ended in FAILED state"),
+                    }
+                else:
+                    outcome["outcome"] = "resumed"
+                outcome["result"] = result
+            except Exception as exc:
+                current = self.ledger.get_task(task_id)
+                outcome["state"] = current["state"] if current else None
+                outcome["error"] = {"type": type(exc).__name__, "message": str(exc)}
+            self.ledger.record_recovery_outcome(
+                recovery_id, task_id, outcome["outcome"],
+                {key: value for key, value in outcome.items()
+                 if key not in {"recovery_id", "task_id", "outcome"}})
+            outcomes.append(outcome)
+        return outcomes
 
     def reconcile_attempt(self, task_id: str, attempt_id: str, outcome: str,
                           receipt_data: dict | None = None,

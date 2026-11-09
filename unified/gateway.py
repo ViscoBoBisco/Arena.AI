@@ -17,7 +17,7 @@ import json
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .engine import Engine
 from .ledger import LedgerError
@@ -263,7 +263,8 @@ def make_handler(engine: Engine):
             return task, None
 
         def do_GET(self):
-            path = urlparse(self.path).path
+            parsed = urlparse(self.path)
+            path = parsed.path
             parts = [p for p in path.split("/") if p]
             # The console uses fetch streaming, so event streams retain the same
             # bearer authentication and project scope as all other task reads.
@@ -354,6 +355,17 @@ def make_handler(engine: Engine):
                 except Exception:
                     ok = False
                 return self._send(200 if ok else 503, {"status": "ok" if ok else "not ready"})
+            if path == "/v1/recoveries":
+                query = parse_qs(parsed.query)
+                try:
+                    limit = int(query.get("limit", [100])[0])
+                except (ValueError, TypeError):
+                    return self._send(400, {"error": "limit must be an integer"})
+                outcomes = engine.ledger.recovery_outcomes(
+                    recovery_id=query.get("recovery_id", [None])[0],
+                    task_id=query.get("task_id", [None])[0],
+                    project_id=self._caller_project(), limit=limit)
+                return self._send(200, {"outcomes": outcomes})
             if path == "/v1/metrics":
                 return self._send(200, engine.metrics_for_project(self._caller_project()))
             if path == "/v1/audit/verify":

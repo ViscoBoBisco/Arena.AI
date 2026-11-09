@@ -426,8 +426,10 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
                              fixture_fetch, "Offline captured-page fixture (demo)."))
     broker.register(ToolSpec("openbb.query", ["data.market.read"], "read_only",
                              openbb_query, "Typed market/economic data (requires provider extensions)."))
-    broker.register(ToolSpec("codegraph.index", ["repo.read"], "read_only",
-                             codegraph_index, "Index workspace Python symbols into graph store."))
+    broker.register(ToolSpec("codegraph.index", ["repo.read"], "internal_write",
+                             codegraph_index, "Rebuild the internal workspace symbol index.",
+                             read_only=False, repeatable=True,
+                             requires_approval=False))
     broker.register(ToolSpec("codegraph.find", ["repo.read"], "read_only",
                              codegraph_find, "Find symbols in the code graph."))
     broker.register(ToolSpec("codegraph.impact", ["repo.read"], "read_only",

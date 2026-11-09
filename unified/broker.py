@@ -21,7 +21,7 @@ from .policy import PolicyEngine, PolicyViolation
 class ToolSpec:
     name: str
     required_permissions: list
-    side_effect_class: str  # read_only | sandbox_write | external_effect
+    side_effect_class: str  # read_only | internal_write | sandbox_write | external_effect
     handler: Callable
     description: str = ""
     read_only: bool = True
@@ -30,6 +30,13 @@ class ToolSpec:
     external_request: bool = False
     supports_cancellation: bool = False
     resource_effectful: bool = False
+    repeatable: bool = False
+    billable: bool = False
+    requires_approval: bool | None = None
+    # Recovery trusts replay safety only when the adapter's *service* contract
+    # has been qualified, not merely because the broker forwards a key.
+    idempotency_qualified: bool = False
+    idempotency_evidence: str | None = None
 
 
 class CapabilityBroker:
@@ -51,7 +58,12 @@ class CapabilityBroker:
                  "read_only": t.read_only,
                  "external_request": t.external_request,
                  "supports_cancellation": t.supports_cancellation,
+                 "idempotency_qualified": t.idempotency_qualified,
+                 "idempotency_evidence": t.idempotency_evidence,
                  "resource_effectful": t.resource_effectful,
+                 "repeatable": t.repeatable,
+                 "billable": t.billable,
+                 "requires_approval": t.requires_approval,
                  "description": t.description}
                 for t in self._tools.values()]
 
@@ -127,7 +139,7 @@ class CapabilityBroker:
 
     def reconcile(self, task_id: str, step_id: str, attempt_id: str, tool: str,
                   args: dict, permissions_used: list[str], policy: PolicyEngine,
-                  idempotency_key: str) -> tuple[str, ToolReceipt | None]:
+                  idempotency_key: str) -> tuple[str, ToolReceipt | None, dict | None]:
         """Ask an adapter for a durable outcome; errors never imply retry safety.
 
         Reconciliation callbacks return ``{"outcome": "applied", "result": ...}``,
@@ -137,19 +149,28 @@ class CapabilityBroker:
         """
         spec = self._tools.get(tool)
         if spec is None or spec.reconcile is None:
-            return "unknown", None
+            return "unknown", None, None
         try:
             policy.authorize_tool(spec.required_permissions)
             reconciled = spec.reconcile(dict(args), idempotency_key)
-        except Exception:
-            return "unknown", None
+        except Exception as exc:
+            return "unknown", None, {
+                "type": type(exc).__name__,
+                "message": "adapter reconciliation callback raised an exception",
+            }
         if not isinstance(reconciled, dict):
-            return "unknown", None
+            return "unknown", None, {
+                "type": "invalid_reconciliation_response",
+                "message": "adapter reconciliation callback returned a non-object",
+            }
         outcome = reconciled.get("outcome")
         if outcome == "not_applied":
-            return "not_applied", None
+            return "not_applied", None, None
         if outcome != "applied" or not isinstance(reconciled.get("result"), dict):
-            return "unknown", None
+            return "unknown", None, {
+                "type": "unresolved_reconciliation",
+                "message": "adapter did not establish an applied or not-applied outcome",
+            }
         result = reconciled["result"]
         receipt = ToolReceipt(
             task_id=task_id, step_id=step_id, attempt_id=attempt_id,
@@ -158,7 +179,7 @@ class CapabilityBroker:
             summary=result.get("summary", ""), data=result.get("data", {}),
             artifacts=result.get("artifacts", []), evidence=result.get("evidence", []),
             errors=result.get("errors", []), usage=result.get("usage", {}))
-        return "applied", receipt
+        return "applied", receipt, None
 
     def register_model_tool(self, router) -> None:
         def model_complete(args):
@@ -188,7 +209,8 @@ class CapabilityBroker:
         self.register(ToolSpec("model.complete", ["model.infer"], "read_only",
                                model_complete, "Shared model router (bounded queue).",
                                read_only=True, supports_cancellation=True,
-                               resource_effectful=True))
+                               resource_effectful=True,
+                               billable=bool(getattr(router.provider, "billable", False))))
 
     # ---- native tools --------------------------------------------------
     def workspace_for_project(self, project_id: str | None = None) -> str:
@@ -252,4 +274,4 @@ class CapabilityBroker:
         self.register(ToolSpec("native.fs.write", ["workspace.write.sandbox"],
                                "sandbox_write", fs_write,
                                "Write a file inside the sandboxed workspace.",
-                               read_only=False))
+                               read_only=False, repeatable=True))
