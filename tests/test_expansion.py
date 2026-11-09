@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unified.adapters import AdapterContext, register_adapters
 from unified.automation import AutomationConnector
-from unified.broker import CapabilityBroker
+from unified.broker import CapabilityBroker, ToolSpec
 from unified.engine import Engine
 from unified.evidence import EvidenceStore
 from unified.ledger import Ledger
@@ -158,6 +158,16 @@ class ExpansionTests(unittest.TestCase):
                        ["model.infer"])
         self.assertEqual(r.status, "succeeded")
         self.assertIn("model_tokens", r.usage)
+
+    def test_broker_normalizes_cooperative_cancel_receipt(self):
+        self.broker.register(ToolSpec(
+            "test.cancelled", [], "read_only",
+            lambda _args: {"result_type": "cancelled.v1", "summary": "stopped",
+                           "errors": [{"type": "cancelled"}]},
+            supports_cancellation=True))
+        receipt = self._call("test.cancelled", {}, [])
+        self.assertEqual(receipt.status, "cancelled")
+        self.assertEqual(receipt.result_type, "cancelled.v1")
 
     def test_roles_immutable_profiles(self):
         names = [r["name"] for r in self.roles.list()]

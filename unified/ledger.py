@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at TEXT NOT NULL,
     current_plan_version INTEGER NOT NULL DEFAULT 0,
     execution_started_at REAL,
+    cpu_seconds_used REAL NOT NULL DEFAULT 0,
     UNIQUE (project_id, idempotency_key)
 );
 CREATE TABLE IF NOT EXISTS plans (
@@ -134,6 +135,9 @@ class Ledger:
                     "ALTER TABLE tasks ADD COLUMN current_plan_version INTEGER NOT NULL DEFAULT 0")
             if "execution_started_at" not in task_columns:
                 self._db.execute("ALTER TABLE tasks ADD COLUMN execution_started_at REAL")
+            if "cpu_seconds_used" not in task_columns:
+                self._db.execute(
+                    "ALTER TABLE tasks ADD COLUMN cpu_seconds_used REAL NOT NULL DEFAULT 0")
             attempt_columns = {row["name"] for row in self._db.execute("PRAGMA table_info(attempts)")}
             if "operation_key" not in attempt_columns:
                 self._db.execute("ALTER TABLE attempts ADD COLUMN operation_key TEXT")
@@ -224,6 +228,25 @@ class Ledger:
             if not row or row["execution_started_at"] is None:
                 raise LedgerError(f"could not initialize execution time for {task_id}")
             return float(row["execution_started_at"])
+
+    def task_cpu_seconds_used(self, task_id: str) -> float:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT cpu_seconds_used FROM tasks WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if not row:
+                raise LedgerError(f"unknown task {task_id}")
+            return float(row["cpu_seconds_used"])
+
+    def add_task_cpu_seconds(self, task_id: str, run_token: str, seconds: float) -> None:
+        """Persist measured worker CPU so restarts cannot reset the CPU budget."""
+        seconds = max(0.0, float(seconds))
+        with self._write_transaction():
+            self._assert_run_claim_locked(task_id, run_token)
+            self._db.execute(
+                "UPDATE tasks SET cpu_seconds_used=cpu_seconds_used+?,updated_at=? "
+                "WHERE task_id=?", (seconds, utcnow(), task_id))
+            self._log(task_id, "task.cpu_usage", {"cpu_seconds": seconds})
 
     # ---- tasks -------------------------------------------------------
     def find_by_idempotency(self, project_id: str, key: str) -> Optional[str]:

@@ -29,6 +29,7 @@ class ToolSpec:
     reconcile: Optional[Callable] = None
     external_request: bool = False
     supports_cancellation: bool = False
+    resource_effectful: bool = False
 
 
 class CapabilityBroker:
@@ -50,6 +51,7 @@ class CapabilityBroker:
                  "read_only": t.read_only,
                  "external_request": t.external_request,
                  "supports_cancellation": t.supports_cancellation,
+                 "resource_effectful": t.resource_effectful,
                  "description": t.description}
                 for t in self._tools.values()]
 
@@ -99,7 +101,11 @@ class CapabilityBroker:
             # Adapters signal failure through the typed error channel; a
             # transport-successful response with errors is NOT a success
             # (manual 5.3: receipt status reflects the tool, not the transport).
-            status = "failed" if result.get("errors") else "succeeded"
+            errors = result.get("errors", [])
+            cancelled = (result.get("result_type") == "cancelled.v1"
+                         or any(error.get("type") == "cancelled"
+                                for error in errors if isinstance(error, dict)))
+            status = "cancelled" if cancelled else "failed" if errors else "succeeded"
             usage = dict(result.get("usage", {}))
             usage.setdefault("elapsed_ms", int((time.monotonic() - start) * 1000))
             usage.setdefault("model_tokens", 0)
@@ -110,6 +116,10 @@ class CapabilityBroker:
                 artifacts=result.get("artifacts", []), evidence=result.get("evidence", []),
                 errors=result.get("errors", []), usage=usage)
             return receipt
+        except MemoryError:
+            return ToolReceipt(task_id, step_id, attempt_id, "failed",
+                               "error.budget.v1", f"tool {tool} exceeded its memory budget",
+                               errors=[{"type": "budget_exceeded", "budget": "memory_mb"}])
         except Exception as e:  # typed failure, never fabricated findings (manual 2.7)
             return ToolReceipt(task_id, step_id, attempt_id, "failed",
                                "error.v1", f"tool {tool} failed: {e}",
@@ -152,18 +162,23 @@ class CapabilityBroker:
 
     def register_model_tool(self, router) -> None:
         def model_complete(args):
+            task_id = args.get("_task_id")
             out = router.complete(args.get("prompt", ""),
                                   budget_tokens=args.get("budget_tokens", 4096),
-                                  task_id=args.get("_task_id"),
+                                  task_id=task_id,
                                   deadline_at=args.get("_deadline_at"),
-                                  cancel_check=args.get("_cancelled"))
+                                  cancel_check=args.get("_cancelled"),
+                                  supervised=bool(args.get("_supervised_model")))
             if not out["ok"]:
                 error_type = ("budget_exceeded" if out.get("budget") else
                               "cancelled" if out.get("cancelled") else "resource")
                 error = {"type": error_type, "detail": out["error"]}
                 if out.get("budget"):
                     error["budget"] = out["budget"]
-                return {"result_type": "error.resource.v1", "summary": out["error"],
+                result_type = ("cancelled.v1" if out.get("cancelled") else
+                               "error.budget.v1" if out.get("budget") else
+                               "error.resource.v1")
+                return {"result_type": result_type, "summary": out["error"],
                         "errors": [error], "usage": out.get("usage", {})}
             return {"result_type": "model.complete.v1",
                     "summary": "model completion",
@@ -172,7 +187,8 @@ class CapabilityBroker:
 
         self.register(ToolSpec("model.complete", ["model.infer"], "read_only",
                                model_complete, "Shared model router (bounded queue).",
-                               read_only=True, supports_cancellation=True))
+                               read_only=True, supports_cancellation=True,
+                               resource_effectful=True))
 
     # ---- native tools --------------------------------------------------
     def workspace_for_project(self, project_id: str | None = None) -> str:

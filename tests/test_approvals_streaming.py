@@ -1,4 +1,5 @@
 """Tests for durable approvals, SSE streaming, memory, metrics, hash checks."""
+import multiprocessing
 import os
 import sys
 import tempfile
@@ -62,8 +63,8 @@ class ApprovalFlowTests(unittest.TestCase):
         self.assertFalse(self.engine.cancel(out["task_id"]))
 
     def test_cancel_during_active_tool_finishes_as_cancelled(self):
-        started = threading.Event()
-        release = threading.Event()
+        started = multiprocessing.get_context("fork").Event()
+        release = multiprocessing.get_context("fork").Event()
         spec = self.broker.get("native.echo")
 
         def slow_echo(args):
