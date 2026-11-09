@@ -10,6 +10,8 @@ import hashlib
 
 from .contracts import Step, TaskEnvelope
 
+PLANNER_VERSION = "rules-v1"
+
 
 def _sid(env: TaskEnvelope, n: int) -> str:
     """Deterministic step ID: stable across restarts/resumes of the same task

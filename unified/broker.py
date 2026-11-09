@@ -25,6 +25,8 @@ class ToolSpec:
     handler: Callable
     description: str = ""
     read_only: bool = True
+    supports_idempotency: bool = False
+    reconcile: Optional[Callable] = None
 
 
 class CapabilityBroker:
@@ -52,9 +54,10 @@ class CapabilityBroker:
     # ---- dispatch ----------------------------------------------------
     def call(self, task_id: str, step_id: str, tool: str, args: dict,
              permissions_used: list[str], policy: PolicyEngine,
-             deadline_ms: int = 45000) -> ToolReceipt:
+             deadline_ms: int = 45000, attempt_id: str | None = None,
+             idempotency_key: str | None = None) -> ToolReceipt:
         """Execute one typed tool call (manual 5.2 envelope)."""
-        attempt_id = new_id("A")
+        attempt_id = attempt_id or new_id("A")
         spec = self._tools.get(tool)
         if spec is None:
             return ToolReceipt(task_id, step_id, attempt_id, "failed",
@@ -68,8 +71,11 @@ class CapabilityBroker:
                                "error.policy.v1", str(e),
                                errors=[{"type": "policy_denied", "detail": str(e)}])
         start = time.monotonic()
+        call_args = dict(args)
+        if spec.supports_idempotency and idempotency_key:
+            call_args["_idempotency_key"] = idempotency_key
         try:
-            result = spec.handler(args)
+            result = spec.handler(call_args)
             # Adapters signal failure through the typed error channel; a
             # transport-successful response with errors is NOT a success
             # (manual 5.3: receipt status reflects the tool, not the transport).
@@ -87,6 +93,41 @@ class CapabilityBroker:
             return ToolReceipt(task_id, step_id, attempt_id, "failed",
                                "error.v1", f"tool {tool} failed: {e}",
                                errors=[{"type": "tool_error", "detail": str(e)}])
+
+    def reconcile(self, task_id: str, step_id: str, attempt_id: str, tool: str,
+                  args: dict, permissions_used: list[str], policy: PolicyEngine,
+                  idempotency_key: str) -> tuple[str, ToolReceipt | None]:
+        """Ask an adapter for a durable outcome; errors never imply retry safety.
+
+        Reconciliation callbacks return ``{"outcome": "applied", "result": ...}``,
+        ``{"outcome": "not_applied"}``, or ``{"outcome": "unknown"}``. The
+        result for an applied operation uses the same normalized payload as a
+        normal tool handler.
+        """
+        spec = self._tools.get(tool)
+        if spec is None or spec.reconcile is None:
+            return "unknown", None
+        try:
+            policy.authorize_tool(spec.required_permissions)
+            reconciled = spec.reconcile(dict(args), idempotency_key)
+        except Exception:
+            return "unknown", None
+        if not isinstance(reconciled, dict):
+            return "unknown", None
+        outcome = reconciled.get("outcome")
+        if outcome == "not_applied":
+            return "not_applied", None
+        if outcome != "applied" or not isinstance(reconciled.get("result"), dict):
+            return "unknown", None
+        result = reconciled["result"]
+        receipt = ToolReceipt(
+            task_id=task_id, step_id=step_id, attempt_id=attempt_id,
+            status="failed" if result.get("errors") else "succeeded",
+            result_type=result.get("result_type", "native.v1"),
+            summary=result.get("summary", ""), data=result.get("data", {}),
+            artifacts=result.get("artifacts", []), evidence=result.get("evidence", []),
+            errors=result.get("errors", []), usage=result.get("usage", {}))
+        return "applied", receipt
 
     def register_model_tool(self, router) -> None:
         def model_complete(args):

@@ -6,8 +6,8 @@ This is the consolidated development direction for Conflux. Items are grouped by
 
 ## P0 — Core execution integrity
 
-- [ ] **1. Harden task custody and state transitions.** Establish authoritative task identities, versioned plans, atomic state transitions, durable step and attempt records, and correct handling of partial execution and concurrent workers.
-- [ ] **2. Guarantee safe execution recovery.** Record operation identity before dispatch; reconcile interrupted side effects, reuse committed receipts, implement appropriate idempotency, and never blindly repeat actions with unknown outcomes.
+- [x] **1. Harden task custody and state transitions.** Establish authoritative task identities, versioned plans, atomic state transitions, durable step and attempt records, and correct handling of partial execution and concurrent workers.
+- [x] **2. Guarantee safe execution recovery.** Record operation identity before dispatch; reconcile interrupted side effects, reuse committed receipts, implement appropriate idempotency, and never blindly repeat actions with unknown outcomes.
 - [ ] **3. Enforce execution budgets and cancellation.** Apply real limits to tool calls, model calls, tokens, time, concurrency, CPU, memory, and external requests. Support cancellation, timeout propagation, and explicit budget-exceeded results.
 - [ ] **4. Correct usage accounting and telemetry.** Preserve actual provider usage through the broker, receipts, ledger, and UI. Measure latency, errors, throughput, resource consumption, and costs, including after restarts.
 
