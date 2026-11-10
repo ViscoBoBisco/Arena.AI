@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
+from urllib.parse import urlsplit
 
 
 class InferenceProvider(Protocol):
@@ -42,6 +43,30 @@ def _secret_setting(name: str) -> str:
     return ""
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _require_safe_transport(base_url: str, has_key: bool, production: bool) -> None:
+    """Refuse configurations that would send credentials or prompts in cleartext.
+
+    HTTPS is always accepted. Plain HTTP is accepted for loopback endpoints and,
+    outside production, for other hosts that carry no credential (for example a
+    trusted Docker-internal model server). A key is never sent over plain HTTP
+    to a non-loopback host.
+    """
+    parts = urlsplit(base_url)
+    if parts.scheme == "https":
+        return
+    if parts.scheme != "http":
+        raise RuntimeError("model base URL must use http or https")
+    if parts.hostname in _LOOPBACK_HOSTS:
+        return
+    if has_key:
+        raise RuntimeError("model API key requires an https endpoint unless loopback")
+    if production:
+        raise RuntimeError("production model endpoints must use https unless loopback")
+
+
 def _float_setting(name: str) -> float | None:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -53,6 +78,22 @@ def _float_setting(name: str) -> float | None:
     if value < 0:
         raise ValueError(f"{name} must be a nonnegative number")
     return value
+
+
+def _http_get_json(url: str, deadline_at: float | None = None) -> dict:
+    """GET a JSON object with the same error redaction as ``_http_json``."""
+    timeout = 10.0 if deadline_at is None else max(0.1, min(10.0, deadline_at - time.time()))
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="GET"),
+                                    timeout=timeout) as response:
+            payload = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"inference provider returned HTTP {exc.code}") from None
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        raise RuntimeError(f"inference provider request failed: {type(exc).__name__}") from None
+    if not isinstance(payload, dict):
+        raise RuntimeError("inference provider returned a non-object response")
+    return payload
 
 
 def _http_json(url: str, body: dict, headers: dict[str, str],
@@ -134,6 +175,29 @@ class OllamaProvider:
     model: str
     billable: bool = False
 
+    def _root(self) -> str:
+        url = self.base_url.rstrip("/")
+        for suffix in ("/api/chat", "/api/tags"):
+            if url.endswith(suffix):
+                url = url[: -len(suffix)]
+        return url
+
+    def list_models(self, deadline_at: float | None = None) -> list[str]:
+        """Return the model names pulled into this Ollama server (``/api/tags``)."""
+        payload = _http_get_json(self._root() + "/api/tags", deadline_at)
+        names = []
+        for item in payload.get("models") or []:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("model")
+                if isinstance(name, str) and name:
+                    names.append(name)
+        return names
+
+    def has_model(self, deadline_at: float | None = None) -> bool:
+        """True if the configured model is pulled; an untagged name means ``:latest``."""
+        wanted = self.model if ":" in self.model else self.model + ":latest"
+        return wanted in self.list_models(deadline_at)
+
     def complete(self, prompt: str, *, max_output_tokens: int,
                  deadline_at: float | None = None) -> dict:
         url = self.base_url.rstrip("/")
@@ -187,8 +251,12 @@ def provider_from_environment() -> InferenceProvider:
         model = os.environ.get("CONFLUX_MODEL_NAME", "").strip()
         if not base_url or not model:
             raise RuntimeError("openai_compatible requires CONFLUX_MODEL_BASE_URL and CONFLUX_MODEL_NAME")
+        api_key = _secret_setting("CONFLUX_MODEL_API_KEY")
+        _require_safe_transport(
+            base_url, bool(api_key),
+            os.environ.get("UNIFIED_ENV", "").strip().lower() in {"prod", "production"})
         return OpenAICompatibleProvider(
-            base_url, model, _secret_setting("CONFLUX_MODEL_API_KEY"),
+            base_url, model, api_key,
             os.environ.get("CONFLUX_MODEL_BILLABLE", "true").strip().lower()
             not in {"0", "false", "no"},
             _float_setting("CONFLUX_MODEL_INPUT_COST_PER_MILLION"),
@@ -277,8 +345,22 @@ class ModelRouter:
                         "error": "model token budget exhausted",
                         "usage": {"tokens_used": task_used,
                                   "budget_tokens": max(0, int(budget_tokens))}}
+            # Reserve input space before dispatch: the provider's input tokens
+            # count against the same budget as output. UTF-8 byte length is used
+            # as a conservative estimate of the prompt body only; chat-template
+            # tokens are not estimated, so the post-response check remains the
+            # backstop for them.
+            reserved_input = len(prompt.encode("utf-8"))
+            if reserved_input >= remaining:
+                return {"ok": False, "budget": "model_tokens",
+                        "error": "model prompt does not fit the remaining token budget",
+                        "usage": {"tokens_used": task_used, "provider_calls": 0,
+                                  "dispatched": False,
+                                  "input_reservation_tokens": reserved_input,
+                                  "budget_tokens": max(0, int(budget_tokens))}}
+            output_cap = remaining - reserved_input
             queued_seconds = max(0.0, time.monotonic() - queued_at)
-            output = self.provider.complete(prompt, max_output_tokens=remaining,
+            output = self.provider.complete(prompt, max_output_tokens=output_cap,
                                             deadline_at=deadline_at)
             usage = dict(output.get("usage", {}))
             used = max(0, int(usage.get("model_tokens", 0) or 0))

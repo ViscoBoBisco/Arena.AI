@@ -6,6 +6,7 @@ import ipaddress
 import json
 import os
 import re
+import time
 
 from .broker import CapabilityBroker
 from .engine import Engine
@@ -44,6 +45,24 @@ def _load_web_allowlist() -> tuple[str, ...]:
     return tuple(hosts)
 
 
+def _warn_if_model_missing(router) -> None:
+    """Log (never fail) when a configured Ollama model has not been pulled.
+
+    Ollama may start after the gateway, so this is advisory; a missing model
+    still fails the individual call with a redacted provider error.
+    """
+    from .model_router import OllamaProvider
+    provider = router.provider
+    if not isinstance(provider, OllamaProvider):
+        return
+    try:
+        if not provider.has_model(time.time() + 5):
+            print(f"warning: Ollama model {provider.model!r} is not pulled; "
+                  f"run `ollama pull {provider.model}`", flush=True)
+    except RuntimeError as exc:
+        print(f"warning: Ollama model check skipped: {exc}", flush=True)
+
+
 def build_engine(data_dir: str) -> Engine:
     from .gateway import _setting, validate_production_configuration
     validate_production_configuration()
@@ -65,6 +84,7 @@ def build_engine(data_dir: str) -> Engine:
     broker = CapabilityBroker(evidence, workspace_root=ws, project_isolation=True)
     router = ModelRouter(max_concurrent=1)
     broker.register_model_tool(router)
+    _warn_if_model_missing(router)
     register_adapters(broker, AdapterContext(
         evidence=evidence, workspace_root=ws,
         web_allowlist=web_allowlist,  # unset means fail closed; no redirect support

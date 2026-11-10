@@ -2,14 +2,11 @@
 signed webhook delivery."""
 import hashlib
 import hmac
-import json
 import os
 import sys
 import tempfile
 import threading
-import time
 import unittest
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

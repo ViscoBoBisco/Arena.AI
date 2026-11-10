@@ -4,7 +4,6 @@ manual 1.4: gateway -> ledger -> plan -> broker -> evidence -> verifier.
 """
 from __future__ import annotations
 
-import copy
 import hashlib
 import inspect
 import json
@@ -16,7 +15,6 @@ import time
 from .broker import CapabilityBroker
 from .contracts import (
     DEFAULT_BUDGETS,
-    Step,
     StepState,
     TaskEnvelope,
     TaskState,
@@ -402,7 +400,6 @@ class Engine:
                      if all(dep in done for dep in s.depends_on)]
             if not ready:
                 break
-            wave_receipts = []
             pause = None
             for step in ready:
                 spec = self.broker.get(step.tool)

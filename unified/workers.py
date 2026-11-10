@@ -11,7 +11,6 @@ import math
 import multiprocessing
 import os
 import resource
-import signal
 import sys
 import time
 from dataclasses import dataclass
@@ -229,7 +228,7 @@ def dispatch_isolated(broker, call_args: tuple, call_kwargs: dict, *,
                          peak_rss_bytes=measured_rss)
 
     if message and message[0] == "exception":
-        _kind, _detail, used_cpu, used_rss = (
+        _kind, _, used_cpu, used_rss = (
             message[1], message[2], float(message[3]), int(message[4]))
         measured_cpu, measured_rss = max(cpu_seen, used_cpu), max(rss_seen, used_rss)
         if mutating:

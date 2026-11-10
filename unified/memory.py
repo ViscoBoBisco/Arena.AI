@@ -6,7 +6,6 @@ from the durable task ledger and from source evidence (manual 1.3).
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import threading
 

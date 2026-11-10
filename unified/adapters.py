@@ -322,7 +322,7 @@ def register_adapters(broker: CapabilityBroker, ctx: AdapterContext) -> None:
         target_mods = {file[:-3] for file in targets}
         affected, seen, stack = set(), set(targets), list(targets)
         while stack:
-            cur = stack.pop()
+            stack.pop()
             for f, imps in imports.items():
                 if f in seen:
                     continue
