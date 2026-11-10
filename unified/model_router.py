@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
+from urllib.parse import urlsplit
 
 
 class InferenceProvider(Protocol):
@@ -40,6 +41,30 @@ def _secret_setting(name: str) -> str:
         except OSError as exc:
             raise RuntimeError(f"cannot read configured {name}_FILE") from exc
     return ""
+
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _require_safe_transport(base_url: str, has_key: bool, production: bool) -> None:
+    """Refuse configurations that would send credentials or prompts in cleartext.
+
+    HTTPS is always accepted. Plain HTTP is accepted for loopback endpoints and,
+    outside production, for other hosts that carry no credential (for example a
+    trusted Docker-internal model server). A key is never sent over plain HTTP
+    to a non-loopback host.
+    """
+    parts = urlsplit(base_url)
+    if parts.scheme == "https":
+        return
+    if parts.scheme != "http":
+        raise RuntimeError("model base URL must use http or https")
+    if parts.hostname in _LOOPBACK_HOSTS:
+        return
+    if has_key:
+        raise RuntimeError("model API key requires an https endpoint unless loopback")
+    if production:
+        raise RuntimeError("production model endpoints must use https unless loopback")
 
 
 def _float_setting(name: str) -> float | None:
@@ -187,8 +212,12 @@ def provider_from_environment() -> InferenceProvider:
         model = os.environ.get("CONFLUX_MODEL_NAME", "").strip()
         if not base_url or not model:
             raise RuntimeError("openai_compatible requires CONFLUX_MODEL_BASE_URL and CONFLUX_MODEL_NAME")
+        api_key = _secret_setting("CONFLUX_MODEL_API_KEY")
+        _require_safe_transport(
+            base_url, bool(api_key),
+            os.environ.get("UNIFIED_ENV", "").strip().lower() in {"prod", "production"})
         return OpenAICompatibleProvider(
-            base_url, model, _secret_setting("CONFLUX_MODEL_API_KEY"),
+            base_url, model, api_key,
             os.environ.get("CONFLUX_MODEL_BILLABLE", "true").strip().lower()
             not in {"0", "false", "no"},
             _float_setting("CONFLUX_MODEL_INPUT_COST_PER_MILLION"),

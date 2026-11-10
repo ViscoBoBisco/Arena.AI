@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional
 
-from .contracts import ToolReceipt, new_id, utcnow
+from .contracts import ToolReceipt, new_id
 from .evidence import EvidenceStore, sha256_bytes
 from .policy import PolicyEngine, PolicyViolation
 

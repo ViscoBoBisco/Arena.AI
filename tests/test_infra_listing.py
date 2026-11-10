@@ -61,7 +61,7 @@ class InfraListingTests(unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
             for i in range(3):
-                out = self.engine.submit("proj-a", f"l-{i}", {"intent": "echo", "instructions": "x"},
+                self.engine.submit("proj-a", f"l-{i}", {"intent": "echo", "instructions": "x"},
                                          [], GRANTS)
             self.engine.submit("proj-b", "l-b", {"intent": "echo", "instructions": "x"}, [], GRANTS)
             def get(path, proj):

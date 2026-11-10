@@ -105,5 +105,45 @@ class ProviderWireTests(unittest.TestCase):
         self.assertTrue(out["usage"]["token_consumption_uncertain"])
 
 
+class TransportGuardTests(unittest.TestCase):
+    def _make(self, url, key="", extra=None):
+        from unittest.mock import patch
+        from unified.model_router import provider_from_environment
+        env = {"CONFLUX_MODEL_PROVIDER": "openai_compatible",
+               "CONFLUX_MODEL_BASE_URL": url, "CONFLUX_MODEL_NAME": "m",
+               "CONFLUX_MODEL_API_KEY": key, "UNIFIED_ENV": ""}
+        env.update(extra or {})
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("CONFLUX_MODEL_API_KEY_FILE", None)
+            return provider_from_environment()
+
+    def test_https_with_key_is_allowed(self):
+        self.assertIsInstance(self._make("https://api.example.com/v1", "k"),
+                              OpenAICompatibleProvider)
+
+    def test_loopback_http_with_key_is_allowed(self):
+        self.assertIsInstance(self._make("http://127.0.0.1:9/v1", "k"),
+                              OpenAICompatibleProvider)
+
+    def test_key_over_remote_plain_http_is_refused(self):
+        secret = "sekrit-token-value"
+        with self.assertRaises(RuntimeError) as ctx:
+            self._make("http://api.example.com/v1", secret)
+        self.assertNotIn(secret, str(ctx.exception))
+
+    def test_remote_plain_http_without_key_is_refused_in_production(self):
+        with self.assertRaises(RuntimeError):
+            self._make("http://internal.example/v1", "",
+                       {"UNIFIED_ENV": "production"})
+
+    def test_remote_plain_http_without_key_is_allowed_outside_production(self):
+        self.assertIsInstance(self._make("http://internal.example/v1", ""),
+                              OpenAICompatibleProvider)
+
+    def test_non_http_scheme_is_refused(self):
+        with self.assertRaises(RuntimeError):
+            self._make("file:///etc/passwd", "")
+
+
 if __name__ == "__main__":
     unittest.main()
