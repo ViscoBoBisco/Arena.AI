@@ -80,6 +80,22 @@ def _float_setting(name: str) -> float | None:
     return value
 
 
+def _http_get_json(url: str, deadline_at: float | None = None) -> dict:
+    """GET a JSON object with the same error redaction as ``_http_json``."""
+    timeout = 10.0 if deadline_at is None else max(0.1, min(10.0, deadline_at - time.time()))
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="GET"),
+                                    timeout=timeout) as response:
+            payload = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"inference provider returned HTTP {exc.code}") from None
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        raise RuntimeError(f"inference provider request failed: {type(exc).__name__}") from None
+    if not isinstance(payload, dict):
+        raise RuntimeError("inference provider returned a non-object response")
+    return payload
+
+
 def _http_json(url: str, body: dict, headers: dict[str, str],
                deadline_at: float | None) -> dict:
     timeout = 60.0 if deadline_at is None else max(0.1, deadline_at - time.time())
@@ -158,6 +174,29 @@ class OllamaProvider:
     base_url: str
     model: str
     billable: bool = False
+
+    def _root(self) -> str:
+        url = self.base_url.rstrip("/")
+        for suffix in ("/api/chat", "/api/tags"):
+            if url.endswith(suffix):
+                url = url[: -len(suffix)]
+        return url
+
+    def list_models(self, deadline_at: float | None = None) -> list[str]:
+        """Return the model names pulled into this Ollama server (``/api/tags``)."""
+        payload = _http_get_json(self._root() + "/api/tags", deadline_at)
+        names = []
+        for item in payload.get("models") or []:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("model")
+                if isinstance(name, str) and name:
+                    names.append(name)
+        return names
+
+    def has_model(self, deadline_at: float | None = None) -> bool:
+        """True if the configured model is pulled; an untagged name means ``:latest``."""
+        wanted = self.model if ":" in self.model else self.model + ":latest"
+        return wanted in self.list_models(deadline_at)
 
     def complete(self, prompt: str, *, max_output_tokens: int,
                  deadline_at: float | None = None) -> dict:

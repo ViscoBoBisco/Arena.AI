@@ -24,12 +24,19 @@ class _Stub(BaseHTTPRequestHandler):
     def log_message(self, *args):  # keep test output quiet
         pass
 
+    def do_GET(self):
+        _Stub.seen.append({"path": self.path, "body": None,
+                           "auth": self.headers.get("Authorization")})
+        self._reply(*_Stub.routes.get(self.path, (404, {"error": "no route"})))
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length) or b"{}")
         _Stub.seen.append({"path": self.path, "body": body,
                            "auth": self.headers.get("Authorization")})
-        status, payload = _Stub.routes.get(self.path, (404, {"error": "no route"}))
+        self._reply(*_Stub.routes.get(self.path, (404, {"error": "no route"})))
+
+    def _reply(self, status, payload):
         raw = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -143,6 +150,45 @@ class TransportGuardTests(unittest.TestCase):
     def test_non_http_scheme_is_refused(self):
         with self.assertRaises(RuntimeError):
             self._make("file:///etc/passwd", "")
+
+
+class OllamaDiscoveryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = HTTPServer(("127.0.0.1", 0), _Stub)
+        cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self):
+        _Stub.routes = {}
+        _Stub.seen = []
+
+    def test_untagged_model_matches_latest_tag(self):
+        _Stub.routes["/api/tags"] = (200, {"models": [
+            {"name": "llama3.2:latest", "model": "llama3.2:latest"}]})
+        self.assertTrue(OllamaProvider(self.base, "llama3.2").has_model())
+
+    def test_explicit_tag_must_match_exactly(self):
+        _Stub.routes["/api/tags"] = (200, {"models": [{"name": "phi4-mini:3.8b"}]})
+        self.assertTrue(OllamaProvider(self.base, "phi4-mini:3.8b").has_model())
+        self.assertFalse(OllamaProvider(self.base, "phi4-mini:latest").has_model())
+
+    def test_discovery_accepts_chat_url_base(self):
+        _Stub.routes["/api/tags"] = (200, {"models": []})
+        provider = OllamaProvider(self.base + "/api/chat", "llama3.2")
+        self.assertEqual(provider.list_models(), [])
+        self.assertEqual(_Stub.seen[-1]["path"], "/api/tags")
+
+    def test_discovery_error_is_redacted(self):
+        _Stub.routes["/api/tags"] = (500, {"error": "leak"})
+        with self.assertRaises(RuntimeError) as ctx:
+            OllamaProvider(self.base, "llama3.2").has_model()
+        self.assertEqual(str(ctx.exception), "inference provider returned HTTP 500")
 
 
 if __name__ == "__main__":
