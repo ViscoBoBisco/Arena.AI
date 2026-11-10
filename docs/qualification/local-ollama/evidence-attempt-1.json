@@ -1,0 +1,101 @@
+{
+  "status": "FAIL",
+  "conflux_commit": "e5a1c761f612a28ddccee037261a6071379787a4",
+  "verified_source_blobs": 49,
+  "meridian_source": {
+    "commit": "3282944eeb4265d9a07caac0dbf8502528bccce0",
+    "path": "README.md",
+    "paragraph": 1,
+    "sha256": "71b433333aebc06fca22968d021240c6eb83e8f16257e346a0cbc7195aeab882",
+    "excerpt_sha256": "6915c43e00b14d76a6c151d8b3a3a6ab8046ce14bf78f5cd16e60c609bb3e386",
+    "prompt_sha256": "e2ee2b485bcf5f3ed9e6505facf5bd6e4d1222821cb26bc2a9cff01d02a38537"
+  },
+  "ollama": {
+    "version": "0.40.15",
+    "model": "granite4.2:3b",
+    "digest": "40577dc168a3a9ad34e9a1234e0c2570be86097fa75a236d4574ae985705d3c4"
+  },
+  "docker_version": "29.9.3",
+  "compose_version": "5.7.0",
+  "provider_dispatches": [
+    {
+      "request_model": "granite4.2:3b",
+      "max_output_tokens": 256,
+      "model": "granite4.2:3b",
+      "done": true,
+      "done_reason": "length",
+      "prompt_eval_count": 87,
+      "eval_count": 256,
+      "total_duration": 4700616042,
+      "upstream_status": 200,
+      "completion_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "compose_project": "confluxqual-b492e718d3",
+  "base_image": {
+    "tag": "python:3.12-slim",
+    "id": "sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f"
+  },
+  "dockerfile_sha256": "354204e345689e5dea17f80265262a657828122771e452c38f678acc99a75eb3",
+  "gateway_image_id": "sha256:2f9c2eb530b4c60e3c8b72289a5eecb10fb364e02e0cdeceedb49c0ab99c8ad5",
+  "gateway_python": "Python 3.12.14",
+  "unauthenticated_tasks_http": 401,
+  "submission": {
+    "http_status": 202,
+    "task_id": "T-5430934BE150488CA1CA0002DAB68293",
+    "duplicate": false,
+    "state": "ADMITTED",
+    "status_url": "/v1/tasks/T-5430934BE150488CA1CA0002DAB68293"
+  },
+  "task_state": "FAILED",
+  "receipts": [
+    {
+      "task_id": "T-5430934BE150488CA1CA0002DAB68293",
+      "step_id": "S-A8B59DE178",
+      "attempt_id": "A-915F135F00D8444081AA1E2A8C328399",
+      "status": "failed",
+      "result_type": "error.budget.v1",
+      "summary": "provider-reported usage exceeded remaining token budget",
+      "data": {},
+      "artifacts": [],
+      "evidence": [],
+      "errors": [
+        {
+          "type": "budget_exceeded",
+          "detail": "provider-reported usage exceeded remaining token budget",
+          "budget": "model_tokens"
+        }
+      ],
+      "usage": {
+        "provider": "ollama",
+        "provider_calls": 1,
+        "usage_source": "provider",
+        "input_tokens": 87,
+        "output_tokens": 256,
+        "model_tokens": 343,
+        "token_consumption_uncertain": false,
+        "elapsed_ms": 4709,
+        "queued_seconds": 3.919936716556549e-06,
+        "tokens_used": 343,
+        "tokens_used_total": 343,
+        "cpu_seconds": 0.005212234,
+        "peak_rss_bytes": 34336768,
+        "memory_limit_bytes": 268435456
+      }
+    }
+  ],
+  "attempts": [
+    {
+      "attempt_id": "A-915F135F00D8444081AA1E2A8C328399",
+      "attempt_number": 1,
+      "state": "FAILED",
+      "dispatched_at": "2026-11-10T03:18:12Z",
+      "finished_at": "2026-11-10T03:18:17Z"
+    }
+  ],
+  "error": "AssertionError: ",
+  "cleanup": {
+    "compose_exit": 0,
+    "image_exit": 0
+  }
+}

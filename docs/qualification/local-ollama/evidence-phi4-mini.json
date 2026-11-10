@@ -1,0 +1,143 @@
+{
+  "status": "FAIL",
+  "conflux_commit": "e5a1c761f612a28ddccee037261a6071379787a4",
+  "verified_source_blobs": 49,
+  "meridian_source": {
+    "commit": "3282944eeb4265d9a07caac0dbf8502528bccce0",
+    "path": "README.md",
+    "paragraph": 1,
+    "sha256": "71b433333aebc06fca22968d021240c6eb83e8f16257e346a0cbc7195aeab882",
+    "excerpt_sha256": "6915c43e00b14d76a6c151d8b3a3a6ab8046ce14bf78f5cd16e60c609bb3e386",
+    "prompt_sha256": "e2ee2b485bcf5f3ed9e6505facf5bd6e4d1222821cb26bc2a9cff01d02a38537"
+  },
+  "ollama": {
+    "version": "0.40.15",
+    "model": "phi4-mini:3.8b-q4_K_M",
+    "digest": "78fad5d182a7c33065e153a5f8ba210754207ba9d91973f57dffa7f487363753"
+  },
+  "docker_version": "29.9.3",
+  "compose_version": "5.7.0",
+  "provider_dispatches": [
+    {
+      "request_model": "phi4-mini:3.8b-q4_K_M",
+      "max_output_tokens": 256,
+      "model": "phi4-mini:3.8b-q4_K_M",
+      "done": true,
+      "done_reason": "stop",
+      "prompt_eval_count": 72,
+      "eval_count": 9,
+      "total_duration": 2698093299,
+      "upstream_status": 200,
+      "completion_sha256": "5461e7cd5510b3af8125cbf3742d9aa0db1c857038b7e13dc52a9467daaf47a8"
+    }
+  ],
+  "compose_project": "confluxqual-61946314c8",
+  "base_image": {
+    "tag": "python:3.12-slim",
+    "id": "sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f"
+  },
+  "dockerfile_sha256": "354204e345689e5dea17f80265262a657828122771e452c38f678acc99a75eb3",
+  "gateway_image_id": "sha256:7231962d51b3c6aded58e1766d12f0a91340a5d8370ef0a848b5cbfbf642b309",
+  "gateway_python": "Python 3.12.14",
+  "unauthenticated_tasks_http": 401,
+  "submission": {
+    "http_status": 202,
+    "task_id": "T-E01B46A15E7C4188A664B9933D12DABF",
+    "duplicate": false,
+    "state": "ADMITTED",
+    "status_url": "/v1/tasks/T-E01B46A15E7C4188A664B9933D12DABF"
+  },
+  "task_state": "COMPLETED",
+  "receipts": [
+    {
+      "task_id": "T-E01B46A15E7C4188A664B9933D12DABF",
+      "step_id": "S-B69CA62093",
+      "attempt_id": "A-659085B4851A4D95821E96896E5E10FF",
+      "status": "succeeded",
+      "result_type": "model.complete.v1",
+      "summary": "model completion",
+      "data": {
+        "completion_sha256": "5461e7cd5510b3af8125cbf3742d9aa0db1c857038b7e13dc52a9467daaf47a8"
+      },
+      "artifacts": [],
+      "evidence": [],
+      "errors": [],
+      "usage": {
+        "provider": "ollama",
+        "provider_calls": 1,
+        "usage_source": "provider",
+        "input_tokens": 72,
+        "output_tokens": 9,
+        "model_tokens": 81,
+        "token_consumption_uncertain": false,
+        "elapsed_ms": 2704,
+        "queued_seconds": 5.739973857998848e-06,
+        "tokens_used": 81,
+        "tokens_used_total": 81,
+        "cpu_seconds": 0.005299544,
+        "peak_rss_bytes": 34340864,
+        "memory_limit_bytes": 268435456
+      }
+    }
+  ],
+  "attempts": [
+    {
+      "attempt_id": "A-659085B4851A4D95821E96896E5E10FF",
+      "attempt_number": 1,
+      "state": "SUCCEEDED",
+      "dispatched_at": "2026-11-10T03:19:02Z",
+      "finished_at": "2026-11-10T03:19:05Z"
+    }
+  ],
+  "metrics_before_restart": {
+    "tasks_by_state": {
+      "COMPLETED": 1
+    },
+    "cpu_seconds": 0.005299544,
+    "max_worker_peak_rss_bytes": 34340864,
+    "max_worker_address_space_limit_bytes": 268435456,
+    "task_memory_limit_mb": 256,
+    "execution_time_seconds": 2.704,
+    "uncertain_execution_seconds": 0.0,
+    "attempts": 1,
+    "retries": 0,
+    "tool_calls": 1,
+    "model_calls": 1,
+    "provider_calls": 1,
+    "provider_reported_tokens": 81,
+    "estimated_model_tokens": 0,
+    "unclassified_model_tokens": 0,
+    "model_tokens": 81,
+    "input_tokens": 72,
+    "output_tokens": 9,
+    "cost_usd": 0.0,
+    "provider_reported_cost_usd": 0.0,
+    "rate_card_estimated_cost_usd": 0.0,
+    "priced_provider_calls": 0,
+    "unpriced_provider_calls": 1,
+    "unknown_attempts": 0,
+    "unknown_resource_effectful_calls": 0,
+    "uncertain_provider_calls": 0,
+    "uncertain_token_consumption_calls": 0,
+    "uncertain_cost_consumption_calls": 0,
+    "uncertain_external_effects": 0,
+    "receipt_count": 1,
+    "elapsed_ms": 2704,
+    "latencies_ms": [
+      2704
+    ],
+    "tool_failures": 0,
+    "cancelled_calls": 0,
+    "budget_exceeded": 0,
+    "calls_by_tool": {
+      "model.complete": 1
+    },
+    "errors_by_tool": {}
+  },
+  "error": "RuntimeError: Gateway readiness timed out",
+  "cleanup": {
+    "compose_exit": 0,
+    "image_exit": 0
+  },
+  "completion_matches_source": true
+}
