@@ -144,6 +144,30 @@ class ExpansionTests(unittest.TestCase):
         self.assertEqual(timed.get("budget"), "time_seconds")
         router._sem.release()
 
+    def test_model_router_reserves_prompt_before_dispatch(self):
+        calls = []
+
+        class RecordingProvider:
+            billable = False
+
+            def complete(self, prompt, *, max_output_tokens, deadline_at=None):
+                calls.append(max_output_tokens)
+                return {"completion": "ok", "usage": {
+                    "provider": "test", "provider_calls": 1, "usage_source": "provider",
+                    "input_tokens": len(prompt), "output_tokens": 1,
+                    "model_tokens": len(prompt) + 1}}
+
+        router = ModelRouter(max_concurrent=1, provider=RecordingProvider())
+        refused = router.complete("x" * 300, budget_tokens=256, task_id="task-r")
+        self.assertFalse(refused["ok"])
+        self.assertEqual(refused["budget"], "model_tokens")
+        self.assertEqual(calls, [])  # never dispatched
+        self.assertFalse(refused["usage"]["dispatched"])
+
+        fits = router.complete("x" * 100, budget_tokens=256, task_id="task-f")
+        self.assertTrue(fits["ok"])
+        self.assertEqual(calls, [256 - 100])  # output cap is the remaining allowance
+
     def test_model_router_budgets_are_isolated_by_task(self):
         router = ModelRouter(max_concurrent=1)
         first = router.complete("hi", budget_tokens=5, task_id="task-a")
@@ -153,11 +177,12 @@ class ExpansionTests(unittest.TestCase):
         self.assertTrue(other["ok"])
         self.assertEqual(first["usage"]["model_tokens"], other["usage"]["model_tokens"])
         self.assertFalse(repeated["ok"])
-        # The over-budget inference call still consumed provider/simulated
-        # tokens; accounting reports the actual cumulative amount, not the
-        # pre-call balance.
-        self.assertEqual(repeated["usage"]["tokens_used"],
-                         first["usage"]["model_tokens"] + repeated["usage"]["model_tokens"])
+        # The prompt no longer fits the remaining allowance, so it is refused
+        # before dispatch: no provider call and no additional tokens consumed.
+        self.assertEqual(repeated["budget"], "model_tokens")
+        self.assertFalse(repeated["usage"]["dispatched"])
+        self.assertEqual(repeated["usage"]["provider_calls"], 0)
+        self.assertEqual(repeated["usage"]["tokens_used"], first["usage"]["model_tokens"])
         router.forget_task("task-a")
         self.assertTrue(router.complete("hi", budget_tokens=5, task_id="task-a")["ok"])
         router.restore_task_usage("task-recovered", 3)

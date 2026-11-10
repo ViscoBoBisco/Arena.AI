@@ -277,8 +277,22 @@ class ModelRouter:
                         "error": "model token budget exhausted",
                         "usage": {"tokens_used": task_used,
                                   "budget_tokens": max(0, int(budget_tokens))}}
+            # Reserve input space before dispatch: the provider's input tokens
+            # count against the same budget as output. UTF-8 byte length is used
+            # as a conservative estimate of the prompt body only; chat-template
+            # tokens are not estimated, so the post-response check remains the
+            # backstop for them.
+            reserved_input = len(prompt.encode("utf-8"))
+            if reserved_input >= remaining:
+                return {"ok": False, "budget": "model_tokens",
+                        "error": "model prompt does not fit the remaining token budget",
+                        "usage": {"tokens_used": task_used, "provider_calls": 0,
+                                  "dispatched": False,
+                                  "input_reservation_tokens": reserved_input,
+                                  "budget_tokens": max(0, int(budget_tokens))}}
+            output_cap = remaining - reserved_input
             queued_seconds = max(0.0, time.monotonic() - queued_at)
-            output = self.provider.complete(prompt, max_output_tokens=remaining,
+            output = self.provider.complete(prompt, max_output_tokens=output_cap,
                                             deadline_at=deadline_at)
             usage = dict(output.get("usage", {}))
             used = max(0, int(usage.get("model_tokens", 0) or 0))
