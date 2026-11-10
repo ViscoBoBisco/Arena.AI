@@ -95,5 +95,27 @@ class ProductionConfigurationTests(unittest.TestCase):
         self.assertIn("production requires a real", result["error"])
 
 
+    def test_ollama_empty_base_url_from_compose_uses_loopback_default(self):
+        from unified.model_router import OllamaProvider, provider_from_environment
+        env = {"CONFLUX_MODEL_PROVIDER": "ollama", "CONFLUX_MODEL_BASE_URL": "",
+               "CONFLUX_MODEL_NAME": ""}
+        with patch.dict(os.environ, env, clear=False):
+            provider = provider_from_environment()
+        self.assertIsInstance(provider, OllamaProvider)
+        self.assertEqual(provider.base_url, "http://127.0.0.1:11434")
+        self.assertEqual(provider.model, "llama3.2")
+
+    def test_empty_model_key_file_means_no_credential(self):
+        from unified.model_router import _secret_setting
+        with tempfile.NamedTemporaryFile("w", delete=False) as handle:
+            handle.write("\n")
+        try:
+            with patch.dict(os.environ, {"CONFLUX_MODEL_API_KEY_FILE": handle.name,
+                                         "CONFLUX_MODEL_API_KEY": ""}, clear=False):
+                self.assertEqual(_secret_setting("CONFLUX_MODEL_API_KEY"), "")
+        finally:
+            os.unlink(handle.name)
+
+
 if __name__ == "__main__":
     unittest.main()

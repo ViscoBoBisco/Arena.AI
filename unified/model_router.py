@@ -147,15 +147,18 @@ class OllamaProvider:
         }, {}, deadline_at)
         try:
             completion = payload["message"]["content"]
+            counted = "prompt_eval_count" in payload and "eval_count" in payload
             input_tokens = max(0, int(payload.get("prompt_eval_count", 0)))
             output_tokens = max(0, int(payload.get("eval_count", 0)))
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError("Ollama returned an invalid completion") from exc
         return {"completion": completion, "usage": {
             "provider": "ollama", "provider_calls": 1,
-            "usage_source": "provider", "input_tokens": input_tokens,
+            "usage_source": "provider" if counted else "unavailable",
+            "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "model_tokens": input_tokens + output_tokens,
+            "token_consumption_uncertain": not counted,
         }}
 
 
@@ -192,7 +195,8 @@ def provider_from_environment() -> InferenceProvider:
             _float_setting("CONFLUX_MODEL_OUTPUT_COST_PER_MILLION"))
     if kind == "ollama":
         return OllamaProvider(
-            os.environ.get("CONFLUX_MODEL_BASE_URL", "http://127.0.0.1:11434"),
+            # Compose passes unset variables as "", so fall back explicitly.
+            os.environ.get("CONFLUX_MODEL_BASE_URL", "").strip() or "http://127.0.0.1:11434",
             os.environ.get("CONFLUX_MODEL_NAME", "").strip() or "llama3.2")
     raise RuntimeError("CONFLUX_MODEL_PROVIDER must be simulated, openai_compatible, or ollama")
 
