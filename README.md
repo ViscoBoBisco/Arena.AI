@@ -1,5 +1,17 @@
 # Conflux
 
+> **This repository is archived (read-only) as of 2026-11-11.** Conflux continues in
+> [`ViscoBoBisco/MOC`](https://github.com/ViscoBoBisco/MOC) (a private repository), under
+> [`conflux/`](https://github.com/ViscoBoBisco/MOC/tree/main/conflux), as the execution layer of the Meridian
+> Operations Console. This prototype's design, checklist and qualification record live on in
+> [`conflux/docs/conflux/`](https://github.com/ViscoBoBisco/MOC/tree/main/conflux/docs/conflux), and this
+> repository's source and tests at commit `6dfc628` are kept in
+> [`conflux/reference/conflux/`](https://github.com/ViscoBoBisco/MOC/tree/main/conflux/reference/conflux).
+> The integrated system was externally qualified against local Ollama on 2026-11-11:
+> [`conflux/docs/qualification/local-ollama-2026-11-11/`](https://github.com/ViscoBoBisco/MOC/tree/main/conflux/docs/qualification/local-ollama-2026-11-11).
+> The integration history, including how each prototype part was carried over, is in
+> [`conflux/MERGE.md`](https://github.com/ViscoBoBisco/MOC/blob/main/conflux/MERGE.md).
+
 > A unified agentic intelligence platform that transforms objectives into coordinated, resource-efficient, independently verifiable execution across AI models, specialist agents, software tools, data systems, and persistent workflows, under centralized governance and durable task custody.
 
 ## Current implementation
