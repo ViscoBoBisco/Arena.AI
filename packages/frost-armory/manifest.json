@@ -67,8 +67,8 @@
   },
   "files": {
     "README.md": {
-      "sha256": "ab27f9b3b5d3e4dc714b75a907686f4722f67c54e8edc46aa98be50e23a69e05",
-      "size": 2250
+      "sha256": "26e75326a6bcad2db2db8b328a0ec3ec25a369b3da70767c1396ea530d212298",
+      "size": 2414
     },
     "addon/FrostArmory/FrostArmory.lua": {
       "sha256": "13162b043225c320f2b4c630a139932f9dccec0ceab9333090e736e55cf882ca",
@@ -130,8 +130,8 @@
       "size": 263
     },
     "evidence.json": {
-      "sha256": "f87036f0bd3b7782ddbedde4c55b4c8221df80d5c7fab2c4bdb4bd4e730a2fe6",
-      "size": 6668
+      "sha256": "c512c4c82f6ba7ff3b22c27c29db10414787ce79a4f36793164c78a5e22a7cc7",
+      "size": 8632
     }
   },
   "package_version": "1.0.0",
@@ -140,7 +140,7 @@
   "spec": "frost-armory",
   "spec_version": 1,
   "summary": {
-    "bytes": 15983,
+    "bytes": 16147,
     "files": 14
   }
 }

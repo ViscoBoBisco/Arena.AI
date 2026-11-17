@@ -52,9 +52,9 @@ The generated artifacts are **not all production implementations** yet. SQL gene
 | Level | What earns it | Frost Armory status on this branch |
 |---|---|---|
 | `ARENA-STATIC` | schema, structural and repository checks | Spec structure checks run; stock asset verification remains `NOT_ASSESSED` |
-| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | All 240 repository tests pass at the current working tree; generated bundle does not attest test execution |
-| `ARENA-DB` | apply and rollback on a disposable compatible DB | Pending; no MySQL/AzerothCore DB in this environment |
-| `ARENA-COMPILE` | module compile/API check against pinned compatible AzerothCore | Pending; pinned source/API contract is recorded, but compilation is blocked by missing native Boost dependencies and has not passed |
+| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | All 244 repository tests pass at the current working tree; generated bundle does not attest test execution |
+| `ARENA-DB` | apply and rollback on a disposable compatible DB | Pending; no disposable AzerothCore database was provisioned |
+| `ARENA-COMPILE` | module compile/API check against pinned compatible AzerothCore | **PASS** for exact Frost Armory source hashes and AzerothCore `6ffb62abb867dabb258de6813ff5d06d6b011543`; [CI run](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44201459186/job/134456328585). This is a targeted object/linkage check, not a full server build or gameplay qualification. |
 | `ARENA-PACK` | reproducible package and independent integrity verification | `foundry verify packages/frost-armory` passes in this workspace; package evidence marks verification as an external required step, not a self-claim |
 | `CAMPAIGN-ADMISSION` | actual Campaign Party baseline accepts without conflicts | Pending; target repo/baseline unavailable |
 | `CAMPAIGN-LIVE` | real 3.3.5a client and Playerbots execute feature | Pending; no downstream runtime |
@@ -80,7 +80,7 @@ python3 tools/compile_generated_module.py \
   --registration AddFrostArmoryScripts
 ```
 
-The helper refuses a different core revision, compiles the generated feature TU, module-local loader and CMake-generated static loader using that build's exact compiler commands, then checks the registration symbols connect with `nm`. It is a targeted object/linkage smoke gate—not a complete AzerothCore build, module link, DB check or gameplay qualification. The GitHub Actions workflow `.github/workflows/azerothcore-compile.yml` provisions the needed system libraries, checks out the recorded revision, configures the generated module and runs this gate. In this environment, CMake 3.31.6 was installed into a temporary Python target and configuration was attempted against the pinned checkout; configuration stopped at missing Boost 1.74 development headers/libraries. Therefore the gate has **not** passed and `ARENA-COMPILE` remains pending until that workflow or an equivalent local run succeeds.
+The helper refuses a different core revision, compiles the generated feature TU, module-local loader and CMake-generated static loader using that build's exact compiler commands, then checks the registration symbols connect with `nm`. The gate passed in [GitHub Actions run 44201459186](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44201459186/job/134456328585) for qualified source commit `7514750d0a2103ee0318b382bfad0e4ad4368fbc`. The machine-readable record is `foundry/qualifications/azerothcore-module.json`; package generation carries it forward only when the pinned core revision and every generated module `.cpp`/`.h` hash still match. It is a targeted object/linkage smoke gate—not a complete AzerothCore build, final server/module link, DB check or gameplay qualification. `ARENA-COMPILE` does not certify the generated gameplay skeleton as feature-complete.
 
 ## Traceable task ledger
 
@@ -88,7 +88,7 @@ Acceptance conditions are deliberately explicit; `done` means the contract is im
 
 | Track | Work item | State / acceptance condition |
 |---|---|---|
-| A | Fail-closed spec, ID/table bounds, visible verdicts | **Partial** — structured artifact/capability requirements and client/server hash-parity admission gates are synthetic-tested; full asset provenance, DBC references, schema and pinned-core checks remain |
+| A | Fail-closed spec, ID/table bounds, visible verdicts | **Partial** — structured artifact/capability requirements and client/server hash-parity admission gates are synthetic-tested; full asset provenance, DBC references and schema qualification remain |
 | B | Local DBC/inventory ingest, deterministic keyword search and patch-cost query | **Partial** — implemented subset; semantic relationships, MPQ inventory parser and broad DBC coverage remain |
 | C | Versioned JSON spec, key references, ID allocation and preview | **Partial** — spec v1 common subset and snapshot-aware ID allocation; transactional cross-package registry, migration tooling and all content grammars remain |
 | D | Deterministic bundle, rollback, manifest verification, lossless DBC delta writer | **Partial** — narrow writer and bundle; conflict-aware merge, MPQ assembly and cache invalidation remain |
@@ -96,7 +96,7 @@ Acceptance conditions are deliberately explicit; `done` means the contract is im
 | F | Quest, world, dungeon and encounter factories | **Not done** — no complete five-member instance or encounter state machine |
 | G | Profession graph, Material Exchange interface and AHBot simulator | **Not done** — recipes are currently descriptive only; downstream economy remains authoritative |
 | H | Versioned party/Playerbot contracts and test doubles | **Partial** — package admission fake host only; no party state/command contract or bot behavior simulation |
-| I | Static/synthetic qualification and negative tests | **Partial** — synthetic suite done; disposable DB, compile, addon runtime, installer fault/rollback tests remain |
+| I | Static/synthetic qualification and negative tests | **Partial** — synthetic suite and pinned-core translation-unit compile/linkage gate done; disposable DB, addon runtime, installer fault/rollback tests remain |
 | J | CLI create/inspect/plan/build/verify/compare/explain | **Partial** — validate/plan/build/verify/assets/explain and imported baseline snapshots available; compare, GUI and live baseline discovery remain |
 | K | Nine cohesive production showcases | **Not done** — Frost Armory is a compiler exercise, not a production-ready showcase; eight others not built |
 | L | Campaign Party contract, fake host and handoff | **Partial** — adapter v1.1 fake host exercises structured delivery requirements, DBC hash-parity and idempotency gates; actual downstream baseline admission and complete handoff checker remain |

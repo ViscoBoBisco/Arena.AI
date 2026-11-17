@@ -55,6 +55,10 @@ class Packaging(unittest.TestCase):
             self.assertTrue(all(c["status"] == "NOT_ASSESSED" for c in evidence["acceptance"]))
             requirements = evidence["delivery_requirements"]
             self.assertEqual(requirements["schema"], "arena-delivery-requirements/1")
+            self.assertEqual(evidence["evidence_levels"]["ARENA-COMPILE"].split(";", 1)[0], "PASS")
+            self.assertEqual(evidence["compile_qualification"]["qualification"], "ARENA-COMPILE")
+            self.assertEqual(evidence["compile_qualification"]["environment"]["core_revision"],
+                             "6ffb62abb867dabb258de6813ff5d06d6b011543")
             self.assertTrue({"world_sql", "data_migration", "server_module",
                              "addon_files", "config"} <=
                             {entry["kind"] for entry in requirements["artifacts"]})
@@ -64,6 +68,20 @@ class Packaging(unittest.TestCase):
             self.assertIn("Do not install", readme)
             verified = helpers.run_tool(FOUNDRY, "verify", out)
             self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+
+    def test_compile_qualification_does_not_carry_to_changed_module_sources(self):
+        spec = json.loads(SPEC.read_text(encoding="utf-8"))
+        spec["title"] += " changed"
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_path = Path(tmp) / "changed.json"
+            out = Path(tmp) / "pkg"
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+            built = helpers.run_tool(FOUNDRY, "build", spec_path, "--out", out,
+                                     "--allow-unverified")
+            self.assertEqual(built.returncode, 0, built.stderr)
+            evidence = json.loads((out / "evidence.json").read_text(encoding="utf-8"))
+            self.assertIsNone(evidence["compile_qualification"])
+            self.assertIn("pending", evidence["evidence_levels"]["ARENA-COMPILE"])
 
     def test_mixed_addon_dbc_package_carries_independent_gates(self):
         spec = json.loads(SPEC.read_text(encoding="utf-8"))

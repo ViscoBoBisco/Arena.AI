@@ -39,6 +39,39 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _matching_compile_qualification(spec: dict, files: dict) -> Optional[dict]:
+    """Return a pinned-core record only when it qualifies these exact sources."""
+    if not spec.get("module"):
+        return None
+    repo = Path(__file__).resolve().parents[1]
+    record_path = repo / "foundry" / "qualifications" / "azerothcore-module.json"
+    pin_path = repo / "foundry" / "core-pins.json"
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        pin = json.loads(pin_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    subject = record.get("subject", {})
+    module_name = f"mod-{spec['name']}"
+    source_prefix = f"server/{module_name}/src/"
+    actual_sources = {
+        rel: _sha256(data)
+        for rel, data in files.items()
+        if rel.startswith(source_prefix) and Path(rel).suffix in (".cpp", ".h")
+    }
+    expected_revision = pin.get("azerothcore_wotlk", {}).get("revision")
+    if (record.get("schema") != "arena-qualification/1"
+            or record.get("qualification") != "ARENA-COMPILE"
+            or record.get("status") != "PASS"
+            or subject.get("spec") != spec.get("name")
+            or subject.get("module") != module_name
+            or record.get("environment", {}).get("core_revision") != expected_revision
+            or not actual_sources
+            or subject.get("source_sha256") != actual_sources):
+        return None
+    return record
+
+
 def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
                   allow_unverified: bool = False, stamp: bool = False,
                   reserved=None, host: Optional[FakeHost] = None) -> dict:
@@ -80,7 +113,8 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
         put(rel, content)
     for rel, content in generate.config_files(spec).items():
         put(rel, content)
-    put("README.md", _readme(spec, result))
+    compile_qualification = _matching_compile_qualification(spec, files)
+    put("README.md", _readme(spec, result, compile_qualification))
 
     # compatibility: dry-run the adapter contract against a host
     ids = allocate_ids(spec, reserved=reserved)
@@ -139,10 +173,14 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
              "evidence": None}
             for item in (spec.get("acceptance") or [])
         ],
+        "compile_qualification": compile_qualification,
         "generated_scope": {
             "sql_migrations": "generated; schema/application not DB-qualified",
             "rollback": "generated; rollback not DB-qualified",
-            "cpp_module": "registration skeleton only; not compiled or feature-complete",
+            "cpp_module": (
+                "registration skeleton; compiled against the pinned core, not feature-complete"
+                if compile_qualification else
+                "registration skeleton only; not compiled or feature-complete"),
             "addon": "presentation placeholder only; not client-runtime tested",
             "recipes": "descriptive dependency comments; no executable profession recipe",
             "dbc_delta": "narrow Item.dbc delta only when explicitly requested; no MPQ assembly",
@@ -152,7 +190,10 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
             "ARENA-STATIC": "spec validation executed; see per-check verdicts above",
             "ARENA-SYNTHETIC": "NOT_ASSESSED by package build; run repository tests separately",
             "ARENA-DB": "pending (requires disposable compatible database)",
-            "ARENA-COMPILE": "pending (module not compiled against a pinned core)",
+            "ARENA-COMPILE": (
+                f"PASS; pinned-core qualification record: {compile_qualification['environment']['run_url']}"
+                if compile_qualification else
+                "pending (module not compiled against a pinned core)"),
             "ARENA-PACK": "bundle assembled; run foundry verify before claiming integrity qualification",
             "CAMPAIGN-ADMISSION": "pending (needs the real Campaign Party baseline)",
             "CAMPAIGN-LIVE": "pending (needs client + Playerbots)",
@@ -210,7 +251,12 @@ def _unverified_refs(spec: dict) -> list:
     return out
 
 
-def _readme(spec: dict, result: ValidationResult) -> str:
+def _readme(spec: dict, result: ValidationResult,
+            compile_qualification: Optional[dict] = None) -> str:
+    compile_status = (
+        f"ARENA-COMPILE qualified for the exact generated module sources against "
+        f"the pinned core ({compile_qualification['environment']['run_url']})"
+        if compile_qualification else "ARENA-COMPILE pending")
     lines = [
         f"# {spec.get('title', spec['name'])}",
         "",
@@ -222,7 +268,7 @@ def _readme(spec: dict, result: ValidationResult) -> str:
         f"| **Patch cost** | {patch_cost(spec)} |",
         f"| **Validation** | {'PASS' if result.ok else 'see evidence.json'} |",
         f"| **Evidence** | Per-check validation is in evidence.json; run repository tests and `foundry verify` separately. "
-        f"ARENA-DB / ARENA-COMPILE / CAMPAIGN-* pending |",
+        f"ARENA-DB pending; {compile_status}; CAMPAIGN-* pending |",
         "",
         "## Files",
         "",
