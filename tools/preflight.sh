@@ -4,7 +4,8 @@
 #   ./preflight.sh <dbc-client-dir> [dbc-server-dir]
 #
 # Checks, for every *.dbc in the client dir:
-#   1. structural sanity (header, record size, truncation) and duplicate IDs
+#   1. structural sanity (header, record size, truncation), duplicate IDs, and known
+#      field counts (Item 8, ItemDisplayInfo 25, Spell 234, SpellIcon 2)
 #   2. the server copy of the same table is identical (catches client/server drift)
 # And, when the referenced tables are present:
 #   3. Item.dbc.DisplayInfoID      -> ItemDisplayInfo.dbc

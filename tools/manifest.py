@@ -65,6 +65,13 @@ def scan(staging: Path) -> Dict[str, Dict[str, object]]:
     if not staging.is_dir():
         raise ManifestError(f"{staging}: not a directory")
     out: Dict[str, Dict[str, object]] = {}
+    try:
+        return _scan(staging, out)
+    except OSError as exc:
+        raise ManifestError(f"{staging}: cannot scan ({exc})") from exc
+
+
+def _scan(staging: Path, out: Dict[str, Dict[str, object]]) -> Dict[str, Dict[str, object]]:
     for root, dirs, files in os.walk(staging):
         dirs.sort()
         for name in sorted(files):
@@ -77,6 +84,21 @@ def scan(staging: Path) -> Dict[str, Dict[str, object]]:
             digest, size = sha256_file(full)
             out[rel] = {"sha256": digest, "size": size}
     return out
+
+
+def write_atomic(path: Path, text: str) -> None:
+    """Write via a sibling temp file + rename, so a crash never leaves a half-written manifest."""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise ManifestError(f"{path}: cannot write ({exc})") from exc
 
 
 # ---------------------------------------------------------------------- make
@@ -110,8 +132,7 @@ def cmd_make(args: argparse.Namespace) -> int:
 
     text = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     if args.out:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(text, encoding="utf-8")
+        write_atomic(args.out, text)
         print(f"wrote {args.out} ({len(files)} files, {manifest['summary']['bytes']} bytes)")
     else:
         sys.stdout.write(text)

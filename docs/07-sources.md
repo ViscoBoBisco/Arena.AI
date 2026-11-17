@@ -189,6 +189,17 @@ exist in your fork is a *version* difference rather than an invented name.
   `creature`, `gameobject`, `gameobject_template`, `smart_scripts`, `creature_loot_template`,
   `instance_template`, `conditions`, `gossip_menu_option` column lists, read individually.
 
+- **`catalog/world_tables.txt` and `catalog/config_keys.txt`** — captured inventories (308 tables,
+  590 config keys) that `tools/catalog.py validate` checks every `table:`/`conf:` surface against. They
+  are the reason an invented table name fails CI instead of reaching a reader. Refresh them with
+  `gh api repos/azerothcore/azerothcore-wotlk/contents/data/sql/base/db_world` when you move to a
+  different core.
+- **`src/server/game/Entities/GameObject/GameObjectData.h`** — the `Data0..Data23` union behind
+  `novel.hazard-zones`, `novel.trap-devices`, `novel.ritual-gate`, `novel.guardpost-spawner`,
+  `novel.device-spellcaster` and `novel.camera-cutscene`. This is where the *type → field meaning*
+  mapping in [10](10-novel-alterations.md) comes from; it also corrected an error in
+  `examples/ashen-vault/sql/03_gameobjects.sql` (a door's lock ID is `Data1`, not `Data0`).
+
 Two caveats that matter for anyone editing the catalog: forks rename columns (`creature_template`
 model columns became `creature_template_model` in current AzerothCore), and TrinityCore's table set
 differs in places. `tools/catalog.py validate` checks the catalog's *shape*, not your database's —

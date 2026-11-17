@@ -17,12 +17,13 @@ STAGING  ?= patch
 OUT      ?= manifest.json
 DBC      ?= Item.dbc
 
-.PHONY: all help check test selftest preflight manifest catalog info clean
+.PHONY: all help check test test-intern test-engineer test-master selftest preflight manifest catalog info clean
 
 all: help
 
 help:
-	@echo "make check                              selftest + tests (no game files needed)"
+	@echo "make check                              selftest + all three test tiers"
+	@echo "make test-intern|test-engineer|test-master   one tier at a time"
 	@echo "make preflight CLIENT=dir [SERVER=dir]  release gate for a client patch"
 	@echo "make manifest VERSION=2026.11.1         stamp $(STAGING)/ -> $(OUT)"
 	@echo "make catalog                            what can be altered, and what players see"
@@ -33,6 +34,15 @@ check: selftest test
 
 test:
 	$(PY) -m unittest discover -s tests -v
+
+test-intern:
+	$(PY) -m unittest tests.test_tier_intern -v
+
+test-engineer:
+	$(PY) -m unittest tests.test_tier_engineer -v
+
+test-master:
+	$(PY) -m unittest tests.test_tier_master -v
 
 selftest:
 	$(PY) tools/selftest.py

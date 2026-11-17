@@ -48,6 +48,7 @@ LAYER_PREFIX = {
     "mechanics": "mech.",
     "systems": "system.",
     "presentation": "client.",
+    "novel": "novel.",
 }
 CLOCKS = (0, 1, 2)
 
@@ -61,7 +62,8 @@ def load(path: Path) -> Dict:
     if not path.is_file():
         raise CatalogError(f"{path}: catalog not found")
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig: editors on Windows routinely add a BOM, which plain json.loads rejects
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as exc:
         raise CatalogError(f"{path}: invalid JSON ({exc})") from exc
     if "entries" not in data:
@@ -70,10 +72,25 @@ def load(path: Path) -> Dict:
 
 
 # --------------------------------------------------------------- validation
+def _allowlist(path: Path) -> Optional[set]:
+    """Load a one-name-per-line allowlist, ignoring comments. Missing file -> None (skip check)."""
+    if not path.is_file():
+        return None
+    names = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            names.add(line)
+    return names
+
+
 def validate(data: Dict, base: Path = REPO) -> List[str]:
     problems: List[str] = []
     layers = {layer["id"] for layer in data.get("layers", [])}
     kinds = {kind["id"] for kind in data.get("patch_kinds", [])}
+    tables = _allowlist(base / "catalog" / "world_tables.txt")
+    conf_keys = _allowlist(base / "catalog" / "config_keys.txt")
+    unknown_surfaces: List[str] = []
     if not layers:
         problems.append("no layers defined")
     if not kinds:
@@ -116,10 +133,15 @@ def validate(data: Dict, base: Path = REPO) -> List[str]:
         for surface in entry.get("surfaces", []):
             if ":" not in surface:
                 problems.append(f"{entry_id}: surface '{surface}' should be 'kind:target'")
-            else:
-                kind = surface.split(":", 1)[0]
-                if kind not in {"conf", "table", "dbc", "file", "addon", "code"}:
-                    problems.append(f"{entry_id}: unknown surface kind '{kind}'")
+                continue
+            kind, rest = surface.split(":", 1)
+            target = rest.split(":", 1)[0]          # table:creature_template:HealthModifier -> creature_template
+            if kind not in {"conf", "table", "dbc", "file", "addon", "code"}:
+                problems.append(f"{entry_id}: unknown surface kind '{kind}'")
+            elif kind == "table" and tables is not None and target not in tables:
+                unknown_surfaces.append(f"{entry_id}: table '{target}' is not in catalog/world_tables.txt")
+            elif kind == "conf" and conf_keys is not None and target not in conf_keys:
+                unknown_surfaces.append(f"{entry_id}: conf key '{target}' is not in catalog/config_keys.txt")
 
         for ref in entry.get("docs", []):
             if ref not in doc_dirs:
@@ -128,6 +150,9 @@ def validate(data: Dict, base: Path = REPO) -> List[str]:
     for entry_id, count in seen.items():
         if count > 1:
             problems.append(f"duplicate id '{entry_id}' ({count} entries)")
+
+    for line in sorted(set(unknown_surfaces)):
+        problems.append(line)
 
     return problems
 

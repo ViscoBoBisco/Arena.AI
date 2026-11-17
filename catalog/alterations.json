@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "client": "3.3.5a.12340",
-  "about": "Every lever this project knows about, what the player actually experiences when you pull it, and how long it takes to show up. Query it with tools/catalog.py. Prose companion: docs/09-alteration-catalog.md.",
+  "about": "Every lever this project knows about, what the player actually experiences when you pull it, and how long it takes to show up. Query it with tools/catalog.py. Prose companions: docs/09-alteration-catalog.md and docs/10-novel-alterations.md.",
   "layers": [
     {
       "id": "policy",
@@ -37,6 +37,13 @@
       "surface": "DBC rows, MPQ, addon Lua",
       "clock": 2,
       "summary": "Anything the client must know before the server speaks: models, icons, tooltips, spell visuals, map geometry, UI."
+    },
+    {
+      "id": "novel",
+      "title": "Novel uses (emergent)",
+      "surface": "existing systems, repurposed",
+      "clock": 1,
+      "summary": "Mechanisms that already exist, used for something they were not built for: the quest log as a HUD, gossip as an app, books as a CMS, the addon channel as a socket."
     }
   ],
   "patch_kinds": [
@@ -834,7 +841,6 @@
       "patch": "none",
       "clock": 1,
       "surfaces": [
-        "table:game_graveyard_zone",
         "table:graveyard_zone"
       ],
       "effect": "Dying in your custom area sends players to the graveyard you picked instead of the nearest stock one.",
@@ -976,7 +982,6 @@
       "patch": "none",
       "clock": 1,
       "surfaces": [
-        "table:player_classlevelstats",
         "table:player_class_stats",
         "table:player_race_stats",
         "dbc:gtcombatratings_dbc",
@@ -1829,6 +1834,512 @@
       "notes": "Without a client row, a custom currency still exists server-side — it just has no place to display itself.",
       "docs": [
         "02"
+      ]
+    },
+    {
+      "id": "novel.readable-books",
+      "title": "In-game books and printed pages",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:item_template:PageText",
+        "table:page_text",
+        "table:page_text_locale",
+        "table:item_template:PageMaterial"
+      ],
+      "effect": "Right-clicking the item opens a real book window with pages you wrote, chained by NextPageID.",
+      "verify": [
+        "give yourself the item and right-click it",
+        "walk the page chain to the last page"
+      ],
+      "notes": "page_text is (ID, Text, NextPageID); the reader UI is stock. Any readable book item can be repurposed, so long-form lore, newspapers and manuals cost no client files.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.plaque-text",
+      "title": "Readable signs and plaques",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:gameobject_template",
+        "table:page_text"
+      ],
+      "effect": "Click a banner, sign or gravestone and a page opens with your text.",
+      "verify": [
+        ".gobject add <entry> and click it"
+      ],
+      "notes": "GameObject type 9 (TEXT) reads Data0 as a page_text id; Data1 is language, Data2 page material. Display comes from an existing GameObjectDisplayInfo id.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.gossip-app",
+      "title": "The gossip window as an application",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:gossip_menu_option",
+        "table:gossip_menu",
+        "table:npc_text",
+        "table:conditions"
+      ],
+      "effect": "A multi-screen application: menus that branch, options that only appear when conditions pass, prompt boxes for input.",
+      "verify": [
+        "click through three levels of menus",
+        "verify a gated option is hidden for an unqualified character"
+      ],
+      "notes": "ActionMenuID makes an option open another menu, so the graph is a UI, not a single screen. Cost: text, conditions, one NPC.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.keypad-input",
+      "title": "Player-entered codes (a keypad, a PIN)",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:gossip_menu_option:BoxCoded",
+        "table:gossip_menu_option:BoxText",
+        "code:module"
+      ],
+      "effect": "The client asks the player to type a code into a box; the matching one unlocks the option.",
+      "verify": [
+        "try a wrong code, then the right one"
+      ],
+      "notes": "BoxCoded is the required code and BoxText is the prompt; money-box input (BoxMoney) accepts an amount instead. Both are stock UI — no addon, no patch. Good for vaults, tickets, and 'enter your voucher code' events.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.quest-log-hud",
+      "title": "The quest log as a persistent HUD",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:quest_template",
+        "table:quest_poi",
+        "table:quest_poi_points"
+      ],
+      "effect": "A panel in the top-right of every player's screen that shows objectives and counters, updating as they act — a scoreboard nobody had to install.",
+      "verify": [
+        "accept the quest and watch the objective counter move",
+        "reload the UI: it persists"
+      ],
+      "notes": "Up to 25 quests are tracked natively, each with numbered objectives and map markers. Season scores, kill counters, collection progress and 'daily checklist' designs fit here; the client renders it all as quests.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.map-annotations",
+      "title": "Custom map markers",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:quest_poi",
+        "table:quest_poi_points",
+        "table:points_of_interest"
+      ],
+      "effect": "Pins on the world map pointing at places you invented, with tooltips, without a single addon.",
+      "verify": [
+        "open the map while the quest is active",
+        "check the marker sits where your content is"
+      ],
+      "notes": "quest_poi rows are per quest; points_of_interest gives standing markers. This is the cheapest way to make a custom area discoverable.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.addon-rpc",
+      "title": "A request/response socket between UI and server",
+      "layer": "novel",
+      "patch": "client-files",
+      "clock": 2,
+      "surfaces": [
+        "code:AddonHandler",
+        "addon:SendAddonMessage",
+        "addon:CHAT_MSG_ADDON",
+        "conf:AddonChannel"
+      ],
+      "effect": "The addon asks a question with arguments; the server answers with state. A real protocol in a 255-byte frame.",
+      "verify": [
+        "send a request and log both sides",
+        "kill the server and confirm the UI degrades gracefully"
+      ],
+      "notes": "This is the difference between a static panel and a live one: client-side polling, server-side push, and commands bound to keys or macros. Batch small messages; rate limits and the 255-char cap are the design constraints.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.telemetry",
+      "title": "Client-side telemetry",
+      "layer": "novel",
+      "patch": "client-files",
+      "clock": 2,
+      "surfaces": [
+        "code:AddonHandler",
+        "addon:SendAddonMessage",
+        "addon:RegisterAddonMessagePrefix"
+      ],
+      "effect": "The client reports what it can see — zone, spec, group composition, addon version — and the server records it.",
+      "verify": [
+        "watch the server log while a player moves and respecs"
+      ],
+      "notes": "Useful for tuning difficulty per real group, detecting players without your addon, and knowing which of your content hooks are actually being used.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.phasing-scenes",
+      "title": "Two places at the same coordinates",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:creature:phaseMask",
+        "table:gameobject:phaseMask",
+        "table:conditions"
+      ],
+      "effect": "The same spot is a ruin for one player and a village for another, or a clean arena for a spectator.",
+      "verify": [
+        "walk two characters with different progress to the same point"
+      ],
+      "notes": "Phasing is a bitmask on spawns plus conditions, not a scene graph: you cannot move terrain, but you can swap every creature and object, which is most of the effect.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.camera-cutscene",
+      "title": "Triggered camera sequences",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:gameobject_template",
+        "dbc:CinematicSequences.dbc"
+      ],
+      "effect": "Clicking an object plays one of the client's existing cinematic camera sequences: a real cutscene on demand.",
+      "verify": [
+        ".gobject add <camera entry> and click it",
+        "confirm the camera plays and control returns"
+      ],
+      "notes": "GameObject type 13 (CAMERA) reads Data1 as a CinematicSequences id. The sequences themselves are client assets, so reusing an existing id is what keeps this patch-free.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.hazard-zones",
+      "title": "Environmental damage without spells",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:gameobject_template",
+        "table:gameobject_template_addon"
+      ],
+      "effect": "Standing in the wrong place hurts: a radius, a damage range and a school, configured on the object itself.",
+      "verify": [
+        ".gobject add <areadamage entry> and stand in it"
+      ],
+      "notes": "GameObject type 12 (AREADAMAGE) has radius, damageMin/Max and damageSchool. Cheaper than a spell and impossible to dispel.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.trap-devices",
+      "title": "Proximity devices",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:gameobject_template",
+        "table:spell_custom_attr"
+      ],
+      "effect": "Something fires when a player comes near: a spell, a trap, a bomb on spawn, silently or stealthed.",
+      "verify": [
+        ".gobject add <trap entry> and walk in"
+      ],
+      "notes": "GameObject type 6 (TRAP) has spellId, type (persistent / despawns / bomb on spawn), cooldown, startDelay, stealthed and invisible flags. This is how you write 'the floor is dangerous' without a boss.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.ritual-gate",
+      "title": "A gate that needs several players",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:gameobject_template",
+        "table:smart_scripts"
+      ],
+      "effect": "Opening it requires N people standing together, which turns a doorway into a social mechanic.",
+      "verify": [
+        "try alone (nothing), then with the required number"
+      ],
+      "notes": "GameObject type 18 (SUMMONING_RITUAL) takes reqParticipants plus the spell that completes it — the stock UI draws the ritual circle for you.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.guardpost-spawner",
+      "title": "Objects that spawn defenders",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:gameobject_template",
+        "table:creature_template",
+        "table:smart_scripts"
+      ],
+      "effect": "A banner or totem that spawns creatures until its charges run out: reinforcements, turrets, wave defence.",
+      "verify": [
+        ".gobject add <guardpost entry> and watch the spawns"
+      ],
+      "notes": "GameObject type 21 (GUARDPOST) stores a creatureID and charges. Combined with traps and SmartAI this is a tower-defence event built from four tables.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.device-spellcaster",
+      "title": "Objects that cast on the player",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:gameobject_template",
+        "table:spell_dbc"
+      ],
+      "effect": "Click a device and it casts a spell on you: a buff station, a vending machine, a teleporter pad.",
+      "verify": [
+        ".gobject add <spellcaster entry> and click it"
+      ],
+      "notes": "GameObject type 22 (SPELLCASTER): Data0 spellId, Data1 charges, Data2 partyOnly, Data3 allowMounted. The spell must be client-known — reuse an existing one and nothing needs patching.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.conditions-algebra",
+      "title": "Boolean logic without code",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:conditions",
+        "table:disables"
+      ],
+      "effect": "AND, OR and NOT over quests, items, auras, reputation, level, achievement and skill — a predicate language the schema already speaks.",
+      "verify": [
+        "build (quest A AND NOT item B) OR reputation ≥ X and test four characters"
+      ],
+      "notes": "Rows in the same ElseGroup are OR; different groups are AND; NegativeCondition inverts. Once you see it as logic, gating stops being code.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.feature-flags",
+      "title": "Progressive unlock and kill switches",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:disables",
+        "table:game_event",
+        "table:game_event_condition"
+      ],
+      "effect": "Content exists but is switched off until a date, an event, or your decision: seasonal rollout, staged launches, emergency off-switches.",
+      "verify": [
+        "disable a spell and confirm the client's own refusal message",
+        ".event start <id> to enable a block"
+      ],
+      "notes": "disables handles spells, quests, maps and battlegrounds; game_event handles scheduling. Together they are a feature-flag system with no code.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.smartai-event-bus",
+      "title": "SmartAI as the world's event loop",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:smart_scripts",
+        "table:creature_text",
+        "table:gameobject_template"
+      ],
+      "effect": "Timers, spawns, emotes, casts and phases on any creature or object: a general scripting layer that needs no compilation.",
+      "verify": [
+        ".reload smart_scripts (or restart), then watch a full cycle"
+      ],
+      "notes": "The numeric enums are the API (SmartScriptMgr.h). Most 'we need a module for this' ideas are four rows of smart_scripts.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.quest-state-machine",
+      "title": "Quests as an explicit state machine",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:quest_template",
+        "table:quest_template_addon:PrevQuestID",
+        "table:conditions"
+      ],
+      "effect": "States are quests, transitions are prerequisites: a story, a tutorial, or a progression tree that the players can see in their log.",
+      "verify": [
+        "walk the chain in and out of order"
+      ],
+      "notes": "Because quest state is per character and permanent, this is the cheapest persistent per-player state the schema offers.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.mail-queue",
+      "title": "Mail as an asynchronous queue",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:mail_loot_template",
+        "table:mail_level_reward",
+        "table:quest_mail_sender"
+      ],
+      "effect": "Deliveries that arrive while the player is offline: compensation, daily gifts, story episodes, auction-style payouts.",
+      "verify": [
+        "log out, trigger the mail, log in and open the mailbox"
+      ],
+      "notes": "Mail is the only delivery channel that survives absence, and it accepts items, money and text.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.items-as-cards",
+      "title": "Items as game pieces",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:item_template",
+        "table:item_enchantment_template",
+        "table:player_loot_template"
+      ],
+      "effect": "A deck, a hand, a collection: items and enchant rolls are discrete pieces players can hold, trade and wager.",
+      "verify": [
+        "build a small deck and trade a card"
+      ],
+      "notes": "The trade window, mail and the auction house are the protocols; item IDs are the pieces. Random-suffix rolls (item_enchantment_template) give variance without new items.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.localized-content",
+      "title": "Custom text in every client locale",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:acore_string",
+        "table:module_string",
+        "table:page_text_locale",
+        "table:creature_text_locale"
+      ],
+      "effect": "Your dialogue, quest text, gossip and server messages appear in the player's own language.",
+      "verify": [
+        "switch the client locale and re-read the same content"
+      ],
+      "notes": "Locale tables exist for most content; acore_string/module_string cover server-generated messages. Text is server-side, so this costs no client files.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.classless-progression",
+      "title": "Class-less or free-form characters",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:playercreateinfo_spell_custom",
+        "table:playercreateinfo_action",
+        "table:playercreateinfo_item",
+        "table:playercreateinfo_skills"
+      ],
+      "effect": "Characters start with an unusual kit — every class's basics, or none — and progression comes from content instead of the class frame.",
+      "verify": [
+        "create a character and inspect the spellbook",
+        "verify the action bar is populated"
+      ],
+      "notes": "The client's class UI stays as it is; you are changing what the character knows, not what the game thinks a class is. Some UI expectations (talents, trainers) will not match.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.instance-state-machine",
+      "title": "Instances as persistent state",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:instance_encounters",
+        "table:dungeon_access_template",
+        "table:dungeon_access_requirements"
+      ],
+      "effect": "A run remembers what happened: encounter credit, lockouts, and access that changes as the run progresses.",
+      "verify": [
+        ".instance stats before and after a kill"
+      ],
+      "notes": "This is how a custom dungeon becomes a campaign rather than a room full of mobs.",
+      "docs": [
+        "10"
+      ]
+    },
+    {
+      "id": "novel.dynamic-vendor",
+      "title": "A shop that changes per player",
+      "layer": "novel",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:npc_vendor",
+        "table:conditions",
+        "table:game_event_npc_vendor"
+      ],
+      "effect": "The same merchant offers different stock to a fresh character, a veteran, and someone mid-event.",
+      "verify": [
+        "open the vendor with three characters at different stages"
+      ],
+      "notes": "Conditions on vendor rows are evaluated per player, so one NPC can be a whole shop tier system.",
+      "docs": [
+        "10"
       ]
     }
   ]
