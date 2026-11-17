@@ -52,7 +52,7 @@ The generated artifacts are **not all production implementations** yet. SQL gene
 | Level | What earns it | Frost Armory status on this branch |
 |---|---|---|
 | `ARENA-STATIC` | schema, structural and repository checks | Spec structure checks run; stock asset verification remains `NOT_ASSESSED` |
-| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | 64 Foundry-focused tests, 7 frontier-design guard tests and all 220 repository tests pass in this branch; generated bundle does not attest test execution |
+| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | 64 Foundry-focused tests, 7 frontier-design guard tests, 6 catalytic-crafting design guard tests and all 226 repository tests pass in this branch; generated bundle does not attest test execution |
 | `ARENA-DB` | apply and rollback on a disposable compatible DB | Pending; no MySQL/AzerothCore DB in this environment |
 | `ARENA-COMPILE` | module compile/API check against pinned compatible AzerothCore | Pending; generated module is a skeleton and is not compiled |
 | `ARENA-PACK` | reproducible package and independent integrity verification | `foundry verify packages/frost-armory` passes in this workspace; package evidence marks verification as an external required step, not a self-claim |
