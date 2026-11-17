@@ -47,7 +47,7 @@
       "mechanic": "create-item callback",
       "source": "Spell::DoCreateItem in SpellEffects.cpp; PlayerScript::OnPlayerCreateItem",
       "finding": "The player create-item callback occurs after output storage succeeds, but its signature does not itself identify the recipe spell.",
-      "design_effect": "A pending server-side craft context needs player + spell + cast/correlation identity and cleanup on all failure/timeout paths; do not infer recipe identity from the output item alone."
+      "design_effect": "Choose/intercept the exact output before storage. The callback can confirm stored output and complete a receipt, but cannot safely choose/replace the item after the fact. A pending server-side craft context needs player + spell + cast/correlation identity and cleanup on all failure/timeout paths; do not infer recipe identity from the output item alone."
     }
   ],
   "augmentation_contract": {

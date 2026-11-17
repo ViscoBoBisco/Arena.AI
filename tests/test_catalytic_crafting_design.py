@@ -58,8 +58,11 @@ class CatalyticCraftingDesign(unittest.TestCase):
             self.assertIn(required, acceptance)
 
     def test_document_distinguishes_hooks_from_qualification(self):
-        for phrase in ("not proof", "transaction", "client", "DESIGN_ONLY", "rollback"):
+        for phrase in ("not proof", "transaction", "client", "DESIGN_ONLY", "rollback",
+                       "stock inventory escrow primitive", "before it is stored",
+                       "joint atomic commit"):
             self.assertIn(phrase.lower(), DOC.lower())
+        self.assertIn("before storage", DESIGN["core_mechanics"][4]["design_effect"])
         self.assertRegex(DOC, re.compile(r"\| C\+\+ module compiled.*\|\s*`ARENA-COMPILE` pending\s*\|"))
 
 

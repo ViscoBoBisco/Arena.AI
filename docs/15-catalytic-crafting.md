@@ -44,14 +44,14 @@ No new art is required for any of these approaches; reusing a stock display is m
 
 ## The sharp edge: ingredient and output atomicity
 
-The ordering matters. Base reagents are consumed before the craft effect creates the output. An augmentation must define what happens if the optional catalyst is checked but the cast is interrupted, if output storage fails, if the item variant is invalid, or if a replayed request arrives. Consuming a rare stone in `OnCast` and hoping a later output succeeds is not a safe transaction design.
+The ordering matters. Base reagents are consumed before the craft effect creates the output. An augmentation must define what happens if the optional catalyst is checked but the cast is interrupted, if output storage fails, if the item variant is invalid, or if a replayed request arrives. Consuming a rare stone in `OnCast` and hoping a later output succeeds is not a safe transaction design. AzerothCore's standard spell flow does not, by itself, provide an escrow transaction for optional catalysts or a joint atomic commit of base reagents, catalyst and output.
 
 The implementation must choose and test a clear policy, for example:
 
-1. Reserve the optional materials against a one-use server-side craft context after cast validation.
-2. Associate that context with the character, exact recipe spell and request/cast identity; expire and clean it on every failure path.
-3. On successful output creation, commit the optional cost exactly once and attach the selected output rule.
-4. If the output effect does not complete, refund/release the optional reservation (the failed craft's rollback) and record the reason.
+1. Associate an augmentation intent with a one-use server-side craft context after cast validation. "Reserve" here means a module-owned reservation/hold policy; it is **not** a claim that SpellScript exposes a stock inventory escrow primitive.
+2. Bind that context to the character, exact recipe spell and request/cast identity; make it idempotent and expire/clean it on every failure path.
+3. Select/intercept the exact output **before it is stored** (for example in a validated effect path). `OnPlayerCreateItem` is too late to choose or replace the result; use it only for successful-storage confirmation/receipt if appropriate.
+4. Commit the optional cost exactly once after output success, or compensate/refund it (the failed craft's rollback) on failure. Separately account for the native base-reagent consumption order; if the required guarantee cannot be made around it, use a custom crafting service that owns the full cost/output operation rather than pretending the native cast is atomic.
 5. Use an inventory-full test, missing ingredient test, spell cancel/interruption test, restart/replay test and output-template-missing test before calling it qualified.
 
 A custom crafting service invoked through a gossip/addon intent is an alternative if the native SpellScript path cannot give the needed transaction guarantee. It must still call AzerothCore inventory and skill authorities; do not create a parallel bag or profession database. A static DBC recipe variant is another option, but it creates one visible recipe per variant, needs verified spell/reagent records and is less flexible.
