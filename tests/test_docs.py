@@ -79,7 +79,7 @@ class Structure(unittest.TestCase):
 
     def test_tools_exist_and_are_executable(self):
         for rel in ("tools/dbc_tool.py", "tools/preflight.sh", "tools/selftest.py",
-                    "tools/manifest.py"):
+                    "tools/manifest.py", "tools/catalog.py"):
             path = REPO / rel
             self.assertTrue(path.is_file(), f"{rel} missing")
             if path.suffix in {".py", ".sh"}:

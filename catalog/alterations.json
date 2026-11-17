@@ -1,0 +1,1835 @@
+{
+  "schema": 1,
+  "client": "3.3.5a.12340",
+  "about": "Every lever this project knows about, what the player actually experiences when you pull it, and how long it takes to show up. Query it with tools/catalog.py. Prose companion: docs/09-alteration-catalog.md.",
+  "layers": [
+    {
+      "id": "policy",
+      "title": "Policy and rates",
+      "surface": "worldserver.conf",
+      "clock": 0,
+      "summary": "Global dials. No data rows, no patch, no client awareness at all. Applies to the next event that touches it."
+    },
+    {
+      "id": "content",
+      "title": "Content data",
+      "surface": "world DB rows",
+      "clock": 1,
+      "summary": "Creatures, items, quests, spawns, loot, vendors, events. The client learns about these only by asking the server, so most are patch-free."
+    },
+    {
+      "id": "mechanics",
+      "title": "Mechanics and rules",
+      "surface": "rule tables + SmartAI + scripts",
+      "clock": 1,
+      "summary": "How existing pieces behave: spell linkage, procs, area auras, conditions, disables, encounter scripts."
+    },
+    {
+      "id": "systems",
+      "title": "Systems",
+      "surface": "module / C++ / Eluna",
+      "clock": 1,
+      "summary": "New behaviour that spans content: commands, custom protocols, currencies, progression, death rules."
+    },
+    {
+      "id": "presentation",
+      "title": "Client presentation",
+      "surface": "DBC rows, MPQ, addon Lua",
+      "clock": 2,
+      "summary": "Anything the client must know before the server speaks: models, icons, tooltips, spell visuals, map geometry, UI."
+    }
+  ],
+  "patch_kinds": [
+    {
+      "id": "none",
+      "title": "No client change",
+      "detail": "Server sends strings and numbers, or references IDs the client already resolves."
+    },
+    {
+      "id": "client-files",
+      "title": "Loose client files",
+      "detail": "An addon folder or a patched config: shipped outside the MPQ, no archive rebuild."
+    },
+    {
+      "id": "dbc-rows",
+      "title": "DBC rows in an MPQ",
+      "detail": "A few hundred bytes of rows added or overridden in an existing table. No art, no new table."
+    },
+    {
+      "id": "assets",
+      "title": "New assets",
+      "detail": "Models, textures, maps, sounds, interface files. Out of scope for this project's reuse-first constraint."
+    }
+  ],
+  "entries": [
+    {
+      "id": "policy.xp-rate",
+      "title": "XP rate",
+      "layer": "policy",
+      "patch": "none",
+      "clock": 0,
+      "surfaces": [
+        "conf:Rate.XP.Kill",
+        "conf:Rate.XP.Quest",
+        "conf:Rate.XP.Explore",
+        "conf:Rate.XP.Pet",
+        "conf:Rate.XP.BattlegroundKillAV"
+      ],
+      "effect": "Every kill, quest turn-in and zone discovery pays out multiplied XP; the bar moves visibly faster and alts level in an evening.",
+      "verify": [
+        "kill one mob and watch the XP bar",
+        ".modify xp <n> to prove the hook is live"
+      ],
+      "notes": "Applies on the next award, no reload needed for subsequent kills. Per-BG rates exist separately.",
+      "docs": [
+        "04"
+      ]
+    },
+    {
+      "id": "policy.level-cap",
+      "title": "Level cap",
+      "layer": "policy",
+      "patch": "none",
+      "clock": 0,
+      "surfaces": [
+        "conf:MaxPlayerLevel",
+        "table:player_xp_for_level",
+        "dbc:gtcombatratings_dbc"
+      ],
+      "effect": "Characters keep levelling past 80 up to the cap; every level needs a row in the XP table or the client shows a full bar that never fills.",
+      "verify": [
+        ".character level 79 then kill something",
+        "check the XP bar tooltip against player_xp_for_level"
+      ],
+      "notes": "Anything above 80 relies on client tables (gt*, scaling stats) that were authored for 80; this is the classic 'raises cap, breaks stats' trap.",
+      "docs": [
+        "02",
+        "05"
+      ]
+    },
+    {
+      "id": "policy.start-character",
+      "title": "Starting level, money and loadout",
+      "layer": "policy",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "conf:StartPlayerLevel",
+        "conf:StartPlayerMoney",
+        "table:playercreateinfo_item",
+        "table:playercreateinfo_spell_custom",
+        "table:playercreateinfo_action",
+        "table:playercreateinfo_skills"
+      ],
+      "effect": "New characters log in already levelled, funded, geared and with spells on the bar; existing characters are untouched.",
+      "verify": [
+        "create a new character and read the combat log / bags",
+        "existing alts as a control"
+      ],
+      "notes": "Only new characters. Starting items must exist in the client's Item.dbc or they arrive as red ?.",
+      "docs": [
+        "02",
+        "03"
+      ]
+    },
+    {
+      "id": "policy.money-drops",
+      "title": "Money drops and sinks",
+      "layer": "policy",
+      "patch": "none",
+      "clock": 0,
+      "surfaces": [
+        "conf:Rate.Drop.Money",
+        "table:creature_loot_template",
+        "table:item_template:BuyPrice",
+        "table:item_template:SellPrice"
+      ],
+      "effect": "Corpses pay more or less; repair, vendor and training costs stay fixed, so the economy gets looser or tighter without touching any item.",
+      "verify": [
+        "loot a few humanoids and compare",
+        ".modify money to reach a price point quickly"
+      ],
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "policy.item-drop-rates",
+      "title": "Drop rates by quality",
+      "layer": "policy",
+      "patch": "none",
+      "clock": 0,
+      "surfaces": [
+        "conf:Rate.Drop.Item.Poor",
+        "conf:Rate.Drop.Item.Normal",
+        "conf:Rate.Drop.Item.Uncommon",
+        "conf:Rate.Drop.Item.Rare",
+        "conf:Rate.Drop.Item.Epic",
+        "conf:Rate.Drop.Item.Legendary",
+        "conf:Rate.Drop.Item.Referenced"
+      ],
+      "effect": "The same loot tables yield noticeably more blues and epics; drop chances move as a whole without editing a single row.",
+      "verify": [
+        "kill the same rare 10 times",
+        "compare drop log"
+      ],
+      "notes": "Rate.Drop.Item.Referenced controls reference-table rolls specifically; get both wrong and drops look inverted.",
+      "docs": [
+        "02",
+        "05"
+      ]
+    },
+    {
+      "id": "policy.reputation-rate",
+      "title": "Reputation pace",
+      "layer": "policy",
+      "patch": "none",
+      "clock": 0,
+      "surfaces": [
+        "conf:Rate.Reputation.Gain",
+        "table:reputation_reward_rate",
+        "table:reputation_spillover_template"
+      ],
+      "effect": "Faction bars fill faster; spillover makes one faction's gain nudge its allies, so a single grind unlocks several quartermasters.",
+      "verify": [
+        "turn in one repeatable quest",
+        "watch the faction bar in the reputation pane"
+      ],
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "policy.talent-rate",
+      "title": "Talent points per level",
+      "layer": "policy",
+      "patch": "none",
+      "clock": 0,
+      "surfaces": [
+        "conf:Rate.Talent",
+        "conf:Rate.Talent.Pet",
+        "table:talent_dbc"
+      ],
+      "effect": "Each level grants extra talent points, so builds that are impossible at 71 points become reachable.",
+      "verify": [
+        "level a fresh character twice",
+        "count points in the talent pane"
+      ],
+      "notes": "The client's talent pane draws from its own Talent.dbc/TalentTab.dbc, so you are changing how many points you get, not what is on the tree.",
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "policy.move-speed",
+      "title": "Movement speed",
+      "layer": "policy",
+      "patch": "none",
+      "clock": 0,
+      "surfaces": [
+        "conf:Rate.MoveSpeed.Player",
+        "conf:Rate.MoveSpeed.NPC",
+        "table:creature_template:speed_run"
+      ],
+      "effect": "Everyone (or every NPC) moves faster; the client renders the motion from server-driven speed changes, so it looks native.",
+      "verify": [
+        "run a straight line and time it",
+        ".modify speed 2 for an instant comparison"
+      ],
+      "notes": "Above ~3x the client's prediction visibly desyncs; expect rubber-banding, not a patch requirement.",
+      "docs": [
+        "05"
+      ]
+    },
+    {
+      "id": "policy.death-and-resurrection",
+      "title": "Death cost",
+      "layer": "policy",
+      "patch": "none",
+      "clock": 0,
+      "surfaces": [
+        "conf:Death.CorpseReclaimDelay.PvP",
+        "conf:Death.CorpseReclaimDelay.PvE",
+        "conf:Corpse.Decay.NORMAL",
+        "conf:Corpse.Decay.ELITE",
+        "conf:Corpse.Decay.WORLDBOSS"
+      ],
+      "effect": "Corpse runs get longer or shorter, and elite corpses linger; dying feels expensive or cheap without touching combat.",
+      "verify": [
+        "die to a normal mob and watch the reclaim timer"
+      ],
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "policy.honor-arena",
+      "title": "Honor, arena points and PvP tokens",
+      "layer": "policy",
+      "patch": "none",
+      "clock": 0,
+      "surfaces": [
+        "conf:Rate.Honor",
+        "conf:MaxHonorPoints",
+        "conf:Rate.ArenaPoints",
+        "conf:PvPToken.Enable",
+        "conf:PvPToken.ItemID",
+        "table:arena_season_reward"
+      ],
+      "effect": "PvP currency accrues faster and caps move; PvP tokens make kills drop an existing item as a reward.",
+      "verify": [
+        "win a battleground and check the honor pane",
+        "kill a player with PvPToken.Enable = 1 and loot"
+      ],
+      "notes": "PvPToken.ItemID must be an item the client already knows; a custom token needs Item.dbc rows.",
+      "docs": [
+        "02",
+        "03"
+      ]
+    },
+    {
+      "id": "policy.guild-bank-economy",
+      "title": "Guild costs",
+      "layer": "policy",
+      "patch": "none",
+      "clock": 0,
+      "surfaces": [
+        "conf:Guild.CharterCost",
+        "conf:Guild.BankTabCost0",
+        "conf:Guild.BankInitialTabs",
+        "conf:Guild.MemberLimit"
+      ],
+      "effect": "Charters and bank tabs cost what you say; guilds become a real gold sink or a free convenience.",
+      "verify": [
+        "buy a charter on a test character"
+      ],
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "policy.cross-faction",
+      "title": "Cross-faction play",
+      "layer": "policy",
+      "patch": "none",
+      "clock": 0,
+      "surfaces": [
+        "conf:AllowTwoSide.Accounts",
+        "conf:AllowTwoSide.Interaction.Chat",
+        "conf:AllowTwoSide.Interaction.Calendar",
+        "conf:AllowTwoSide.Interaction.Group"
+      ],
+      "effect": "Both factions share a chat, a group finder and a calendar; the world becomes one population without touching faction data.",
+      "verify": [
+        "log two characters on opposite factions and talk"
+      ],
+      "notes": "Purely social unless you also relax faction templates, which changes NPC hostility for everyone.",
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "policy.instance-reset",
+      "title": "Instance resets and lockouts",
+      "layer": "policy",
+      "patch": "none",
+      "clock": 0,
+      "surfaces": [
+        "conf:Instance.ResetTimeHour",
+        "table:dungeon_access_requirements",
+        "table:instance_template",
+        "table:lfg_dungeon_template"
+      ],
+      "effect": "Raids reset at your hour; access requirements decide who may enter at all.",
+      "verify": [
+        ".instance listbinds",
+        ".instance unbind all then re-enter"
+      ],
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "policy.addon-channel",
+      "title": "Addon channel (server-driven UI)",
+      "layer": "policy",
+      "patch": "none",
+      "clock": 0,
+      "surfaces": [
+        "conf:AddonChannel",
+        "code:AddonHandler",
+        "addon:SendAddonMessage"
+      ],
+      "effect": "Turns on the hidden chat channel that carries addon messages, which is how a server can drive a custom UI without a single client file.",
+      "verify": [
+        ".server info or the config value",
+        "send a prefixed message from an addon and log it server-side"
+      ],
+      "notes": "Off by default on some builds. Without it, a custom panel cannot receive anything from the server.",
+      "docs": [
+        "08"
+      ]
+    },
+    {
+      "id": "policy.item-attribute-enforcement",
+      "title": "Item attribute enforcement",
+      "layer": "policy",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "conf:DBC.EnforceItemAttributes",
+        "dbc:Item.dbc",
+        "table:item_dbc"
+      ],
+      "effect": "Decides whether the client's Item.dbc silently overwrites class, subclass, material, inventory type, display and sheath on every item you create.",
+      "verify": [
+        "make an item whose item_template row disagrees with Item.dbc, then look at it in game"
+      ],
+      "notes": "The single most confusing knob in item modding: with enforcement on, your SQL stats apply but your SQL appearance does not.",
+      "docs": [
+        "01",
+        "08"
+      ]
+    },
+    {
+      "id": "content.creature-new",
+      "title": "A new NPC or mob",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:creature_template",
+        "table:creature_template_model",
+        "table:creature"
+      ],
+      "effect": "A creature with your name, level, faction and model appears where you spawn it; the client is told all of it at query time.",
+      "verify": [
+        ".lookup creature <entry>",
+        ".npc add <entry>",
+        "hover it: name, level, portrait"
+      ],
+      "notes": "The model must be an existing CreatureDisplayInfo id; the name and subname are strings the server sends.",
+      "docs": [
+        "03",
+        "08"
+      ]
+    },
+    {
+      "id": "content.creature-tuning",
+      "title": "Creature difficulty",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:creature_template:HealthModifier",
+        "table:creature_template:DamageModifier",
+        "table:creature_template:ArmorModifier",
+        "table:creature_template:rank",
+        "table:creature_classlevelstats",
+        "table:creature_immunities"
+      ],
+      "effect": "The same model hits harder, survives longer, resists what you choose; the fight feels different before any new mechanic exists.",
+      "verify": [
+        "fight it at two different modifier values",
+        ".damage / .combatstop to reset"
+      ],
+      "notes": "Modifiers multiply per-level baselines, so a small change at 80 is a large one at 80 elite.",
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "content.creature-appearance",
+      "title": "Creature appearance swap",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:creature_template_model:CreatureDisplayID",
+        "table:creature_model_info",
+        "table:creature_template_model:DisplayScale"
+      ],
+      "effect": "Point a stock creature at a different existing model: instant reskin, no new art, no patch.",
+      "verify": [
+        ".npc set model? or respawn and look",
+        "check nothing renders as a naked cube"
+      ],
+      "notes": "~59k creature displays exist; the whole trick is picking one that already animates the way you need.",
+      "docs": [
+        "06",
+        "08"
+      ]
+    },
+    {
+      "id": "content.creature-equipment",
+      "title": "Creature equipment",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:creature_equip_template",
+        "table:creature_addon"
+      ],
+      "effect": "Weapons and armour appear in the creature's hands and on its body, drawn from item display ids the client already has.",
+      "verify": [
+        "respawn and inspect the model up close"
+      ],
+      "notes": "Equipment ids resolve through ItemDisplayInfo, so reusing an existing display id is what keeps this patch-free.",
+      "docs": [
+        "06"
+      ]
+    },
+    {
+      "id": "content.creature-cosmetic-aura",
+      "title": "Cosmetic auras and mounts on NPCs",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:creature_addon:auras",
+        "table:creature_template_addon",
+        "table:creature_addon:mount"
+      ],
+      "effect": "Glowing eyes, floating runes, a permanent mount: existing spell visual ids worn as decoration.",
+      "verify": [
+        "respawn and look for the visual",
+        "/console check the aura in the unit frame"
+      ],
+      "notes": "The client renders auras only for spell ids it knows; an unknown id is silently invisible.",
+      "docs": [
+        "06",
+        "08"
+      ]
+    },
+    {
+      "id": "content.creature-dialogue",
+      "title": "Creature dialogue (say, yell, emote)",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:creature_text",
+        "table:broadcast_text",
+        "table:creature_text_locale"
+      ],
+      "effect": "Custom lines appear in the chat frame in the creature's voice, with your colour coding for say, yell and whisper.",
+      "verify": [
+        "pull it and read the chat frame",
+        ".npc say <text> as a live check"
+      ],
+      "notes": "Text travels in the chat packet as a string; the client never needs a DBC entry for dialogue.",
+      "docs": [
+        "08"
+      ]
+    },
+    {
+      "id": "content.gossip-menu",
+      "title": "Gossip menus and NPC dialogue trees",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:npc_text",
+        "table:gossip_menu",
+        "table:gossip_menu_option",
+        "table:conditions"
+      ],
+      "effect": "A branching conversation with options that can vendor, train, teleport, or hand control to a script.",
+      "verify": [
+        "right-click the NPC and click through options"
+      ],
+      "notes": "Option text is a string in the packet; option *behaviour* comes from the option type plus your script.",
+      "docs": [
+        "03",
+        "08"
+      ]
+    },
+    {
+      "id": "content.quest-new",
+      "title": "A new quest",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:quest_template",
+        "table:quest_template_addon",
+        "table:quest_offer_reward",
+        "table:quest_request_items",
+        "table:quest_details",
+        "table:quest_poi"
+      ],
+      "effect": "Title, objectives, body text, reward and map markers all render normally, as if the quest shipped with the game.",
+      "verify": [
+        ".quest add <id>",
+        "read the log entry, then complete and turn in"
+      ],
+      "notes": "All quest prose is server-sent, which is why custom quest chains are the highest-value patch-free content.",
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "content.quest-gating",
+      "title": "Quest chains and prerequisites",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:quest_template_addon:PrevQuestID",
+        "table:conditions",
+        "table:creature_queststarter",
+        "table:gameobject_queststarter"
+      ],
+      "effect": "Content unlocks in an order you control: breadcrumbs, attunements, one-time story beats.",
+      "verify": [
+        "try to accept out of order and confirm it is refused"
+      ],
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "content.vendor-offer",
+      "title": "What a vendor sells",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:npc_vendor",
+        "table:conditions",
+        "table:item_template:BuyPrice"
+      ],
+      "effect": "Stock lists change, prices change, and gated items appear only for players who qualify.",
+      "verify": [
+        "open the vendor window",
+        "buy with and without the condition met"
+      ],
+      "notes": "Money prices need nothing client-side. A token *price* is ItemExtendedCost, which does.",
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "content.vendor-token",
+      "title": "Token prices (existing cost id)",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "dbc:ItemExtendedCost.dbc",
+        "table:itemextendedcost_dbc",
+        "table:npc_vendor:ExtendedCost"
+      ],
+      "effect": "The vendor shows 'X tokens' instead of gold, using a cost row the client already has.",
+      "verify": [
+        "open the vendor window: the price line shows items, not coins"
+      ],
+      "notes": "Reusing an existing ItemExtendedCost id keeps this patch-free; a new id is a dbc-rows patch.",
+      "docs": [
+        "03",
+        "02"
+      ]
+    },
+    {
+      "id": "content.trainer-offer",
+      "title": "What a trainer teaches",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:npc_trainer",
+        "table:trainer_spell",
+        "table:creature_default_trainer",
+        "table:trainer"
+      ],
+      "effect": "A trainer window that offers exactly the spells you list, at your prices, including spells from other classes.",
+      "verify": [
+        "open the trainer window and learn one"
+      ],
+      "notes": "The spell must exist in the client's Spell.dbc or the row is unlearnable.",
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "content.loot-table",
+      "title": "Loot tables",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:creature_loot_template",
+        "table:gameobject_loot_template",
+        "table:reference_loot_template",
+        "table:conditions"
+      ],
+      "effect": "Corpses and chests drop what you decide, with group rolls, guaranteed slots and conditional extras.",
+      "verify": [
+        "kill it and open the loot window",
+        ".damage to speed up the loop"
+      ],
+      "notes": "Item 0 in a loot row is money. GroupId creates 'one of these' rolls.",
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "content.loot-reference-table",
+      "title": "Shared loot via reference tables",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:reference_loot_template",
+        "table:creature_loot_template:Reference",
+        "table:conditions"
+      ],
+      "effect": "One authored loot list is reused by many creatures, so editing it visibly changes dozens of drop sources at once.",
+      "verify": [
+        "kill two different creatures that share the reference",
+        "compare drops"
+      ],
+      "notes": "Reference rows roll on their own chance; Rate.Drop.Item.Referenced multiplies them.",
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "content.item-stats-existing",
+      "title": "New item stats on an existing item id",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:item_template",
+        "table:item_template_locale"
+      ],
+      "effect": "A familiar icon and name with completely different stats, damage, spells and requirements.",
+      "verify": [
+        ".additem <id> and read the tooltip",
+        "equip it and check the character sheet"
+      ],
+      "notes": "Cheapest item in the game to make. The client shows icon/model from its own Item.dbc, so stats and name are yours.",
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "content.item-new-id",
+      "title": "A genuinely new item",
+      "layer": "content",
+      "patch": "dbc-rows",
+      "clock": 2,
+      "surfaces": [
+        "table:item_template",
+        "dbc:Item.dbc",
+        "dbc:ItemDisplayInfo.dbc",
+        "table:item_dbc",
+        "table:itemdisplayinfo_dbc"
+      ],
+      "effect": "A new id with its own icon and model, indistinguishable from a Blizzard item.",
+      "verify": [
+        "after patching and restarting the client: .additem, tooltip, model, no red ?"
+      ],
+      "notes": "Item.dbc is 8 int32; the icon lives in ItemDisplayInfo field 3. Both must be in the client's patch, and the server needs matching copies.",
+      "docs": [
+        "03",
+        "04"
+      ]
+    },
+    {
+      "id": "content.item-set",
+      "title": "Item sets and bonuses",
+      "layer": "content",
+      "patch": "dbc-rows",
+      "clock": 2,
+      "surfaces": [
+        "dbc:ItemSet.dbc",
+        "table:itemset_dbc",
+        "table:item_set_names",
+        "table:item_template:itemset"
+      ],
+      "effect": "Set bonuses fire and the tooltip lists the pieces and their thresholds.",
+      "verify": [
+        "equip two pieces and read the set block in the tooltip"
+      ],
+      "notes": "The set block is rendered from the client's ItemSet.dbc, so a set with no client rows is invisible even though the server applies it.",
+      "docs": [
+        "03",
+        "02"
+      ]
+    },
+    {
+      "id": "content.gem-enchant",
+      "title": "Gems, enchants and sockets",
+      "layer": "content",
+      "patch": "dbc-rows",
+      "clock": 2,
+      "surfaces": [
+        "dbc:SpellItemEnchantment.dbc",
+        "dbc:GemProperties.dbc",
+        "dbc:SpellItemEnchantmentCondition.dbc",
+        "table:spellitemenchantment_dbc",
+        "table:gemproperties_dbc"
+      ],
+      "effect": "A new gem shows the right stats and colour, and sockets accept it.",
+      "verify": [
+        "socket it and read the tooltip delta"
+      ],
+      "notes": "Reuse an existing gem's enchant id and you need no patch at all, which is usually enough.",
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "content.spawns-density",
+      "title": "Spawn density, packs and patrols",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:creature",
+        "table:spawn_group",
+        "table:pool_creature",
+        "table:pool_template",
+        "table:linked_respawn"
+      ],
+      "effect": "The world feels crowded or empty; packs pull together; rare spawns rotate between points instead of camping one.",
+      "verify": [
+        ".go xyz to the area and count",
+        ".npc add for one-offs"
+      ],
+      "notes": "Pools are the cheapest way to make a zone feel alive without inventing content.",
+      "docs": [
+        "03",
+        "06"
+      ]
+    },
+    {
+      "id": "content.gameobjects-doors",
+      "title": "Game objects, doors and chests",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:gameobject_template",
+        "table:gameobject",
+        "dbc:Lock.dbc",
+        "table:gameobject_template_addon"
+      ],
+      "effect": "Doors that open with a key, chests that loot, braziers that light: existing display ids wearing new behaviour.",
+      "verify": [
+        ".gobject add <entry>",
+        "click it and watch the state change"
+      ],
+      "notes": "Data0..Data23 change meaning per type; a door's Data0 is a Lock.dbc id, so locks are reused, not invented.",
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "content.graveyard",
+      "title": "Graveyards and spirit healers",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:game_graveyard_zone",
+        "table:graveyard_zone"
+      ],
+      "effect": "Dying in your custom area sends players to the graveyard you picked instead of the nearest stock one.",
+      "verify": [
+        "die in the zone and watch where the ghost spawns"
+      ],
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "content.areatrigger",
+      "title": "Area triggers and teleports",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:areatrigger_teleport",
+        "table:areatrigger_scripts",
+        "table:areatrigger"
+      ],
+      "effect": "Walking into a spot moves the player somewhere else, or fires a script, with the normal loading screen.",
+      "verify": [
+        "walk through the trigger and watch the loading screen"
+      ],
+      "notes": "Trigger ids are client-side coordinates, so reuse existing triggers or place triggers on existing geometry.",
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "content.world-event",
+      "title": "World events and calendars",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:game_event",
+        "table:game_event_creature",
+        "table:game_event_gameobject",
+        "table:game_event_npc_vendor",
+        "table:holiday_dates"
+      ],
+      "effect": "Content appears and disappears on a schedule; the calendar and world defence messages behave natively.",
+      "verify": [
+        ".event start <id>",
+        ".event activelist"
+      ],
+      "notes": "The best delivery vehicle for seasonal content because everything else stays untouched.",
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "content.transport",
+      "title": "Transports and taxi routes",
+      "layer": "content",
+      "patch": "dbc-rows",
+      "clock": 2,
+      "surfaces": [
+        "table:transports",
+        "dbc:TransportAnimation.dbc",
+        "dbc:TaxiPath.dbc",
+        "dbc:TaxiNodes.dbc"
+      ],
+      "effect": "A boat or zeppelin that actually sails a route players can ride.",
+      "verify": [
+        "board it and watch the crossing"
+      ],
+      "notes": "New routes usually need client DBC rows for the path; reuse an existing transport entry when you can.",
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "content.battleground-arena",
+      "title": "Battleground and arena configuration",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:battleground_template",
+        "table:battlemaster_entry",
+        "table:arena_season_reward",
+        "table:game_event_battleground_holiday"
+      ],
+      "effect": "Queue sizes, level brackets and rewards change; battleground holidays appear on the calendar.",
+      "verify": [
+        ".bg start? or queue as a group",
+        "check the reward mail"
+      ],
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "content.lfg-dungeon",
+      "title": "Dungeon finder entries and rewards",
+      "layer": "content",
+      "patch": "dbc-rows",
+      "clock": 2,
+      "surfaces": [
+        "table:lfg_dungeon_template",
+        "table:lfg_dungeon_rewards",
+        "dbc:LFGDungeons.dbc"
+      ],
+      "effect": "The dungeon appears in the LFG tool with its reward bag.",
+      "verify": [
+        "open the LFG pane and find it"
+      ],
+      "notes": "The LFG list is drawn from the client's LFGDungeons.dbc, so a new listing without rows simply never appears.",
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "content.mail-reward",
+      "title": "Mail rewards and letters",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:mail_loot_template",
+        "table:mail_level_reward",
+        "dbc:MailTemplate.dbc"
+      ],
+      "effect": "Level-up letters, event gifts and compensation mails arrive with items attached.",
+      "verify": [
+        ".send mail or trigger the level-up, then check the mailbox"
+      ],
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "content.level-stats-curve",
+      "title": "Stat curves and scaling tables",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:player_classlevelstats",
+        "table:player_class_stats",
+        "table:player_race_stats",
+        "dbc:gtcombatratings_dbc",
+        "dbc:gtchancetomeleecrit_dbc"
+      ],
+      "effect": "How much agility, crit and dodge a point buys changes, reshaping every class at once.",
+      "verify": [
+        "compare the character sheet before and after",
+        "level a test character"
+      ],
+      "notes": "The gt* curves are client tables with server overlays; changing only the overlay desyncs the character sheet from combat.",
+      "docs": [
+        "01",
+        "02"
+      ]
+    },
+    {
+      "id": "content.weather",
+      "title": "Weather",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:game_weather"
+      ],
+      "effect": "Zones get rain or snow on a schedule, which the client renders from server weather packets.",
+      "verify": [
+        ".weather <type> <intensity> for an instant check"
+      ],
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "content.vehicle-passenger",
+      "title": "Vehicles and passengers",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:vehicle_template_accessory",
+        "table:vehicle_seat_addon",
+        "table:npc_spellclick_spells",
+        "dbc:VehicleSeat.dbc"
+      ],
+      "effect": "Click a vehicle, take a seat, ride: seats and accessories come from existing seat ids.",
+      "verify": [
+        "right-click the vehicle and watch the seat UI"
+      ],
+      "notes": "Seat ids come from the client's VehicleSeat.dbc; reuse them rather than inventing rigs.",
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "content.phasing",
+      "title": "Phasing",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:creature:phaseMask",
+        "table:gameobject:phaseMask",
+        "table:conditions",
+        "table:spell_area"
+      ],
+      "effect": "The same spot looks different to different players: a burned village for one, an intact one for another.",
+      "verify": [
+        "two characters with different progress, side by side"
+      ],
+      "notes": "Phase ids in 3.3.5 are bitmasks on spawns plus condition gating, not a scriptable scene graph.",
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "content.boss-encounter",
+      "title": "A scripted boss encounter",
+      "layer": "content",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:instance_encounters",
+        "table:instance_template",
+        "table:smart_scripts",
+        "table:creature_text"
+      ],
+      "effect": "Phases, adds, timers, a yell on pull, a lockout that records the kill.",
+      "verify": [
+        ".instance stats",
+        "kill it and check the encounter credit"
+      ],
+      "notes": "Everything the client sees is existing spells, existing emotes and text strings.",
+      "docs": [
+        "03",
+        "08"
+      ]
+    },
+    {
+      "id": "mech.spell-tuning",
+      "title": "Spell numbers",
+      "layer": "mechanics",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:spell_dbc",
+        "dbc:Spell.dbc",
+        "table:spelldifficulty_dbc"
+      ],
+      "effect": "Damage, healing, cost, duration and cooldown of an existing spell change for everyone, tooltip and all — because the server sends the numbers it uses.",
+      "verify": [
+        "cast it and read the tooltip next to the combat log"
+      ],
+      "notes": "spell_dbc is a server overlay. Tooltips are built from what the server sends, so overlay changes usually show; icon and visual ids still come from the client.",
+      "docs": [
+        "03",
+        "01"
+      ]
+    },
+    {
+      "id": "mech.spell-cooldown",
+      "title": "Cooldown overrides",
+      "layer": "mechanics",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:spell_cooldown_overrides"
+      ],
+      "effect": "A spell's cooldown shortens without editing 234-field rows; the client's sweep animates to the new value.",
+      "verify": [
+        "cast twice and watch the sweep"
+      ],
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "mech.spell-threat",
+      "title": "Threat modifiers",
+      "layer": "mechanics",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:spell_threat",
+        "table:spell_bonus_data"
+      ],
+      "effect": "Tanking abilities generate more or less threat; the fight's shape changes without new tooltips.",
+      "verify": [
+        "pull with a tank and watch the threat meter or mob behaviour"
+      ],
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "mech.spell-linked",
+      "title": "Linked spells (on-cast riders)",
+      "layer": "mechanics",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:spell_linked_spell"
+      ],
+      "effect": "Casting one spell also applies another: a charge that leaves a trail, a heal that grants a shield.",
+      "verify": [
+        "cast the trigger and watch the second aura appear"
+      ],
+      "notes": "Both spells must be client-known ids. This is the cheapest way to invent a 'new' ability.",
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "mech.spell-proc",
+      "title": "Proc behaviour",
+      "layer": "mechanics",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:spell_proc",
+        "table:spell_enchant_proc_data",
+        "table:spell_pet_auras"
+      ],
+      "effect": "Existing spells start reacting to hits, crits or casts in new ways; the proc flash is the client's own.",
+      "verify": [
+        "hit a dummy until it procs",
+        ".combatstop between attempts"
+      ],
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "mech.spell-scripts",
+      "title": "Spell scripts",
+      "layer": "mechanics",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:spell_scripts",
+        "table:spell_script_names",
+        "code:SpellScript"
+      ],
+      "effect": "A spell can do thing the DBC cannot express: spawn, teleport, set data, chain to a script.",
+      "verify": [
+        "cast it and watch the effect, not the tooltip"
+      ],
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "mech.spell-area",
+      "title": "Zone-wide auras",
+      "layer": "mechanics",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:spell_area"
+      ],
+      "effect": "Entering a zone applies a buff or debuff automatically: cold, corruption, a sanctuary rule.",
+      "verify": [
+        "cross the zone border and watch the aura icon appear"
+      ],
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "mech.spell-target-position",
+      "title": "Portals and teleports by spell",
+      "layer": "mechanics",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:spell_target_position"
+      ],
+      "effect": "A spell that moves the caster or target to coordinates you choose: mage portals, summons, escape hatches.",
+      "verify": [
+        "cast it and note the arrival point"
+      ],
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "mech.spell-group-stacking",
+      "title": "Buff stacking rules",
+      "layer": "mechanics",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:spell_group",
+        "table:spell_group_stack_rules"
+      ],
+      "effect": "Decide which buffs overwrite each other, so two similar effects coexist instead of cancelling.",
+      "verify": [
+        "apply both and watch the buff bar"
+      ],
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "mech.spell-difficulty",
+      "title": "10/25 and heroic splits",
+      "layer": "mechanics",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:spelldifficulty_dbc",
+        "table:instance_encounters"
+      ],
+      "effect": "The same boss casts a harder version in 25-man or heroic without a second creature entry.",
+      "verify": [
+        ".instance stats and run both sizes"
+      ],
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "mech.smartai",
+      "title": "SmartAI behaviour",
+      "layer": "mechanics",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:smart_scripts",
+        "table:creature_text"
+      ],
+      "effect": "Summons, casts, emotes and phases on timers or triggers, with no compiled code.",
+      "verify": [
+        ".reload smart_scripts or restart, then pull"
+      ],
+      "notes": "AIName must be SmartAI. Events/actions/targets are numeric enums from SmartScriptMgr.h.",
+      "docs": [
+        "03",
+        "08"
+      ]
+    },
+    {
+      "id": "mech.waypoints-formations",
+      "title": "Patrols and formations",
+      "layer": "mechanics",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:waypoint_data",
+        "table:script_waypoint",
+        "table:creature_formations",
+        "table:creature_addon:path_id"
+      ],
+      "effect": "NPCs walk routes and move as a pack, which reads as 'real world' far more than better stats do.",
+      "verify": [
+        "watch the route for a minute"
+      ],
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "mech.conditions-engine",
+      "title": "The conditions engine",
+      "layer": "mechanics",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:conditions"
+      ],
+      "effect": "Any row anywhere can be gated on quest, item, aura, reputation, level, achievement or skill.",
+      "verify": [
+        "test with a character that meets and one that does not"
+      ],
+      "notes": "The single most reusable mechanic in the schema: it is how you gate vendors, loot, gossip and spawns without code.",
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "mech.disables",
+      "title": "Disabling content",
+      "layer": "mechanics",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:disables"
+      ],
+      "effect": "Spells, quests, maps or battlegrounds stop being available, with the client's own 'unavailable' messaging.",
+      "verify": [
+        "try the disabled action and read the error"
+      ],
+      "notes": "The clean way to run a 'different expansion' without deleting rows.",
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "mech.respawn-pools",
+      "title": "Respawn and pooling",
+      "layer": "mechanics",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "table:creature:spawntimesecs",
+        "table:pool_template",
+        "table:pool_creature",
+        "table:linked_respawn"
+      ],
+      "effect": "Rares rotate, camps refill at your pace, and killing one thing releases another.",
+      "verify": [
+        "kill and time the respawn"
+      ],
+      "docs": [
+        "03"
+      ]
+    },
+    {
+      "id": "system.chat-command",
+      "title": "A custom chat command",
+      "layer": "systems",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "code:ChatHandler",
+        "table:command",
+        "code:module"
+      ],
+      "effect": "Players type a command and something happens; the .help list can document it.",
+      "verify": [
+        ".help <command>",
+        "run it as a player, not just a GM"
+      ],
+      "notes": "The lightest-weight system hook there is: no client awareness, no UI.",
+      "docs": [
+        "08"
+      ]
+    },
+    {
+      "id": "system.addon-protocol",
+      "title": "Server-to-UI protocol",
+      "layer": "systems",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "code:AddonHandler",
+        "addon:SendAddonMessage",
+        "addon:RegisterAddonMessagePrefix",
+        "conf:AddonChannel"
+      ],
+      "effect": "A custom panel shows live server state: timers, scores, progression, anything you serialise into a message.",
+      "verify": [
+        "log both sides",
+        "send a message and watch the frame update"
+      ],
+      "notes": "This is how you get a real UI without a client patch: ship only an addon folder, keep all truth on the server.",
+      "docs": [
+        "08"
+      ]
+    },
+    {
+      "id": "system.currency-sink",
+      "title": "A custom currency and its sink",
+      "layer": "systems",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "code:module",
+        "table:item_template",
+        "table:conditions",
+        "table:gossip_menu_option"
+      ],
+      "effect": "Players earn a token by playing and spend it at your NPC; the UI is a gossip menu plus an existing item.",
+      "verify": [
+        "earn, then spend, then check the bag count"
+      ],
+      "notes": "Free if the token is an existing item. A new token item drags in Item.dbc rows, and an ExtendedCost price drags in ItemExtendedCost rows.",
+      "docs": [
+        "03",
+        "06"
+      ]
+    },
+    {
+      "id": "system.progression-unlock",
+      "title": "Account-wide progression",
+      "layer": "systems",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "code:module",
+        "table:conditions",
+        "table:quest_template_addon",
+        "code:PlayerScript"
+      ],
+      "effect": "Doing something on one character unlocks something for the account: vendors, teleports, a difficulty tier.",
+      "verify": [
+        "unlock on one character, check another"
+      ],
+      "notes": "Needs storage you own (a character or account table) plus conditions that read it.",
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "system.death-rules",
+      "title": "Custom death rules (hardcore, no-release)",
+      "layer": "systems",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "code:PlayerScript::OnPlayerJustDied",
+        "code:module",
+        "conf:Death.CorpseReclaimDelay.PvE"
+      ],
+      "effect": "Dying means something: a broadcast, a level loss, a permanent flag, a graveyard-only existence.",
+      "verify": [
+        "die on a test character and read the announcement"
+      ],
+      "notes": "The client shows death exactly as it always does; the meaning is entirely yours.",
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "system.auto-scaling",
+      "title": "Dynamic difficulty scaling",
+      "layer": "systems",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "code:module",
+        "table:creature_template:HealthModifier",
+        "code:AllCreatureScript"
+      ],
+      "effect": "The same instance is tuned for the group that enters, so a 3-man run and a 5-man run both feel right.",
+      "verify": [
+        "enter with two different group sizes and compare health pools"
+      ],
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "system.custom-loot",
+      "title": "Custom loot logic",
+      "layer": "systems",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "code:LootScript",
+        "table:creature_loot_template",
+        "code:module"
+      ],
+      "effect": "Loot that reacts: pity timers, guaranteed drops after N kills, per-player rolls.",
+      "verify": [
+        "kill N times and watch the drop pattern"
+      ],
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "system.anticheat",
+      "title": "Warden and integrity checks",
+      "layer": "systems",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "conf:Warden.Enabled",
+        "table:warden_checks",
+        "code:AddonHandler"
+      ],
+      "effect": "Clients running altered memory or wrong files get caught; the check results are server-side.",
+      "verify": [
+        "read the server log for check results"
+      ],
+      "notes": "Warden validates a narrow set of things; it is not a content validator, and it cannot confirm a player has your patch.",
+      "docs": [
+        "01",
+        "04"
+      ]
+    },
+    {
+      "id": "client.dbc-row",
+      "title": "Adding or overriding a DBC row",
+      "layer": "presentation",
+      "patch": "dbc-rows",
+      "clock": 2,
+      "surfaces": [
+        "dbc:Item.dbc",
+        "dbc:Spell.dbc",
+        "dbc:ItemDisplayInfo.dbc",
+        "dbc:SpellVisual.dbc",
+        "dbc:ItemSet.dbc"
+      ],
+      "effect": "The client can resolve something it could not before: an icon, a tooltip line, a set block, a spell visual.",
+      "verify": [
+        "client restart, then .additem / cast and read the tooltip"
+      ],
+      "notes": "Same field count, same field order, or the client refuses the table (and the server logs a field-count mismatch).",
+      "docs": [
+        "03",
+        "04"
+      ]
+    },
+    {
+      "id": "client.mpq-patch",
+      "title": "Shipping a patch archive",
+      "layer": "presentation",
+      "patch": "assets",
+      "clock": 2,
+      "surfaces": [
+        "file:Data/enUS/patch-4.MPQ",
+        "file:Data/enUS/patch-enUS-4.MPQ",
+        "code:launcher"
+      ],
+      "effect": "Every player who updates sees the new rows simultaneously, and nobody who skips the update does.",
+      "verify": [
+        "fresh client, patch installed, check version in the launcher"
+      ],
+      "notes": "Numeric patches outrank the stock patch-3; locale files outrank root files in most locales but not all. Manifest + checksum is how you know.",
+      "docs": [
+        "04"
+      ]
+    },
+    {
+      "id": "client.addon-frame",
+      "title": "A custom UI frame",
+      "layer": "presentation",
+      "patch": "client-files",
+      "clock": 2,
+      "surfaces": [
+        "addon:CreateFrame",
+        "addon:Frame:SetPoint",
+        "addon:UIParent",
+        "addon:SaveVariables"
+      ],
+      "effect": "A panel that does not exist in the stock UI: scoreboards, trackers, a custom bank, a talent planner.",
+      "verify": [
+        "/reload and see it appear",
+        "toggle it with a slash command"
+      ],
+      "notes": "Addons are client files but not MPQ entries: ship them as a folder and no patch archive is involved. 3.3.5 uses global API functions (no C_ namespaces).",
+      "docs": [
+        "03",
+        "08"
+      ]
+    },
+    {
+      "id": "client.addon-data",
+      "title": "Live data in a custom frame",
+      "layer": "presentation",
+      "patch": "client-files",
+      "clock": 2,
+      "surfaces": [
+        "addon:SendAddonMessage",
+        "addon:CHAT_MSG_ADDON",
+        "conf:AddonChannel"
+      ],
+      "effect": "The frame shows numbers that come from the server in real time, not values baked into the addon.",
+      "verify": [
+        "change the server-side value and watch the frame without /reload"
+      ],
+      "notes": "255-char message cap and rate limits; batch and compress if you need more.",
+      "docs": [
+        "08"
+      ]
+    },
+    {
+      "id": "client.tooltip-hook",
+      "title": "Tooltip augmentation",
+      "layer": "presentation",
+      "patch": "client-files",
+      "clock": 2,
+      "surfaces": [
+        "addon:GameTooltip:HookScript",
+        "addon:SetTooltipItem",
+        "addon:GetItemInfo"
+      ],
+      "effect": "Extra lines on any tooltip: drop locations, set progress, your own currency price.",
+      "verify": [
+        "hover the item and read the added lines"
+      ],
+      "notes": "GetItemInfo returns nil until the client has the item, so hook the update path rather than the first draw.",
+      "docs": [
+        "08"
+      ]
+    },
+    {
+      "id": "client.nameplate-minimap",
+      "title": "Nameplates, minimap and world overlays",
+      "layer": "presentation",
+      "patch": "client-files",
+      "clock": 2,
+      "surfaces": [
+        "addon:SetCVar",
+        "addon:WorldMapFrame",
+        "addon:Minimap",
+        "addon:NAME_PLATE_UNIT_ADDED"
+      ],
+      "effect": "Markers, markers on the map, custom nameplate text: direction and discovery aids that feel native.",
+      "verify": [
+        "open the map and look for your markers"
+      ],
+      "docs": [
+        "06"
+      ]
+    },
+    {
+      "id": "client.sound-reuse",
+      "title": "Reusing existing sounds",
+      "layer": "presentation",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "dbc:SoundEntries.dbc",
+        "table:smart_scripts",
+        "addon:PlaySound"
+      ],
+      "effect": "A roar, a bell, a coin: any of the client's existing SoundEntries ids can be played on an event.",
+      "verify": [
+        "trigger the event and listen"
+      ],
+      "notes": "New audio files need an asset patch; existing ids need nothing.",
+      "docs": [
+        "06"
+      ]
+    },
+    {
+      "id": "client.model-reuse",
+      "title": "Reusing existing models and textures",
+      "layer": "presentation",
+      "patch": "none",
+      "clock": 1,
+      "surfaces": [
+        "dbc:CreatureDisplayInfo.dbc",
+        "dbc:GameObjectDisplayInfo.dbc",
+        "dbc:ItemDisplayInfo.dbc",
+        "dbc:SpellVisual.dbc"
+      ],
+      "effect": "New content that looks authored, because it is: Blizzard's art, your arrangement.",
+      "verify": [
+        "look at it in game next to the source creature"
+      ],
+      "notes": "The whole point of the reuse-first constraint: recolor-by-composition instead of importing art.",
+      "docs": [
+        "06"
+      ]
+    },
+    {
+      "id": "client.new-model",
+      "title": "New models and textures",
+      "layer": "presentation",
+      "patch": "assets",
+      "clock": 2,
+      "surfaces": [
+        "file:M2",
+        "file:BLP",
+        "dbc:CreatureModelData.dbc",
+        "dbc:CreatureDisplayInfo.dbc"
+      ],
+      "effect": "Art that never shipped with the game.",
+      "verify": [
+        "in-game model check plus a client log scan for missing files"
+      ],
+      "notes": "Out of scope here: it is an art pipeline (conversion, attachment points, LOD, animation names) and every mistake looks like a client crash.",
+      "docs": [
+        "06",
+        "07"
+      ]
+    },
+    {
+      "id": "client.new-map",
+      "title": "New maps and terrain",
+      "layer": "presentation",
+      "patch": "assets",
+      "clock": 2,
+      "surfaces": [
+        "dbc:Map.dbc",
+        "file:ADT",
+        "file:WDT",
+        "dbc:WorldMapArea.dbc",
+        "dbc:AreaTable.dbc"
+      ],
+      "effect": "A place that is not in the game: new geometry, new minimap, new zone name.",
+      "verify": [
+        ".go xyz into it and check the map opens"
+      ],
+      "notes": "The most expensive alteration in this catalog. Reusing an existing instanced map's unused geometry is the budget alternative.",
+      "docs": [
+        "02",
+        "06"
+      ]
+    },
+    {
+      "id": "client.interface-skin",
+      "title": "Interface and loading screens",
+      "layer": "presentation",
+      "patch": "assets",
+      "clock": 2,
+      "surfaces": [
+        "file:Interface/GlueXML",
+        "file:Interface/FrameXML",
+        "file:LoadingScreens"
+      ],
+      "effect": "A realm that looks like its own game before the first character loads.",
+      "verify": [
+        "restart the client and watch login"
+      ],
+      "notes": "Cosmetic and high-risk: wrong text or layout breaks the login flow for everyone.",
+      "docs": [
+        "06"
+      ]
+    },
+    {
+      "id": "client.achievements",
+      "title": "New achievements",
+      "layer": "presentation",
+      "patch": "dbc-rows",
+      "clock": 2,
+      "surfaces": [
+        "dbc:Achievement.dbc",
+        "table:achievement_dbc",
+        "table:achievement_reward",
+        "dbc:Achievement_Category.dbc"
+      ],
+      "effect": "A new entry in the achievements pane with its own criteria and reward.",
+      "verify": [
+        "open the achievements pane and find it",
+        "earn it on a test character"
+      ],
+      "notes": "The pane is entirely client DBC driven; the server overlay alone shows nothing.",
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "client.talents",
+      "title": "New talents and talent trees",
+      "layer": "presentation",
+      "patch": "dbc-rows",
+      "clock": 2,
+      "surfaces": [
+        "dbc:Talent.dbc",
+        "dbc:TalentTab.dbc",
+        "table:talent_dbc",
+        "conf:Rate.Talent"
+      ],
+      "effect": "New nodes on the tree with working icons and tooltips.",
+      "verify": [
+        "open the talent pane and spend a point"
+      ],
+      "notes": "Raising Rate.Talent gives more points; new *nodes* need client rows and are notoriously fragile.",
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "client.titles",
+      "title": "New titles",
+      "layer": "presentation",
+      "patch": "dbc-rows",
+      "clock": 2,
+      "surfaces": [
+        "dbc:CharTitles.dbc",
+        "table:chartitles_dbc"
+      ],
+      "effect": "A selectable title in the character pane.",
+      "verify": [
+        "open the character pane dropdown"
+      ],
+      "docs": [
+        "02"
+      ]
+    },
+    {
+      "id": "client.currency-display",
+      "title": "New currency in the currency tab",
+      "layer": "presentation",
+      "patch": "dbc-rows",
+      "clock": 2,
+      "surfaces": [
+        "dbc:CurrencyTypes.dbc",
+        "table:currencytypes_dbc"
+      ],
+      "effect": "A tracked currency with an icon in the player's currency pane.",
+      "verify": [
+        "open the currency pane"
+      ],
+      "notes": "Without a client row, a custom currency still exists server-side — it just has no place to display itself.",
+      "docs": [
+        "02"
+      ]
+    }
+  ]
+}
