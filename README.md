@@ -1,181 +1,115 @@
-# Conflux
+# WotLK 3.3.5a custom content — mechanics and toolchain
 
-> **This repository is archived (read-only) as of 2026-11-11.** Conflux continues in
-> [`ViscoBoBisco/MOC`](https://github.com/ViscoBoBisco/MOC) (a private repository), under
-> [`conflux/`](https://github.com/ViscoBoBisco/MOC/tree/main/conflux), as the execution layer of the Meridian
-> Operations Console. This prototype's design, checklist and qualification record live on in
-> [`conflux/docs/conflux/`](https://github.com/ViscoBoBisco/MOC/tree/main/conflux/docs/conflux), and this
-> repository's source and tests at commit `6dfc628` are kept in
-> [`conflux/reference/conflux/`](https://github.com/ViscoBoBisco/MOC/tree/main/conflux/reference/conflux).
-> The integrated system was externally qualified against local Ollama on 2026-11-11:
-> [`conflux/docs/qualification/local-ollama-2026-11-11/`](https://github.com/ViscoBoBisco/MOC/tree/main/conflux/docs/qualification/local-ollama-2026-11-11).
-> The integration history, including how each prototype part was carried over, is in
-> [`conflux/MERGE.md`](https://github.com/ViscoBoBisco/MOC/blob/main/conflux/MERGE.md).
+Everything needed to add **custom features, items, spells, creatures, quests and systems** to a
+World of Warcraft: Wrath of the Lich King (build **12340**) private server, built strictly from
+assets and mechanics **the client already ships**.
 
-> A unified agentic intelligence platform that transforms objectives into coordinated, resource-efficient, independently verifiable execution across AI models, specialist agents, software tools, data systems, and persistent workflows, under centralized governance and durable task custody.
+Three things live here:
 
-## Current implementation
+1. **A knowledge base** (`docs/`) — how the client and server actually consume data, what needs a
+   client patch and what does not, recipes, failure modes, and the code-level mechanics.
+2. **A toolchain** (`tools/`) — a DBC inspector/validator, a one-command preflight gate, and a
+   patch manifest generator/verifier. No game files required to use or test them.
+3. **A worked example** (`examples/ashen-vault/`) — a complete custom dungeon spec that requires
+   **zero client changes**, laid out the way a release would be.
 
-Conflux is the project implementation of the architecture described in
-[`docs/unified-agentic-system/`](docs/unified-agentic-system/). The prioritized
-remaining development goals are tracked in the
-[Conflux development checklist](docs/DEVELOPMENT_CHECKLIST.md):
+> **The constraint that carries the value:** build custom content out of parts the client already
+> has. The 3.3.5a client ships ~59k creature displays, ~117k game-object displays, six figures of
+> item display rows, tens of thousands of spells and thousands of spell visuals. A server-driven
+> design built from those needs **no client patch at all** for most features, and a *tiny* patch
+> (a few hundred bytes of DBC rows, never models) for the rest.
 
-```
-unified/
-  contracts.py      # canonical task envelope, tool call/receipt, state machine (manual 5.1-5.4)
-  ledger.py         # durable SQLite task ledger: tasks, steps, attempts, committed receipts
-  policy.py         # grant-based admission + pre-execution authorization (manual 3.3)
-  broker.py         # capability broker, typed receipts, native sandboxed tools
-  adapters.py       # scrapling.fetch (allowlist), openbb.query, codegraph.index/find, rea.inspect
-  model_router.py   # bounded inference queue + token budget (manual 3.6)
-  role_registry.py  # immutable versioned specialist profiles (manual 3.5)
-  automation.py     # signed n8n-style callbacks (HMAC+timestamp+replay) + triggers (manual 4.4)
-  planner.py        # plan(TaskEnvelope) -> StepDAG (AgenticSeek adapter stand-in)
-  engine.py         # canonical path: gateway -> ledger -> plan -> broker -> evidence -> verifier
-  verifier.py       # evidence-based result assembly with conflicts/failures surfaced
-  memory.py         # access-scoped conversation memory (separate from ledger/evidence)
-  gateway.py        # HTTP API: /v1/tasks, /v1/tools, /v1/roles, /v1/metrics,
-                    #   /v1/memory/{project}, SSE /v1/tasks/{id}/events/stream,
-                    #   /v1/automation/trigger|callbacks, approve/reject
-  server.py         # entry point
-cli.py              # CLI gateway client
-tests/
-  test_acceptance.py          # acceptance cases from manual section 5.10
-  test_expansion.py           # adapter, model router, role and automation tests
-  test_approvals_streaming.py # durable approvals, memory, metrics, hash checks
-  test_workflows.py           # 4 e2e tests: ch.4 research flow, budget limits, impact trace
-  test_scheduler.py           # 2 tests: wave-parallel DAG execution, crash recovery
-  test_async_api.py           # 3 tests: 202 async submit + poll, sync mode, artifact download
-  test_security_delivery.py   # 3 tests: prompt-injection quarantine, graph staleness, signed webhook delivery
-  test_tenant_workflows.py    # tenant workspace isolation, traversal, ch.4.2 repo-change flow
-  test_investigate_metrics.py # 3 tests: ch.4.3 static investigation, IOC extraction, metrics
-  test_qualification.py       # Phase-6 qualification: all four ch.4 workflows + trace + typed dataset
-  test_health.py              # liveness/readiness, no-write probes, response headers
-  test_production_config.py   # fail-closed production auth, mounted secret files, web allowlist
-  test_ui_console.py          # console contracts, task grants, metrics/memory scope
-  test_infra_listing.py       # 2 tests: compose service-links parsing, scoped paginated task list
-  test_auth_ratelimit.py      # 5 tests: 401/403 auth, 429 token bucket
-  test_audit_dlq.py           # 4 tests: hash-chained audit tamper detection, SSRF, 4xx/5xx DLQ
-```
+---
 
-Run the stdlib-only suite with `python3 -m unittest discover -s tests`; CI also
-compiles the package, checks the UI script, builds the production image, validates
-Compose, and runs a container-level production smoke test using mounted test
-secrets. Docker must be installed to run the container/Compose portion locally.
-
-Ledger events are SHA-256 hash-chained (`GET /v1/audit/verify`); webhook delivery
-blocks non-HTTPS and private/metadata IPs (SSRF) and routes 4xx immediately /
-5xx after retries to a dead-letter queue.
-```
-
-The gateway requires `Authorization: Bearer <api-key>` on all `/v1/*` routes
-(401 missing, 403 invalid, 429 + `Retry-After` over the token-bucket limit);
-`/healthz`, `/readyz` and the UI stay open. `demo.sh` shows a full live run.
-Configure API keys as a JSON object mapping bearer tokens to project IDs and
-tool grants (for example `{"token-a":{"projects":["project-a"],"grants":["repo.read"]}}`). Local runs can use `UNIFIED_API_KEYS`; production Compose uses `UNIFIED_API_KEYS_FILE` mounted from a protected secret file. Either explicit configuration disables the built-in wildcard `dev-key`, and omitted grants mean no tool permissions. Approval and cancellation also require explicit `task.approve` and `task.cancel` grants.
-
-The production Compose profile sets `UNIFIED_ENV=production` and fails startup
-unless API keys have explicit non-wildcard project scopes and a non-placeholder
-callback secret is configured. Compose mounts secrets from protected files (the
-`.env` file contains paths only); prepare them as described in `.env.example`.
-`.dockerignore` excludes local state, secret files, tests and VCS data from the
-image build context. Compose publishes only on loopback for a TLS-terminating
-reverse proxy, bounds container memory/CPU/processes, and drops Linux
-capabilities.
-
-Production workspaces and code graphs are namespaced per project; workspace
-browsing requires `repo.read`. Existing unscoped workspace files/indexes are not
-auto-assigned: migrate or reindex them per project before rollout. The container
-runs as UID 10001; ensure an existing named volume's `/data` is writable by that
-UID. Runtime metrics are project-scoped; global audit verification requires
-`ops.read`, and memory reads/writes require `memory.read` / `memory.write`.
-Outbound fetching remains disabled unless `UNIFIED_WEB_ALLOWLIST` explicitly
-names audited HTTPS hosts; fetches reject redirects, non-public DNS results,
-and responses over 2 MiB. Health probes are read-only, responses include
-`no-store` and browser security headers. Request bodies are capped at 1 MiB,
-and task/event history reads are SQL-bounded.
-```
-
-`codegraph.service_links` (14 tools) parses compose `depends_on` into service
-edges; `GET /v1/tasks?limit=&offset=` is project-scoped and paginated. The zero-build
-operator console at `/` provides guided task forms for every planner intent,
-Chapter 4 workflow presets, tenant-scoped task/approval inspection, workspace
-browsing, capabilities and memory, metrics, and audit-chain verification.
-```
-
-`demo.sh` runs a full live walkthrough (health → tools → async submit → poll →
-evidence citations → metrics → idempotent dedupe). `/healthz` and `/readyz`
-follow the liveness/readiness split; compose secrets come from `.env`
-(see `.env.example`).
-```
-
-`codegraph.trace` gives cycle-safe transitive upstream callers (13 tools);
-`openbb.query` accepts a `dataset_uri` artifact for a schema-validated typed path
-when provider extensions are absent (units/metadata preserved, never fabricated).
-```
-
-`investigate` runs the ch. 4.3 flow (static-only `rea.inspect` with IOC/entropy
-triage → optional graph correlation; runtime observation stays unauthorized).
-`GET /v1/metrics/summary` exposes dashboard metrics: success rate, tool error
-rate by tool, p50/p95 latency, token usage.
-```
-
-Multi-project isolation: every task read requires a matching `X-Project-Id`
-header (403 on cross-project access). The verifier applies the verifier role's
-rubric as deterministic checks; `repo_change` runs the ch. 4.2 flow
-(index → impact → approved sandboxed write → verified report).
-```
-
-Security/delivery: fetched content is quarantined as `untrusted-data` evidence
-with numbered citation handles (`GET /v1/tasks/{id}/evidence`), `codegraph.freshness`
-reports index staleness, and completed results can be delivered to a signed
-webhook (`delivery.webhook_url`, HMAC-SHA256 + timestamp).
-```
-
-Tasks run asynchronously by default (`POST /v1/tasks` → `202 Accepted` +
-`status_url`; use `?sync=1` for synchronous execution). Artifacts download at
-`/v1/artifacts/{task}/{step}/{name}` with an `X-Sha256` integrity header.
-`Dockerfile` + `docker-compose.yml` provide the hardened single-host deployment
-(gateway is the only published port; state on a named volume).
-```
-
-The scheduler executes independent ready DAG steps in parallel waves (tool
-parallelism; model calls serialize on the shared router queue) and reconciles
-interrupted tasks at startup, reusing committed receipts so side effects are
-never repeated.
-unified/ui/index.html       # zero-build web UI (vanilla JS + SSE) served at /
-```
-
-Hard per-task budgets (`tool_calls`, `time_seconds`) are enforced at step level
-and fail with a typed `budget_exceeded` receipt. Open `http://localhost:8080/`
-for the web UI.
-
-Side-effecting tool steps (e.g. `native.fs.write`) pause the run in a durable
-`WAITING_APPROVAL` state and execute exactly once after `POST .../approve`;
-`POST .../reject` cancels. Step IDs are deterministic per task, so committed
-receipts and approvals survive restarts and resumes.
-
-### Run
+## Quickstart
 
 ```bash
-python3 -m unified.server --port 8080        # gateway on 0.0.0.0:8080
-python3 -m unittest discover -s tests -v     # acceptance suite
+make check                     # run the test suite + tool selftests
+./tools/preflight.sh dbc-client/ dbc-server/     # gate a patch before packing
+python3 tools/dbc_tool.py info Item.dbc
+python3 tools/manifest.py make --staging patch/ --version 2026.11.1 --out manifest.json
+python3 tools/manifest.py verify --manifest manifest.json --staging patch/
 ```
 
-### Try it
+Nothing here needs a WoW client, a database, or Windows. The DBC tooling is stdlib Python; its
+test suite generates its own fixtures, so you can validate the validator before trusting it.
 
-```bash
-curl -X POST localhost:8080/v1/tasks -d '{"project_id":"demo","idempotency_key":"k1","request":{"intent":"echo","instructions":"hello"},"permissions":[]}'
-curl localhost:8080/v1/tools
+---
+
+## The six rules that prevent most of the pain
+
+1. **Every piece of content lives in two or three places at once.** Items live in `item_template`
+   (server DB) and `Item.dbc` (server *and* client); spells in `Spell.dbc` (both sides) and
+   optionally `spell_dbc` (server overlay). Forgetting one copy is the #1 cause of "works for me".
+   → [docs/01](docs/01-client-and-server-data-model.md)
+2. **The client owns appearance and self-validation; the server owns state and mechanics.** If the
+   client cannot resolve an ID it draws a red `?`, refuses to treat an item as a weapon, or drops a
+   spell icon — no server code fixes that. → [docs/08 §3](docs/08-how-integration-actually-works.md)
+3. **Decide which layer owns a feature before writing code.** Panel → addon; sink → SQL; new weapon
+   *class* → client patch; new boss → none. → [docs/02](docs/02-feature-integration-matrix.md)
+4. **A client patch is a release artifact, not a development step.** Versioned, reproducible,
+   checksummed, and gated by a launcher. → [docs/04](docs/04-patching-toolchain-and-release.md)
+5. **Client and server DBC sets must be byte-identical** for every table both sides read. Drift is
+   silent — the server starts fine and quietly drops data. → `tools/preflight.sh`
+6. **Reuse IDs, not just models.** The cheapest "new" item is an existing `Item.dbc` row with new
+   `item_template` stats; the cheapest "new" spell visual is an existing kit behind a new
+   `SpellVisual`. → [docs/06](docs/06-design-playbook-existing-assets.md)
+
+---
+
+## Layout
+
+```
+README.md                     this page
+docs/                         the knowledge base (01–08)
+tools/
+  dbc_tool.py                 inspect/validate DBCs: header, duplicates, free IDs, refs, drift
+  preflight.sh                release gate: structure + parity + referential integrity
+  manifest.py                 build/verify a manifest (sha256 per table, patch hash, version)
+  selftest.py                 synthetic fixtures for dbc_tool.py
+examples/ashen-vault/         a zero-client-patch dungeon, spec → SQL → acceptance → rollback
+tests/                        pytest: tooling behaviour + documentation integrity
+Makefile                      `make check`, `make preflight CLIENT=… SERVER=…`, `make manifest`
 ```
 
-Idempotent submission, policy denial, dependency ordering, restart/receipt
-recovery, cancellation, artifact hashing, prompt-injection resistance,
-conflict surfacing and typed tool failures are all covered by the tests.
+## The knowledge base
 
-## Documentation
+| Chapter | What it answers |
+|---|---|
+| [01 — Data model](docs/01-client-and-server-data-model.md) | Where data lives: MPQ load order, DBC layout, WDB cache, `DataDir/dbc`, `*_dbc` SQL overlays, who is authoritative for what |
+| [02 — Integration matrix](docs/02-feature-integration-matrix.md) | Feature by feature: server-only vs. needs a patch, which tables, which traps |
+| [03 — Recipes](docs/03-recipes.md) | Item, item look, spell, cosmetic aura, mount, serverside spell, set, gem/enchant, currency, dungeon, addon+server system |
+| [04 — Patching & release](docs/04-patching-toolchain-and-release.md) | MPQ build mechanics, patch naming and **per-locale load order**, toolchain, ID policy, CI gate, launcher, rollback |
+| [05 — Failure modes](docs/05-failure-modes.md) | Symptom → cause → fix, for the errors you will actually hit |
+| [06 — Design playbook](docs/06-design-playbook-existing-assets.md) | Designing new content out of existing assets: reuse patterns, effort ladder, content pipeline |
+| [07 — Sources](docs/07-sources.md) | Annotated primary + field sources, core code paths, and an explicit "not verified" list |
+| [08 — How it actually works](docs/08-how-integration-actually-works.md) | The mechanics: boot sequence, DBC loading and SQL overlays in code, four runtime protocols, end-to-end traces, ten lossy joints, the consistency contract |
 
-- **Conflux — Unified Agentic Intelligence Platform Manual** in
-  [`docs/unified-agentic-system/`](docs/unified-agentic-system/). Start with
-  `Unified_Agentic_System_Manual.html` (fully self-contained, works offline).
+## Glossary
+
+| Word | Meaning here |
+|---|---|
+| **DBC** | Blizzard's fixed-width client table format (`WDBC`). Read by the client, and (a copy) by the server. |
+| **MPQ** | Blizzard's archive format. Custom content is delivered by adding a higher-priority archive, never by editing Blizzard's. |
+| **Patch** | A custom MPQ named `patch-N.MPQ` / `patch-L.MPQ` that shadows files from lower-priority archives. Also used loosely for "a client release". |
+| **DBC row** | One record in such a table; the unit of client-side custom content. |
+| **Overlay** | An AzerothCore `*_dbc` SQL table whose rows are applied on top of the loaded DBC file (add or replace by ID). |
+| **Serverside** | Content the server knows and the client does not (invisible mechanics). |
+| **Display ID** | An ID into a presentation table (`ItemDisplayInfo`, `CreatureDisplayInfo`, `GameObjectDisplayInfo`) — usually the only thing the client needs in order to *draw* something. |
+| **Cache / WDB** | `Cache/*.wdb`: the client's copy of server-sent item/creature/quest data. Goes stale after DB/DBC changes. |
+
+## Status and trust level
+
+This is a synthesis of public format documentation, core source, and field reports — not a lab
+report. Claims that came from code are marked `[core]` with the file and symbol; client behaviour
+is marked `[client]` because the client is closed-source. Anything version- or core-specific is
+flagged **(verify)**, and [07](docs/07-sources.md) ends with an explicit list of what was *not*
+verified.
+
+## Repository history
+
+This repository previously contained **Conflux**, an agentic-execution prototype that was archived
+read-only on 2026-11-11 and continues in a private repository (`ViscoBoBisco/MOC`) along with its
+design documentation, qualification record and source. On 2026-11-17 the contents were replaced
+with this project. The old tree is still reachable in git history (`898a5cf` and earlier) — nothing
+was destroyed, only superseded.
