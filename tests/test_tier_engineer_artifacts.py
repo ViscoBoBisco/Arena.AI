@@ -268,6 +268,33 @@ class TheModelAndTheSpecAgree(unittest.TestCase):
         self.assertEqual(reply, ["VT1\tBYE\tserver is under maintenance"])
 
 
+class TheCountsAreTrue(unittest.TestCase):
+    """"Thirteen defects" is a claim like any other; it gets checked, not typed."""
+
+    WORDS = {n: w for n, w in enumerate(
+        "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+        "fifteen sixteen seventeen eighteen nineteen twenty".split())}
+
+    def test_readme_defect_count_matches_the_chapter(self):
+        ladder = (helpers.REPO / "docs" / "11-testing-ladder.md").read_text(encoding="utf-8")
+        findings = re.findall(r"^\d+\. ", ladder, re.MULTILINE)
+        readme = (helpers.REPO / "README.md").read_text(encoding="utf-8")
+        claimed = [w for w in self.WORDS.values() if f"the {w} real defects" in readme]
+        self.assertEqual(claimed, [self.WORDS[len(findings)]],
+                         f"docs/11 lists {len(findings)} findings; README claims {claimed}")
+
+    def test_the_chapter_tier_counts_are_the_real_ones(self):
+        """The table says how many tests each tier has. Load the tiers and count them."""
+        import unittest as ut
+        ladder = (helpers.REPO / "docs" / "11-testing-ladder.md").read_text(encoding="utf-8")
+        claimed = [int(n) for n in re.findall(r"\((\d+) tests\)", ladder)]
+        groups = [["tests.test_tier_intern"],
+                  ["tests.test_tier_engineer", "tests.test_tier_engineer_artifacts"],
+                  ["tests.test_tier_master"]]
+        actual = [ut.TestLoader().loadTestsFromNames(g).countTestCases() for g in groups]
+        self.assertEqual(claimed, actual, f"docs/11 says {claimed}, the suite has {actual}")
+
+
 class TheModuleWouldActuallyLoad(unittest.TestCase):
     """A module that never loads is the quietest failure in this whole example."""
 
