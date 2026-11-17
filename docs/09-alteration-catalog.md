@@ -3,12 +3,12 @@
 [01](01-client-and-server-data-model.md)–[08](08-how-integration-actually-works.md) answer *how the machinery
 works*. This chapter answers the next question: **what can I actually change, and what will a player notice?**
 
-Every lever this project knows about is in one machine-readable place — `catalog/alterations.json`, 85
+Every lever this project knows about is in one machine-readable place — `catalog/alterations.json`, 110
 entries — and queryable:
 
 ```bash
-python3 tools/catalog.py stats                          # 85 entries, 5 layers, 4 delivery kinds
-python3 tools/catalog.py query --no-mpq                 # 71 levers that need no MPQ change
+python3 tools/catalog.py stats                          # 110 entries, 6 layers, 4 delivery kinds
+python3 tools/catalog.py query --no-mpq                 # 96 levers that need no MPQ change
 python3 tools/catalog.py query --clock 0                # 13 that apply to the next event
 python3 tools/catalog.py show content.quest-new          # one lever in full
 python3 tools/catalog.py surfaces --layer content        # what data you would touch
@@ -53,7 +53,7 @@ The failure signature tells you which kind you got wrong:
 
 ---
 
-## 2. Five layers of alteration
+## 2. Six layers of alteration
 
 | Layer | Surface | A typical change | Clock | Query |
 |---|---|---|---|---|
@@ -62,6 +62,10 @@ The failure signature tells you which kind you got wrong:
 | **Mechanics** | rule tables, SmartAI, scripts | spell linkage, procs, area auras, conditions, disables | 1 | `query --layer mechanics` |
 | **Systems** | module / C++ / Eluna | commands, addon protocol, currencies, death rules | 1 | `query --layer systems` |
 | **Presentation** | DBC rows, MPQ, addon Lua | icons, set bonuses, tooltips, UI frames, maps | 2 | `query --layer presentation` |
+| **Novel** | existing systems, repurposed | the quest log as a HUD, gossip as an app, books as a CMS, the addon channel as a socket | 1–2 | `query --layer novel` |
+
+The `novel` layer is [10](10-novel-alterations.md): mechanisms used for something they were not built for.
+It is the most productive layer per hour, because it reuses both the code and the client's assumptions.
 
 The distribution is the argument of this whole project (`tools/catalog.py matrix` is authoritative
 if the numbers drift):
@@ -73,12 +77,12 @@ content                   27             .             5             .      32
 mechanics                 15             .             .             .      15
 systems                    8             .             .             .       8
 presentation               2             4             5             4      15
+novel                     23             2             .             .      25
 ------------------------------------------------------------------------------
-total                     67             4            10             4      85
+total                     90             6            10             4     110
 ```
 
-**71 of 85 levers need no MPQ at all** (67 need nothing client-side; 4 are an addon folder). Every policy,
-mechanics and systems lever is patch-free. Content is 84% patch-free. Only presentation is inherently
+**96 of 110 levers need no MPQ at all** (90 need nothing client-side; 6 are an addon folder). Every policy, mechanics and systems lever is patch-free, and so are 23 of the 25 novel ones. Content is 84% patch-free. Only presentation is inherently
 client-side — which is exactly why the design playbook sends you to [06](06-design-playbook-existing-assets.md)
 first: most features can be *expressed* in content and mechanics instead of presentation.
 
@@ -312,6 +316,8 @@ Two habits make this loop honest:
 | debug "it worked yesterday" | [05](05-failure-modes.md) |
 | understand why a lever behaves this way | [08](08-how-integration-actually-works.md) |
 | browse every lever as data | `catalog/alterations.json`, `tools/catalog.py` |
+| repurpose a system for something it was not built for | [10](10-novel-alterations.md) |
+| know how deeply a claim has been tested | [11](11-testing-ladder.md) |
 
 The catalog is meant to grow. When you find a lever this project does not list, add an entry — `python3
 tools/catalog.py validate` and the test suite will tell you if the shape is right, and the `effect` field is

@@ -8,7 +8,7 @@ Three things live here:
 
 1. **A knowledge base** (`docs/`) — how the client and server actually consume data, what needs a
    client patch and what does not, recipes, failure modes, and the code-level mechanics.
-2. **A catalog and a toolchain** (`catalog/`, `tools/`) — 85 alterations with their player-visible
+2. **A catalog and a toolchain** (`catalog/`, `tools/`) — 110 alterations with their player-visible
    effects and patch cost, queryable; a DBC inspector/validator, a one-command preflight gate, and a
    patch manifest generator/verifier. No game files required to use or test any of it.
 3. **A worked example** (`examples/ashen-vault/`) — a complete custom dungeon spec that requires
@@ -25,7 +25,7 @@ Three things live here:
 ## Quickstart
 
 ```bash
-make check                     # run the test suite + tool selftests
+make check                     # selftest + all three test tiers (~15 s, no game files)
 ./tools/preflight.sh dbc-client/ dbc-server/     # gate a patch before packing
 python3 tools/catalog.py query --no-mpq            # what needs no client patch at all
 python3 tools/dbc_tool.py info Item.dbc
@@ -63,8 +63,8 @@ test suite generates its own fixtures, so you can validate the validator before 
 
 ```
 README.md                     this page
-docs/                         the knowledge base (01–09)
-catalog/alterations.json      85 levers: what you can change, what players see, patch cost
+docs/                         the knowledge base (01–11)
+catalog/alterations.json      110 levers: what you can change, what players see, patch cost
 tools/
   catalog.py                  query the catalog (layers, clocks, surfaces, patch kinds)
   dbc_tool.py                 inspect/validate DBCs: header, duplicates, free IDs, refs, drift
@@ -72,7 +72,7 @@ tools/
   manifest.py                 build/verify a manifest (sha256 per table, patch hash, version)
   selftest.py                 synthetic fixtures for dbc_tool.py
 examples/ashen-vault/         a zero-client-patch dungeon, spec → SQL → acceptance → rollback
-tests/                        pytest: tooling behaviour + documentation integrity
+tests/                        three test tiers: intern, engineer, master (stdlib only)
 Makefile                      `make check`, `make preflight CLIENT=… SERVER=…`, `make manifest`
 ```
 
@@ -88,7 +88,9 @@ Makefile                      `make check`, `make preflight CLIENT=… SERVER=�
 | [06 — Design playbook](docs/06-design-playbook-existing-assets.md) | Designing new content out of existing assets: reuse patterns, effort ladder, content pipeline |
 | [07 — Sources](docs/07-sources.md) | Annotated primary + field sources, core code paths, and an explicit "not verified" list |
 | [08 — How it actually works](docs/08-how-integration-actually-works.md) | The mechanics: boot sequence, DBC loading and SQL overlays in code, four runtime protocols, end-to-end traces, ten lossy joints, the consistency contract |
-| [09 — Alteration catalog](docs/09-alteration-catalog.md) | **What you can change and what players actually see**: the reflection model, five layers, three clocks, 85 levers, six patch-free compositions, and what will never show without a patch |
+| [09 — Alteration catalog](docs/09-alteration-catalog.md) | **What you can change and what players actually see**: the reflection model, six layers, three clocks, 110 levers, six patch-free compositions, and what will never show without a patch |
+| [10 — Novel alterations](docs/10-novel-alterations.md) | **Using the surface as a language**: the six escape hatches, books as a CMS, gossip as an app, the quest log as a HUD, the addon channel as a socket, gameobject types as devices, and the safety rules for clever content |
+| [11 — Testing ladder](docs/11-testing-ladder.md) | What an intern, an engineer and a master engineer each test — and the nine real defects those tiers found in this project's own tooling and claims |
 
 ## Glossary
 

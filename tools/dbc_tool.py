@@ -44,12 +44,26 @@ from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 MAGIC = b"WDBC"
+
+# Verified field counts for tables this project documents (see docs/01 and docs/03).
+# A patch built from the wrong client version, or from a stale tool, is usually wrong here first:
+# the server logs "exists, and has N field(s) (expected M)" and skips the table.
+EXPECTED_FIELDS = {
+    "Item.dbc": 8,
+    "ItemDisplayInfo.dbc": 25,
+    "Spell.dbc": 234,
+    "SpellIcon.dbc": 2,
+}
 HEADER = struct.Struct("<4sIIII")  # magic, recordCount, fieldCount, recordSize, stringSize
 MAX_FIELD_COUNT = 512  # Spell.dbc in 3.3.5a has 234; anything beyond this is corruption
 
 
 class DbcError(Exception):
-    pass
+    """Malformed DBC file: the bytes are wrong."""
+
+
+class DbcIOError(DbcError):
+    """The file could not be read at all (missing, unreadable, a directory)."""
 
 
 @dataclass
@@ -66,8 +80,8 @@ class Dbc:
     def load(cls, path: Path) -> "Dbc":
         try:
             raw = path.read_bytes()
-        except OSError as exc:  # pragma: no cover - IO error path
-            raise DbcError(f"{path}: cannot read ({exc})") from exc
+        except OSError as exc:
+            raise DbcIOError(f"{path}: cannot read ({exc})") from exc
 
         if len(raw) < HEADER.size:
             raise DbcError(f"{path}: file shorter than a DBC header ({len(raw)} bytes)")
@@ -155,11 +169,19 @@ def check_header(path: Path, verbose: bool = True) -> int:
         return 2
     try:
         dbc = Dbc.load(path)
+    except DbcIOError as exc:
+        print(f"ERROR {exc}", file=sys.stderr)
+        return 2
     except DbcError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 1
 
     size_mb = path.stat().st_size / (1024 * 1024)
+    expected = EXPECTED_FIELDS.get(path.name)
+    if expected is not None and dbc.field_count != expected:
+        print(f"ERROR {path}: {dbc.field_count} field(s), expected {expected} for {path.name} "
+              f"(wrong client version, or a tool that writes a different layout)", file=sys.stderr)
+        return 1
     if verbose:
         print(f"file           {path}")
         print(f"magic          {MAGIC.decode()} (ok)")
@@ -184,11 +206,11 @@ def check_header(path: Path, verbose: bool = True) -> int:
 
 
 def check_free_ids(path: Path, lo: int, hi: int) -> int:
+    if lo > hi:
+        print(f"ERROR {path}: empty range [{lo}, {hi}] (--from must not exceed --to)", file=sys.stderr)
+        return 2
     dbc = Dbc.load(path)
     used = {v for v in dbc.ids() if lo <= v <= hi}
-    if not used:
-        print(f"{path}: {hi - lo + 1} IDs free in [{lo}, {hi}]")
-        return 0
     gaps = []
     cursor = lo
     for v in sorted(used):
@@ -197,7 +219,7 @@ def check_free_ids(path: Path, lo: int, hi: int) -> int:
         cursor = v + 1
     if cursor <= hi:
         gaps.append((cursor, hi))
-    print(f"{path}: {len(used)} IDs used in [{lo}, {hi}]")
+    print(f"{path}: {len(used)} of {hi - lo + 1} IDs used in [{lo}, {hi}]")
     if gaps:
         print("free ranges:")
         for a, b in gaps:
@@ -379,6 +401,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 values = [dbc.string(row[f]) for f in fields[:3]]
                 print(f"{idx} id={row[0]}: " + " | ".join(v for v in values if v))
             return 0
+    except DbcIOError as exc:
+        print(f"ERROR {exc}", file=sys.stderr)
+        return 2
     except DbcError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 1

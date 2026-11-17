@@ -16,9 +16,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 CATALOG = REPO / "catalog" / "alterations.json"
 TOOL = REPO / "tools" / "catalog.py"
-DOC = REPO / "docs" / "09-alteration-catalog.md"
+DOCS = [REPO / "docs" / "09-alteration-catalog.md",
+        REPO / "docs" / "10-novel-alterations.md"]
 
-ID_RE = re.compile(r"\b(?:policy|content|mech|system|client)\.[a-z0-9][a-z0-9.-]*[a-z0-9]\b")
+ID_RE = re.compile(r"\b(?:policy|content|mech|system|client|novel)\.[a-z0-9][a-z0-9.-]*[a-z0-9]\b")
 
 
 def run(*args) -> subprocess.CompletedProcess:
@@ -37,7 +38,8 @@ class Schema(unittest.TestCase):
 
     def test_ids_unique_and_prefixed(self):
         prefixes = {"policy": "policy.", "content": "content.", "mechanics": "mech.",
-                    "systems": "system.", "presentation": "client."}
+                    "systems": "system.", "presentation": "client.",
+                    "novel": "novel."}
         seen = set()
         for entry in self.data["entries"]:
             self.assertNotIn(entry["id"], seen, f"duplicate id {entry['id']}")
@@ -112,13 +114,26 @@ class DocsAgreeWithCatalog(unittest.TestCase):
     def test_doc_references_only_existing_entries(self):
         data = json.loads(CATALOG.read_text(encoding="utf-8"))
         known = {entry["id"] for entry in data["entries"]}
-        referenced = set(ID_RE.findall(DOC.read_text(encoding="utf-8")))
-        unknown = sorted(r for r in referenced if r not in known)
-        self.assertEqual(unknown, [], f"docs/09 references unknown catalog ids: {unknown}")
+        unknown = []
+        for doc in DOCS:
+            for ref in set(ID_RE.findall(doc.read_text(encoding="utf-8"))):
+                if ref not in known:
+                    unknown.append(f"{doc.name}: {ref}")
+        self.assertEqual(sorted(unknown), [], f"chapters reference unknown catalog ids: {unknown}")
 
-    def test_doc_uses_the_catalog_meaningfully(self):
-        referenced = set(ID_RE.findall(DOC.read_text(encoding="utf-8")))
-        self.assertGreater(len(referenced), 30, "the chapter should exercise the catalog, not duplicate it")
+    def test_docs_use_the_catalog_meaningfully(self):
+        referenced = set()
+        for doc in DOCS:
+            referenced |= set(ID_RE.findall(doc.read_text(encoding="utf-8")))
+        self.assertGreater(len(referenced), 30, "the chapters should exercise the catalog, not duplicate it")
+
+    def test_novel_chapter_covers_every_novel_entry(self):
+        data = json.loads(CATALOG.read_text(encoding="utf-8"))
+        novel = {e["id"] for e in data["entries"] if e["layer"] == "novel"}
+        documented = set(ID_RE.findall(DOCS[1].read_text(encoding="utf-8")))
+        missing = sorted(novel - documented)
+        # the chapter may group several levers under one paragraph, but most must be named
+        self.assertLessEqual(len(missing), 3, f"undocumented novel levers: {missing}")
 
     def test_readme_and_layout_point_at_the_catalog(self):
         readme = (REPO / "README.md").read_text(encoding="utf-8")

@@ -102,7 +102,9 @@ tables="Item.dbc Spell.dbc ItemDisplayInfo.dbc SpellVisual.dbc SpellVisualKit.db
         SpellIcon.dbc ItemExtendedCost.dbc ItemSet.dbc"
 
 for t in $tables; do
-  # structural sanity + duplicate IDs
+  # structural sanity, duplicate IDs, and known field counts
+  # (Item.dbc must be 8 fields, ItemDisplayInfo.dbc 25, Spell.dbc 234 — a mismatch means the
+  #  table came from the wrong client version or a tool with a different layout)
   python3 tools/dbc_tool.py info "dbc-client/$t"
   # client and server must agree
   python3 tools/dbc_tool.py verify-pair "dbc-client/$t" "dbc-server/$t"
