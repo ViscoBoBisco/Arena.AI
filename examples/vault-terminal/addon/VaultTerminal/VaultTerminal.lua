@@ -99,7 +99,7 @@ end
 
 local function dispatch(prefix, message)
     if prefix ~= PREFIX or type(message) ~= "string" then return end
-    local opcode, rest = message:match("^VT1\t([^\t]+)\t?(.*)$")
+    local opcode, rest = message:match("^" .. PREFIX .. "\t([^\t]+)\t?(.*)$")
     if not opcode then return end
 
     if opcode == "S" then

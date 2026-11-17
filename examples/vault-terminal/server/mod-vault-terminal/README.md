@@ -24,6 +24,9 @@ module docs), rebuild, and the loader registers `Addmod_vault_terminalScripts()`
 | `ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, LANG_ADDON, player, player, text)` | `Chat.cpp::AddonChannelCommandHandler::Send()` |
 | `AddonChannel = 1` gates the channel | `worldserver.conf.dist`, `Handlers/ChatHandler.cpp` |
 | The core's own prefix/opcodes (`AzerothCore\t`, `p/h/i`, replies `a/o/f/m`) | `Chat.cpp::AddonChannelCommandHandler::ParseCommands()` |
+| The loader symbol must be `Addmod_vault_terminalScripts()` | `modules/CMakeLists.txt` → `ConfigureScriptLoader`: `string(REGEX REPLACE - "_" …)` then `Add${name}Scripts()` |
+| Sources are globbed from `src/`, so no per-module `CMakeLists.txt` is needed | `modules/CMakeLists.txt` → `CollectSourceFiles(${MODULE_SOURCE_PATH} …)` |
+| `-DMODULES=static|dynamic` selects linkage | `modules/CMakeLists.txt`, `GetModuleSourceList` + `MODULES MATCHES` |
 
 If your fork renames the hook, the protocol still works — only the interception point moves. Keep the
 `msg.clear()`: it is what stops the message being relayed to other players after you have claimed it.

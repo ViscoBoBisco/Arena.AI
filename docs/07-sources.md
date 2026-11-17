@@ -95,6 +95,10 @@ Read from the sources at `github.com/azerothcore/azerothcore-wotlk`, not from me
   dropped before any hook runs, the client must whisper *itself*, and the message is then offered to
   `AddonChannelCommandHandler(this).ParseCommands(msg)`. Warden additionally watches
   `CHAT_MSG_GUILD` + `LANG_ADDON`.
+- `modules/CMakeLists.txt` — the module loader contract: every directory under `modules/` with a `src/`
+  is globbed for sources (no per-module `CMakeLists.txt`), and the generated `ModulesLoader.cpp` calls
+  `Add<directory>Scripts()` with `-` replaced by `_`, so `mod-vault-terminal` must define
+  `Addmod_vault_terminalScripts()`. Getting this name wrong is a module that compiles and never loads.
 - `src/server/game/Chat/Chat.h` / `Chat.cpp` — `AddonChannelCommandHandler`: prefix `AzerothCore\t`
   (12 bytes), opcode byte (`p`/`h`/`i`), 4-digit counter, command from offset 17; replies are built by
   `ChatHandler::BuildChatPacket(..., CHAT_MSG_WHISPER, LANG_ADDON, player, player, msg)` and sent with

@@ -58,6 +58,22 @@ Server → client:
 Error codes: `BUSY`, `COOLDOWN`, `VERSION`, `DENIED`, `INTERNAL`. Clients must not invent codes; they
 display `text` and log `code`.
 
+`rank` is derived from `seals` by the server, and the ladder is part of the protocol so both sides can
+check it:
+
+| Seals | Rank |
+|---|---|
+| 0–9 | `Initiate` |
+| 10–24 | `Adept` |
+| 25–49 | `Keeper` |
+| 50+ | `Vaultmaster` |
+
+`BYE` is the answer of a server that is *configured off* (`VaultTerminal.Enable = 0`), not of one that
+is unreachable: it means "the feature is disabled, stop asking". The client shows the text and stops
+polling for the session. A message the server cannot parse (`HELLO` without a version, an empty
+opcode) is *not* answered with `INTERNAL` — `VERSION` for a missing version, silence for anything
+else that fails the grammar.
+
 ## Rules
 
 1. **The server is the only source of truth.** The client never computes `claimsLeft` or `rank`; it
@@ -95,6 +111,27 @@ VT1\tERR\tCOOLDOWN\talready claimed today   (38 bytes)
 The worst case is a full `S` line: `VT1\tS\t` + 3 × 10 digits + rank (≤16) + flag, comfortably under
 the 255-byte cap. Batching is unnecessary at this size; if your records grow, send several `S` messages
 with a sequence number rather than one long line.
+
+## Reference implementation
+
+`harness/vt_model.py` is the specification in executable form — one class, no dependencies:
+
+```python
+from vt_model import Session
+from datetime import date
+
+s = Session(today=date(2026, 11, 17), seals=12)
+s.handle("VT1\tHELLO\t1\tdemo-1.0.0")   # ['VT1\tS\t12\t50\t1\tAdept\t1']
+s.handle("VT1\tCLAIM")                    # ['VT1\tOK\tseal claimed', 'VT1\tS\t13\t50\t0\tAdept\t0']
+s.handle("VT1\tCLAIM")                    # ['VT1\tERR\tCOOLDOWN\talready claimed today']
+s.advance_to(date(2026, 11, 18))
+s.handle("VT1\tCLAIM")                    # allowed again
+```
+
+It is not shipped to servers; the C++ module is. Its job is to make disagreement *testable*: the test
+suite replays this file's answers against the vectors above, fuzzes it with malformed input, moves its
+clock across midnight, and compares its constants (prefix, version, cap, rank ladder) with the addon's
+Lua, the module's C++ and this document. When the four disagree, the tests say which one is lying.
 
 ## What this costs
 

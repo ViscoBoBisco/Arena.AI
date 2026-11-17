@@ -18,6 +18,7 @@ addon is a folder.
 
 ```
 PROTOCOL.md                          the wire format: framing, opcodes, limits, rules, vectors
+harness/vt_model.py                  the same protocol as executable Python: replay, fuzz, clock
 addon/VaultTerminal/VaultTerminal.toc
 addon/VaultTerminal/VaultTerminal.lua   the panel: request, render, degrade
 server/mod-vault-terminal/            reference module: hook, parse, reply, storage
@@ -72,6 +73,7 @@ politeness: a panel showing stale or invented numbers is worse than a panel that
 | Version refusal works | set `PROTOCOL_VERSION` to `9` in the Lua → server answers `ERR VERSION`, panel says so |
 | Nobody can spoof it | `SendAddonMessage` with a hand-written `VT1\tCLAIM` from a macro → still one claim per day |
 | No client files changed | `git status` in your patch repo is empty; `Interface/AddOns` is not in the MPQ |
+| The protocol is well-formed offline | `python3 harness/vt_model.py` prints the conversation in `PROTOCOL.md`; `make test-master` fuzzes it |
 
 ## Why this needs no patch — and what would
 

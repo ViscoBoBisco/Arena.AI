@@ -282,8 +282,11 @@ addon.**
 - Server: C++ module (AzerothCore `mod-*` with `ScriptMgr` hooks) or Lua (`mod-eluna` /
   `mod-ale`; note ALE is **not** source-compatible with Eluna —
   [kadeshar/mod-eluna](https://github.com/kadeshar/mod-eluna)).
-- Transport: addon messages (`RegisterAddonMessagePrefix` + `SendAddonMessage`, ~255 bytes per
-  message; chunk longer payloads), or a custom opcode if you are willing to patch the client.
+- Transport: addon messages — `SendAddonMessage("PREFIX", payload, "WHISPER", UnitName("player"))`,
+  a self-whisper, ~255 bytes per message; chunk longer payloads. 3.3.5a has **no** prefix
+  registration API (`RegisterAddonMessagePrefix` arrived in 5.x), so the server must claim your
+  prefix in its own hook. Or a custom opcode, if you are willing to patch the client. Worked
+  example: [`examples/vault-terminal`](../examples/vault-terminal/README.md).
 - Client: a plain addon that renders panels, currency counters, collection browsers, etc.
 
 Nothing here needs an MPQ patch, and addons can be shipped independently of the client patch.

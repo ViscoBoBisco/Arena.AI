@@ -33,6 +33,28 @@ namespace
     constexpr uint32 VT_TARGET_SEALS = 50;      // the panel's progress bar ceiling
     constexpr uint32 VT_CLAIMS_PER_DAY = 1;
 
+    struct RankStep { uint32 seals; char const* name; };
+    // Descending: the first threshold the seal count reaches wins. Mirrors RANKS in
+    // harness/vt_model.py, which the tests compare against this table.
+    constexpr RankStep VT_RANKS[] = {
+        { 50, "Vaultmaster" },
+        { 25, "Keeper"      },
+        { 10, "Adept"       },
+        {  0, "Initiate"    },
+    };
+
+    char const* RankFor(uint32 seals)
+    {
+        for (RankStep const& step : VT_RANKS)
+        {
+            if (seals >= step.seals)
+            {
+                return step.name;
+            }
+        }
+        return VT_RANKS[3].name;
+    }
+
     bool enabled = true;
 
     // ---------------------------------------------------------------- utilities
@@ -79,7 +101,6 @@ namespace
     {
         uint32 seals = 0;
         uint32 claimsToday = 0;
-        std::string rank = "Novice";
     };
 
     VaultState LoadState(Player* player)
@@ -101,10 +122,6 @@ namespace
             state.claimsToday = today->Fetch()[0].Get<uint32>();
         }
 
-        if (state.seals >= VT_TARGET_SEALS)      state.rank = "Keeper";
-        else if (state.seals >= 25)              state.rank = "Adept";
-        else if (state.seals >= 10)              state.rank = "Initiate";
-
         return state;
     }
 
@@ -116,7 +133,7 @@ namespace
 
         Send(player, std::string(VT_PREFIX) + "S\t" + std::to_string(state.seals) + "\t"
                       + std::to_string(VT_TARGET_SEALS) + "\t" + std::to_string(claimsLeft) + "\t"
-                      + state.rank + "\t" + flag);
+                      + RankFor(state.seals) + "\t" + flag);
     }
 
     void HandleClaim(Player* player)
@@ -147,12 +164,20 @@ public:
 
     void OnPlayerBeforeSendChatMessage(Player* player, uint32& /*type*/, uint32& lang, std::string& msg) override
     {
-        if (!enabled || lang != LANG_ADDON)
+        if (lang != LANG_ADDON)
         {
             return;
         }
         if (msg.rfind(VT_PREFIX, 0) != 0)        // not ours: leave the core's channel alone
         {
+            return;
+        }
+
+        if (!enabled)
+        {
+            // Rule 6: a switched-off feature must not look like a broken one.
+            Send(player, std::string(VT_PREFIX) + "BYE\tserver is under maintenance");
+            msg.clear();
             return;
         }
 
@@ -166,6 +191,7 @@ public:
 
         if (opcode == "HELLO")
         {
+            // a missing version parses as 0, which is not VT_PROTOCOL_VERSION: refused below.
             uint32 version = parts.size() > 1 ? static_cast<uint32>(std::strtoul(parts[1].c_str(), nullptr, 10)) : 0;
             if (version != VT_PROTOCOL_VERSION)
             {
@@ -188,10 +214,8 @@ public:
         {
             Send(player, std::string(VT_PREFIX) + "OK\t");
         }
-        else
-        {
-            SendError(player, "INTERNAL", "unknown opcode");
-        }
+        // rule 2: an unknown opcode is consumed and ignored — never refused, never answered.
+        // That is what lets the addon survive a server one version ahead of it.
 
         msg.clear();                             // claimed: stop the core relaying it further
     }
