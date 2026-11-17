@@ -52,14 +52,35 @@ The generated artifacts are **not all production implementations** yet. SQL gene
 | Level | What earns it | Frost Armory status on this branch |
 |---|---|---|
 | `ARENA-STATIC` | schema, structural and repository checks | Spec structure checks run; stock asset verification remains `NOT_ASSESSED` |
-| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | 76 Foundry-focused tests, 7 frontier-design guard tests, 6 catalytic-crafting design guard tests and all 238 repository tests pass in this branch; generated bundle does not attest test execution |
+| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | All 240 repository tests pass at the current working tree; generated bundle does not attest test execution |
 | `ARENA-DB` | apply and rollback on a disposable compatible DB | Pending; no MySQL/AzerothCore DB in this environment |
-| `ARENA-COMPILE` | module compile/API check against pinned compatible AzerothCore | Pending; generated module is a skeleton and is not compiled |
+| `ARENA-COMPILE` | module compile/API check against pinned compatible AzerothCore | Pending; pinned source/API contract is recorded, but compilation is blocked by missing native Boost dependencies and has not passed |
 | `ARENA-PACK` | reproducible package and independent integrity verification | `foundry verify packages/frost-armory` passes in this workspace; package evidence marks verification as an external required step, not a self-claim |
 | `CAMPAIGN-ADMISSION` | actual Campaign Party baseline accepts without conflicts | Pending; target repo/baseline unavailable |
 | `CAMPAIGN-LIVE` | real 3.3.5a client and Playerbots execute feature | Pending; no downstream runtime |
 
 `ARENA-PACK` does not imply DB migration safety, module compilation, valid stock asset IDs, or live functionality. The nine asset references in `specs/frost-armory.json` are explicitly unverified. A package with `allow_unverified: true` is a preview/handoff draft and is not release-qualified.
+
+## Pinned AzerothCore source contract and compile gate
+
+`foundry/core-pins.json` records the AzerothCore WotLK source revision `6ffb62abb867dabb258de6813ff5d06d6b011543` (observed at upstream `master` when pinned). Source inspection at that exact checkout confirmed that CMake collects translation units beneath `modules/<module>/src`, generates a static module loader that invokes `Add<module-name-with-hyphens-replaced-by-underscores>Scripts()`, and that `PlayerScript::OnPlayerLogin(Player*)` exists. The generator now emits a shared header declaring its registration function and includes it from the feature and module-loader translation units. These are inspected source facts, not a compile or runtime result.
+
+A repeatable targeted compiler gate is available after configuring that exact core checkout with the generated module present. The configure step must complete successfully with AzerothCore's native build dependencies installed; it emits `compile_commands.json`. Then run:
+
+```sh
+python3 tools/foundry.py build specs/frost-armory.json --out /tmp/frost-armory --allow-unverified
+cp -a /tmp/frost-armory/server/mod-frost-armory /path/to/azerothcore/modules/
+cmake -S /path/to/azerothcore -B /path/to/azerothcore-build \
+  -DWITHOUT_GIT=1 -DNOJEM=1 -DUSE_COREPCH=0 -DUSE_SCRIPTPCH=0 \
+  -DTOOLS_BUILD=none -DWITH_WARNINGS=0
+python3 tools/compile_generated_module.py \
+  --build-dir /path/to/azerothcore-build \
+  --core-source /path/to/azerothcore \
+  --module mod-frost-armory \
+  --registration AddFrostArmoryScripts
+```
+
+The helper refuses a different core revision, compiles the generated feature TU, module-local loader and CMake-generated static loader using that build's exact compiler commands, then checks the registration symbols connect with `nm`. It is a targeted object/linkage smoke gate—not a complete AzerothCore build, module link, DB check or gameplay qualification. The GitHub Actions workflow `.github/workflows/azerothcore-compile.yml` provisions the needed system libraries, checks out the recorded revision, configures the generated module and runs this gate. In this environment, CMake 3.31.6 was installed into a temporary Python target and configuration was attempted against the pinned checkout; configuration stopped at missing Boost 1.74 development headers/libraries. Therefore the gate has **not** passed and `ARENA-COMPILE` remains pending until that workflow or an equivalent local run succeeds.
 
 ## Traceable task ledger
 

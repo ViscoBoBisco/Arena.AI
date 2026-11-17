@@ -1,0 +1,47 @@
+name: pinned AzerothCore module compile
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-generated-module:
+    name: Compile generated module against pinned AzerothCore
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install AzerothCore configure dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake git libboost-all-dev libmariadb-dev \
+            libmariadb-dev-compat libssl-dev libreadline-dev zlib1g-dev \
+            libbz2-dev libncurses5-dev
+
+      - name: Checkout exact source pin
+        run: |
+          revision="$(python3 -c 'import json; print(json.load(open("foundry/core-pins.json"))["azerothcore_wotlk"]["revision"])')"
+          git clone https://github.com/azerothcore/azerothcore-wotlk.git /tmp/azerothcore
+          git -C /tmp/azerothcore checkout --detach "$revision"
+          test "$(git -C /tmp/azerothcore rev-parse HEAD)" = "$revision"
+
+      - name: Generate preview module and configure the pinned core
+        run: |
+          python3 tools/foundry.py build specs/frost-armory.json --out /tmp/frost-armory --allow-unverified
+          cp -a /tmp/frost-armory/server/mod-frost-armory /tmp/azerothcore/modules/
+          cmake -S /tmp/azerothcore -B /tmp/azerothcore-build \
+            -DWITHOUT_GIT=1 -DNOJEM=1 -DUSE_COREPCH=0 -DUSE_SCRIPTPCH=0 \
+            -DTOOLS_BUILD=none -DWITH_WARNINGS=0 -DMODULES=static
+
+      - name: Compile generated translation units and verify loader linkage
+        run: |
+          python3 tools/compile_generated_module.py \
+            --build-dir /tmp/azerothcore-build \
+            --core-source /tmp/azerothcore \
+            --module mod-frost-armory \
+            --registration AddFrostArmoryScripts

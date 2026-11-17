@@ -50,6 +50,71 @@
     }
   ],
   "allow_unverified": true,
+  "delivery_requirements": {
+    "artifacts": [
+      {
+        "activation": "apply_after_schema_qualification",
+        "kind": "world_sql",
+        "trust": "generated_unqualified",
+        "version": "1.0.0"
+      },
+      {
+        "activation": "apply_after_backup_and_review",
+        "kind": "data_migration",
+        "trust": "generated_unqualified",
+        "version": "1.0.0"
+      },
+      {
+        "activation": "compile_before_install",
+        "kind": "server_module",
+        "trust": "generated_unqualified",
+        "version": "1.0.0"
+      },
+      {
+        "activation": "copy_after_protocol_review",
+        "kind": "addon_files",
+        "trust": "generated_unqualified",
+        "version": "1.0.0"
+      },
+      {
+        "activation": "install_after_module_review",
+        "kind": "config",
+        "trust": "generated_unqualified",
+        "version": "1.0.0"
+      }
+    ],
+    "capabilities": [
+      {
+        "activation": "admission_gate",
+        "name": "addon_channel",
+        "required": true,
+        "trust": "host_claim_and_snapshot_required",
+        "version": "adapter:1.1.0"
+      },
+      {
+        "activation": "admission_gate",
+        "name": "config_activation",
+        "required": true,
+        "trust": "host_claim_and_snapshot_required",
+        "version": "adapter:1.1.0"
+      },
+      {
+        "activation": "admission_gate",
+        "name": "server_module",
+        "required": true,
+        "trust": "host_claim_and_snapshot_required",
+        "version": "adapter:1.1.0"
+      },
+      {
+        "activation": "admission_gate",
+        "name": "world_db",
+        "required": true,
+        "trust": "host_claim_and_snapshot_required",
+        "version": "adapter:1.1.0"
+      }
+    ],
+    "schema": "arena-delivery-requirements/1"
+  },
   "evidence_levels": {
     "ARENA-COMPILE": "pending (module not compiled against a pinned core)",
     "ARENA-DB": "pending (requires disposable compatible database)",
@@ -81,8 +146,13 @@
         "verdict": "PASS"
       },
       {
+        "check": "delivery",
+        "message": "5 required artifact(s), 4 host capability gate(s)",
+        "verdict": "PASS"
+      },
+      {
         "check": "patch-cost",
-        "message": "patch cost: client-files (addon folder; no MPQ)",
+        "message": "display summary only: client-files (addon folder; no MPQ)",
         "verdict": "PASS"
       },
       {
@@ -120,6 +190,7 @@
     "verdicts": {
       "acceptance": "PASS",
       "asset-verification": "SKIPPED",
+      "delivery": "PASS",
       "dependencies": "PASS",
       "ids": "PASS",
       "patch-cost": "PASS",
