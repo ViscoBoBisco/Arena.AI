@@ -40,8 +40,20 @@ jobs:
 
       - name: Compile generated translation units and verify loader linkage
         run: |
+          set +e
           python3 tools/compile_generated_module.py \
             --build-dir /tmp/azerothcore-build \
             --core-source /tmp/azerothcore \
             --module mod-frost-armory \
-            --registration AddFrostArmoryScripts
+            --registration AddFrostArmoryScripts > /tmp/compile-gate.log 2>&1
+          result=$?
+          cat /tmp/compile-gate.log
+          if [ "$result" -ne 0 ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+          details = Path("/tmp/compile-gate.log").read_text(errors="replace")[-5000:]
+          message = details.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print(f"::error title=pinned-core compile diagnostic::{message}")
+          PY
+          fi
+          exit "$result"
