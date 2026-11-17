@@ -1,0 +1,120 @@
+{
+  "schema": "arena-feature-design/1",
+  "name": "catalytic-crafting",
+  "maturity": "DESIGN_ONLY_NOT_A_FOUNDRY_SPEC",
+  "target": "WotLK 3.3.5a build 12340 / AzerothCore WotLK; Campaign Party bindings unknown",
+  "fantasy": "A recipe is a small engineering choice: spend additional common materials for a larger batch, or insert a verified rare catalyst to choose a deterministic special output. Crafting remains server-authoritative and compatible with existing professions and Material Exchange.",
+  "non_negotiable_constraints": [
+    "AzerothCore owns recipe admission, material consumption, output creation and ownership.",
+    "No addon-side output decisions; addons submit a recipe/catalyst intent only.",
+    "Do not replace profession learning, the existing Material Exchange, bags, inventory or AHBot.",
+    "Use existing client item displays, icons and spell visuals; no new art or model imports.",
+    "Every catalyst, output item, proc and enchant ID must be confirmed from local build-12340 data before use.",
+    "No surprise random destruction of rare catalysts; show exact cost and deterministic result before confirming."
+  ],
+  "upstream_source_snapshot": {
+    "repository": "https://github.com/azerothcore/azerothcore-wotlk",
+    "revision": "6ffb62abb867dabb258de6813ff5d06d6b011543",
+    "date": "2026-11-17",
+    "qualification": "Source-path capability inspection only; not a Campaign Party pin, module compile, database test or runtime qualification."
+  },
+  "core_mechanics": [
+    {
+      "mechanic": "base recipe reagents",
+      "source": "Spell::CheckCast and Spell::TakeReagents in Spell.cpp",
+      "finding": "Core validates fixed SpellInfo reagent IDs/counts and consumes them when the cast launches.",
+      "design_effect": "A dynamic optional catalyst is not a stock reagent toggle. It needs a server-side contract, a fixed recipe variant, or DBC-visible recipe variants."
+    },
+    {
+      "mechanic": "crafted output amount and existing specialization logic",
+      "source": "Spell::DoCreateItem in SpellEffects.cpp",
+      "finding": "The core builds output from the effect quantity, clamps to stack size, then runs existing gem-perfection and profession-specialization extra-item logic before storing the item.",
+      "design_effect": "Deterministic batch-size boosts can build on the create-item path but must not double-apply or bypass existing specialization behavior."
+    },
+    {
+      "mechanic": "custom recipe spell hooks",
+      "source": "SpellScript.h / SpellScript.cpp",
+      "finding": "SpellScript exposes OnCheckCast, OnCast, OnEffectHitTarget, PreventHitDefaultEffect, SetEffectValue and CreateItem helpers.",
+      "design_effect": "A module can validate a catalyst intent and select output behavior around an existing craft spell; exact hook timing and rollback must be verified in a compiled test module."
+    },
+    {
+      "mechanic": "reagent consumption order",
+      "source": "Spell::cast in Spell.cpp",
+      "finding": "OnCast handlers run before core TakeReagents, and normal reagents are consumed before effect handling to free inventory space for crafted output.",
+      "design_effect": "Do not consume a rare catalyst blindly in OnCast. Inventory-full, interrupted, overridden or non-create outcomes need a reservation/commit/refund policy tested against actual core behavior."
+    },
+    {
+      "mechanic": "create-item callback",
+      "source": "Spell::DoCreateItem in SpellEffects.cpp; PlayerScript::OnPlayerCreateItem",
+      "finding": "The player create-item callback occurs after output storage succeeds, but its signature does not itself identify the recipe spell.",
+      "design_effect": "A pending server-side craft context needs player + spell + cast/correlation identity and cleanup on all failure/timeout paths; do not infer recipe identity from the output item alone."
+    }
+  ],
+  "augmentation_contract": {
+    "request": {
+      "fields": ["recipe_spell_id", "augmentation_key", "request_id"],
+      "authority": "Intent only. Server resolves the learned recipe, current profession skill, permitted character, catalyst definition and current inventory.",
+      "idempotency": "One request_id may commit at most one output transaction; replays return the recorded result and never consume materials twice."
+    },
+    "catalog_entry": {
+      "fields": ["augmentation_key", "recipe_spell_id", "required_skill", "extra_materials", "output_rule", "max_batch", "compatible_slots", "evidence_refs"],
+      "extra_materials": "Explicit item IDs and counts; may be one or more base materials or rare catalysts.",
+      "output_rule": "Exactly one of deterministic quantity increase, verified output variant, or verified existing enchant/proc application.",
+      "fail_closed": "Unknown recipe/material/output refs, missing evidence, collision, or unsupported item slot means reject without spending the optional catalyst."
+    },
+    "transaction_states": ["ADMITTED", "RESERVED", "COMMITTED", "REFUNDED", "REJECTED"],
+    "required_receipt": ["request_id", "character_id", "recipe_spell_id", "augmentation_key", "materials_spent", "output_item_ids", "output_count", "status"],
+    "compatibility_boundary": "Campaign Party still chooses the active crafter and checks permissions; AzerothCore validates the spell/skill/materials and owns the resulting item. Material Exchange can provide deterministic material identities through an adapter, but its conversion rules remain downstream-owned."
+  },
+  "design_patterns": [
+    {
+      "key": "batch-yield",
+      "player_choice": "Use more common base materials for a deterministic larger batch.",
+      "example": "A standard coat costs 8 bolts; a reinforced batch costs 16 bolts and yields 2 coats, subject to stack and inventory caps.",
+      "output": "Same verified item identity and appearance; increase the create-item quantity only after cost and capacity checks.",
+      "risk": "Must compose with built-in profession specialization extra-item behavior without multiplying twice."
+    },
+    {
+      "key": "moonstone-imprint",
+      "player_choice": "Insert a Moonstone catalyst to make a specific magical variant.",
+      "example": "The same armor recipe plus 1 verified Moonstone yields a Moonlit variant with a verified stock frost/arcane proc or compatible enchant.",
+      "output": "Prefer explicit variant item templates sharing a verified existing display; an instance enchant is possible only if its stock enchant is valid for that item slot and client.",
+      "risk": "New variant item identities may need matching Item.dbc records; a new proc may need spell data and client parity."
+    },
+    {
+      "key": "regional-temper",
+      "player_choice": "Use a region-specific reagent to give crafted goods a named, deterministic regional signature.",
+      "example": "A crafting order using an approved Northrend reagent creates a different stock-spell effect or upgrade branch, while the base recipe remains craftable without it.",
+      "output": "Campaign state and the server receipt record the branch; addon shows provenance only.",
+      "risk": "Do not invent drops or rare IDs. Gather/quest supply must be balanced against the existing exchange and auction economy."
+    },
+    {
+      "key": "vocation-mastery",
+      "player_choice": "Unlock new augment recipes through Cartographer or Relicwright progression without displacing a primary profession.",
+      "example": "Discover a site, learn a catalyst formula, then ask a qualified existing crafter to produce the item.",
+      "output": "Sidecar vocation gates discovery; AzerothCore still checks the actual crafting skill and item ownership.",
+      "risk": "Requires durable server state and an explicit downstream adapter; does not become a true profession or replace Material Exchange."
+    }
+  ],
+  "recommended_first_slice": {
+    "name": "Moonlit Batch: deterministic quantity plus one catalyst variant",
+    "scope": ["one existing craft recipe", "one base-material batch rule", "one rare catalyst option", "one output variant reusing a verified item display", "one receipt and rollback/refund path"],
+    "exclude": ["RNG destruction", "all recipes at once", "new models/textures", "profession-slot changes", "Campaign Party inventory replacement", "AHBot changes"],
+    "acceptance": [
+      "Base recipe still works with its original reagent costs and output.",
+      "Batch augmentation consumes exactly the displayed extra base materials and yields a bounded deterministic quantity.",
+      "Catalyst augmentation consumes exactly one verified catalyst and produces only the selected server-authorized variant.",
+      "Missing catalyst, unknown output, invalid skill, permission denial, replayed request, inventory full, interruption and server restart never duplicate output or silently destroy the optional catalyst.",
+      "Existing specialization bonuses compose once, with a stated cap; normal and augmented craft paths are tested separately.",
+      "Clean-client tooltip, item appearance, proc/enchant, addon 3.3.5a UI and rollback all pass before release qualification."
+    ],
+    "status": "DESIGN_ONLY; no generator, module, SQL or gameplay implementation claimed"
+  },
+  "adjacent_ideas": [
+    "Catalyst sockets as recipe choices, not permanently consumed item enhancements.",
+    "Cooperative party commissions where different selected characters contribute materials through an explicit Campaign Party escrow interface.",
+    "Recipe discovery as field research: clues unlock formulas, but the server remains the source of truth.",
+    "Supply-aware material rewards that feed existing Material Exchange identities and can be simulated against AHBot without taking over either authority.",
+    "One recipe, several deterministic schools: moonstone, ember, storm or void imprints, each mapped only to locally verified stock effects."
+  ]
+}

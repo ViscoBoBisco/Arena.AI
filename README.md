@@ -120,6 +120,7 @@ Makefile                      `make check`, `make preflight CLIENT=… SERVER=�
 | [12 — Content Foundry](docs/12-content-foundry.md) | Declarative spec v1, validation, local asset ingest, generators, release bundle, evidence ladder, current limits and task ledger |
 | [13 — Campaign Party adapter](docs/13-campaign-party-adapter.md) | Versioned offline admission seam, fake host, safety semantics and real-baseline requirements |
 | [14 — World Atlas frontier](docs/14-world-atlas-frontier.md) | Source-backed feasibility for old-world flight, iconic legendary equipment, level scaling, new professions/vocations, and a world-spanning five-character campaign |
+| [15 — Catalytic crafting](docs/15-catalytic-crafting.md) | Design-only recipe augmentation: deterministic batch boosts, rare-material imprints, transaction safety, core hooks and qualification limits |
 
 ## Glossary
 
