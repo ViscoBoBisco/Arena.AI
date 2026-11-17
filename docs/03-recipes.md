@@ -352,9 +352,9 @@ Server side: a C++ module hooking `ScriptMgr` (AzerothCore modules) or Lua with 
 
 Transport options, cheapest first:
 
-1. **Addon messages** — `RegisterAddonMessagePrefix("MYSRV")` on the client,
-   `SendAddonMessage("MYSRV", payload, "WHISPER"/"GUILD"/"PARTY"/"RAID")`, server sends via the
-   matching chat packet. ~255 bytes per message; chunk with a sequence byte and reassemble.
+1. **Addon messages** — a self-whisper carrying a tab-separated payload, ≤255 bytes, the server
+   replying with the same packet shape. No prefix registration exists in 3.3.5a
+   (`RegisterAddonMessagePrefix` is 5.x), so the server claims your prefix itself.
 2. **Existing packets repurposed** — e.g. send a gossip menu with computed options, or use
    `SMSG_UI_*` events the addon already listens for.
 3. **Custom opcode** — requires a client patch/DLL. Only worth it when the payload is large or
@@ -363,6 +363,11 @@ Transport options, cheapest first:
 Then keep the authority server-side: the addon may *display* "you have 4 tokens", but the
 purchase must be validated server-side on the button click (`SendAddonMessage` → module →
 re-check → act → reply).
+
+**The whole implementation is worked out in [`examples/vault-terminal`](../examples/vault-terminal/README.md)** —
+framing and rules in `PROTOCOL.md`, the 3.3.5a addon, a reference module on
+`PlayerScript::OnPlayerBeforeSendChatMessage`, the SQL, and a Python model of the protocol that the
+tests use to check all three against each other. Read that instead of re-deriving it here.
 
 ---
 

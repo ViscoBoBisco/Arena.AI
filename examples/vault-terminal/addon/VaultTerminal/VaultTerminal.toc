@@ -1,0 +1,9 @@
+## Interface: 30300
+## Title: Vault Terminal
+## Notes: Live server state in a custom panel, with no client patch.
+## Author: Arena.AI examples
+## Version: 1.0.0
+## SavedVariables: VaultTerminalDB
+## X-Protocol-Version: 1
+
+VaultTerminal.lua

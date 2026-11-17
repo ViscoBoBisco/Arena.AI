@@ -19,6 +19,7 @@ PREFLIGHT = TOOLS / "preflight.sh"
 MANIFEST = TOOLS / "manifest.py"
 CATALOG_TOOL = TOOLS / "catalog.py"
 CATALOG = REPO / "catalog" / "alterations.json"
+VAULT_TERMINAL = REPO / "examples" / "vault-terminal"
 
 
 def dbc_bytes(field_count: int, rows, strings: bytes = b"\0", *,
@@ -80,3 +81,20 @@ def import_tool(name: str):
     sys.modules[name] = module
     spec.loader.exec_module(module)  # type: ignore[union-attr]
     return module
+
+
+def import_module_from(path, name: str):
+    """Import any .py file in-process (examples' reference implementations, not just tools)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module          # dataclasses look the module up while decorating
+    spec.loader.exec_module(module)     # type: ignore[union-attr]
+    return module
+
+
+def vt_model():
+    """The VaultTerminal protocol model — the executable form of examples/vault-terminal/PROTOCOL.md."""
+    if "vt_model" in sys.modules:
+        return sys.modules["vt_model"]
+    return import_module_from(VAULT_TERMINAL / "harness" / "vt_model.py", "vt_model")

@@ -1387,17 +1387,18 @@
       "patch": "none",
       "clock": 1,
       "surfaces": [
-        "code:AddonHandler",
+        "code:PlayerScript",
         "addon:SendAddonMessage",
-        "addon:RegisterAddonMessagePrefix",
+        "addon:CHAT_MSG_ADDON",
         "conf:AddonChannel"
       ],
       "effect": "A custom panel shows live server state: timers, scores, progression, anything you serialise into a message.",
       "verify": [
-        "log both sides",
-        "send a message and watch the frame update"
+        "replay the vectors in examples/vault-terminal/PROTOCOL.md",
+        "make test-engineer (spec, Lua, C++ and model agree)",
+        "send a message in game and watch the frame update"
       ],
-      "notes": "This is how you get a real UI without a client patch: ship only an addon folder, keep all truth on the server.",
+      "notes": "This is how you get a real UI without a client patch: ship only an addon folder, keep all truth on the server. Worked example: examples/vault-terminal (protocol, addon, module, SQL).",
       "docs": [
         "08"
       ]
@@ -1968,17 +1969,17 @@
       "patch": "client-files",
       "clock": 2,
       "surfaces": [
-        "code:AddonHandler",
+        "code:PlayerScript",
         "addon:SendAddonMessage",
         "addon:CHAT_MSG_ADDON",
         "conf:AddonChannel"
       ],
       "effect": "The addon asks a question with arguments; the server answers with state. A real protocol in a 255-byte frame.",
       "verify": [
-        "send a request and log both sides",
+        "make test-master (fuzz, midnight, reconnect)",
         "kill the server and confirm the UI degrades gracefully"
       ],
-      "notes": "This is the difference between a static panel and a live one: client-side polling, server-side push, and commands bound to keys or macros. Batch small messages; rate limits and the 255-char cap are the design constraints.",
+      "notes": "This is the difference between a static panel and a live one: client-side polling, server-side push, and commands bound to keys or macros. Batch small messages; rate limits and the 255-char cap are the design constraints. Worked example: examples/vault-terminal (protocol, addon, module, SQL).",
       "docs": [
         "10"
       ]
@@ -1990,15 +1991,15 @@
       "patch": "client-files",
       "clock": 2,
       "surfaces": [
-        "code:AddonHandler",
+        "code:PlayerScript",
         "addon:SendAddonMessage",
-        "addon:RegisterAddonMessagePrefix"
+        "addon:CHAT_MSG_ADDON"
       ],
       "effect": "The client reports what it can see — zone, spec, group composition, addon version — and the server records it.",
       "verify": [
         "watch the server log while a player moves and respecs"
       ],
-      "notes": "Useful for tuning difficulty per real group, detecting players without your addon, and knowing which of your content hooks are actually being used.",
+      "notes": "Useful for tuning difficulty per real group, detecting players without your addon, and knowing which of your content hooks are actually being used. No prefix registration exists in 3.3.5a; the server claims the prefix in its own hook (see examples/vault-terminal).",
       "docs": [
         "10"
       ]

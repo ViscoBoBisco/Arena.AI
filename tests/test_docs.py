@@ -13,7 +13,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 README = REPO / "README.md"
 DOCS = REPO / "docs"
-MD_FILES = [README, *sorted(DOCS.glob("*.md"))]
+MD_FILES = [README, *sorted(DOCS.glob("*.md")),
+            *sorted((REPO / "examples").rglob("*.md"))]
 
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 FENCE_RE = re.compile(r"^```", re.MULTILINE)

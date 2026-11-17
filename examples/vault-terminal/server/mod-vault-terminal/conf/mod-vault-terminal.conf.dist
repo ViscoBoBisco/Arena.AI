@@ -1,0 +1,10 @@
+###############################################################################
+#  mod-vault-terminal
+#  Server half of the VaultTerminal example. The addon channel itself is a core
+#  feature: keep AddonChannel = 1 in worldserver.conf or nothing can be delivered.
+###############################################################################
+
+VaultTerminal.Enable = 1
+
+#  0 = the module answers every VaultTerminal request with BYE ("server is under maintenance")
+#      instead of going quiet, so the panel can tell "disabled" from "broken".

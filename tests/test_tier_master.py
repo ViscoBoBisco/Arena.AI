@@ -15,6 +15,7 @@ Run: python3 -m unittest discover -s tests -v
 from __future__ import annotations
 
 import copy
+import datetime
 import json
 import random
 import struct
@@ -304,6 +305,131 @@ class Guarantees(unittest.TestCase):
                 if kind == "conf" and target not in keys:
                     problems.append(f"{entry['id']}: {surface}")
         self.assertEqual(problems, [], f"surfaces not found in schema inventory: {problems}")
+
+
+class VaultTerminalSurvivesHostileClients(unittest.TestCase):
+    """The addon channel is a socket any client can write to. Every field is hostile input."""
+
+    def setUp(self):
+        import datetime
+        self.m = helpers.vt_model()
+        self.today = datetime.date(2026, 11, 17)
+
+    def session(self, **kw):
+        return self.m.Session(today=self.today, **kw)
+
+    def test_fuzz_never_crashes_and_never_speaks_out_of_turn(self):
+        import random
+        rng = random.Random(20261117)
+        seeds = ["VT1\tHELLO\t1\tx", "VT1\tSTATE", "VT1\tCLAIM", "VT1\tPING",
+                 "VT1\tS\t12\t50\t1\tAdept\t1", "AzerothCore\tp\t1234\thelp"]
+        alphabet = "VT1\\tHELLO STATESCLAIMPING xyz\t\n\r\x00héllo" + "0123456789ABC"
+        session = self.session()
+        produced = 0
+        for _ in range(4000):
+            mode = rng.random()
+            if mode < 0.45:
+                payload = rng.choice(seeds)
+                for _ in range(rng.randrange(0, 4)):
+                    pos = rng.randrange(len(payload) + 1)
+                    payload = payload[:pos] + rng.choice(alphabet) + payload[pos:]
+            elif mode < 0.8:
+                payload = "".join(rng.choice(alphabet) for _ in range(rng.randrange(0, 300)))
+            else:
+                payload = "VT1\t" + "".join(rng.choice(alphabet) for _ in range(rng.randrange(0, 40)))
+            replies = session.handle(payload)
+            self.assertIsInstance(replies, list)
+            for reply in replies:
+                produced += 1
+                self.assertLessEqual(len(reply), self.m.MAX_BYTES, reply)
+                parsed = self.m.parse(reply)
+                self.assertIsNotNone(parsed, f"the model emitted an unparseable frame: {reply!r}")
+                self.assertIn(parsed[0], self.m.SERVER_OPCODES)
+                if parsed[0] == "ERR":
+                    self.assertIn(parsed[1][0], self.m.ERRORS)
+        self.assertGreater(produced, 100, "fuzz corpus never reached a reply — the test would be decorative")
+
+    def test_things_that_are_not_ours_are_silent(self):
+        session = self.session()
+        for payload in ["AzerothCore\tp\t1234\thelp", "AzerothCore\th\t1234\t.reload",
+                        "vt1\tSTATE", "VT1STATE", "VT1", "VT1\t", "VT1\tstate",
+                        "\tSTATE", "VT1\t" + "A" * 300]:
+            self.assertEqual(session.handle(payload), [], payload)
+
+    def test_the_cap_is_the_transports_not_ours(self):
+        self.assertEqual(len("VT1\tOK\t") + 248, 255)          # 7 bytes of framing
+        self.assertEqual(self.session().handle("VT1\tOK\t" + "x" * 248), [])
+        self.assertEqual(self.session().handle("VT1\tOK\t" + "x" * 249), [])   # 256: dropped
+        self.assertEqual(self.session().handle("VT1\t" + "x" * 252), [])
+
+    def test_cooldown_resets_at_midnight_not_at_logout(self):
+        import datetime
+        session = self.session()
+        self.assertTrue(session.handle("VT1\tCLAIM")[0].startswith("VT1\tOK"))
+        session.advance_to(datetime.date(2026, 11, 18))
+        self.assertTrue(session.handle("VT1\tCLAIM")[0].startswith("VT1\tOK"))
+        self.assertEqual(session.total_seals, 2)
+        self.assertEqual(session.handle("VT1\tSTATE")[0].split("\t")[4], "0")   # claimsLeft
+
+    def test_a_client_cannot_claim_twice_by_reconnecting(self):
+        first = self.session(guid=7)
+        second = self.m.Session(today=self.today, store=first.store, guid=7)   # a second connection
+        self.assertTrue(first.handle("VT1\tCLAIM")[0].startswith("VT1\tOK"))
+        for connection in (second, first, second):
+            self.assertEqual(connection.handle("VT1\tCLAIM"),
+                             ["VT1\tERR\tCOOLDOWN\talready claimed today"])
+        self.assertEqual(first.total_seals, 1)
+        other = self.m.Session(today=self.today, store=first.store, guid=8)    # a different character
+        self.assertTrue(other.handle("VT1\tCLAIM")[0].startswith("VT1\tOK"))
+
+    def test_a_forged_state_frame_does_not_change_anything(self):
+        session = self.session()
+        session.handle("VT1\tS\t9999\t50\t1\tVaultmaster\t1")
+        self.assertEqual(session.total_seals, 0)
+        self.assertEqual(session.handle("VT1\tSTATE"), ["VT1\tS\t0\t50\t1\tInitiate\t1"])
+
+    def test_disabled_server_still_speaks(self):
+        session = self.session(disabled=True)
+        for payload in ("VT1\tHELLO\t1\tx", "VT1\tSTATE", "VT1\tCLAIM", "VT1\tPING"):
+            self.assertEqual(session.handle(payload), ["VT1\tBYE\tserver is under maintenance"])
+        self.assertEqual(session.total_seals, 0)
+
+
+class TheComparisonCanFail(unittest.TestCase):
+    """A conformance check nobody has seen fail is a check nobody should trust."""
+
+    def test_a_drifted_peer_is_reported(self):
+        m = helpers.vt_model()
+        good = {
+            "prefix": m.PREFIX, "version": str(m.VERSION), "max_bytes": m.MAX_BYTES,
+            "target_seals": m.TARGET_SEALS, "claims_per_day": m.CLAIMS_PER_DAY,
+            "ranks": {s: n for s, n in m.RANKS},
+        }
+        self.assertEqual(m.constant_mismatches(good), [])
+        for key, bad in (("prefix", "VT2"), ("version", "2"), ("max_bytes", 256),
+                         ("ranks", {50: "Keeper", 25: "Adept", 10: "Initiate", 0: "Novice"})):
+            problems = m.constant_mismatches({**good, key: bad})
+            self.assertTrue(any(key in p for p in problems), f"{key}={bad!r} was not detected")
+
+    def test_the_model_rejects_what_a_sloppy_implementation_would_send(self):
+        m = helpers.vt_model()
+        with self.assertRaises(m.FrameError):
+            m.build("OK", "y" * 250)              # 258 bytes: the transport would truncate it
+        with self.assertRaises(m.FrameError):
+            m.build("err")                        # opcodes are upper-case by grammar
+        with self.assertRaises(m.FrameError):
+            m.build("OK", "two\tfields")          # a separator inside a field
+        with self.assertRaises(AssertionError):
+            m.Session(today=datetime.date(2026, 11, 17))._err("NOTACODE", "x")  # closed set
+
+    def test_throughput_is_not_a_reason_to_batch(self):
+        import datetime
+        session = helpers.vt_model().Session(today=datetime.date(2026, 11, 17))
+        start = time.perf_counter()
+        for _ in range(20000):
+            session.handle("VT1\tSTATE")
+        elapsed = time.perf_counter() - start
+        self.assertLess(elapsed, 2.0, f"20k STATE round trips took {elapsed:.2f}s")
 
 
 if __name__ == "__main__":

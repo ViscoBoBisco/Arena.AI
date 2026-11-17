@@ -104,6 +104,12 @@ chat channel — the same primitive Blizzard used for its own addon comms.
 Two rules keep it honest: put all truth on the server (the addon is a view, never a source), and degrade
 gracefully when answers stop (a panel that shows "—" beats one that shows stale numbers).
 
+> **Worked example:** [`examples/vault-terminal/`](../examples/vault-terminal/README.md) implements this
+> end to end — `PROTOCOL.md` for the wire format, a 3.3.5a addon for the panel, a reference module using
+> `PlayerScript::OnPlayerBeforeSendChatMessage` and the core's own `ChatHandler::BuildChatPacket`
+> send path, SQL for the NPC and the module's storage, and `harness/vt_model.py` — the protocol as an
+> executable model the tests replay, fuzz and clock-shift. Nothing in it ships an MPQ.
+
 **`novel.telemetry`** is the same channel pointed the other way: the client reports what only it can see
 (zone, spec, group size, whether your addon is installed). Cheap instrumentation for tuning content, and the
 only way to know which of your hooks players actually trigger.

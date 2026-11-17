@@ -5,9 +5,10 @@ only worth what their tests are. The suite is therefore split into three tiers, 
 question than the last, and each finding a different *kind* of defect:
 
 | Tier | Question | Finds | Runtime |
+|---|---|---|---|
 | **1 — intern** | *does it run?* | crashes, typos, undecodable files, dead links | ~1 s (10 tests) |
-| **2 — engineer** | *does it behave at the edges?* | inconsistent exit codes, off-by-one ranges, silent skips | ~3 s (30 tests) |
-| **3 — master** | *is the test capable of failing?* | decorative checks, unsafe writes, invented schema, scale limits | ~5 s (18 tests) |
+| **2 — engineer** | *does it behave at the edges?* | inconsistent exit codes, off-by-one ranges, specs that disagree with code | ~3 s (63 tests) |
+| **3 — master** | *is the test capable of failing?* | decorative checks, unsafe writes, invented schema, scale limits | ~6 s (28 tests) |
 
 ```bash
 make check          # all three tiers + the tool selftest
@@ -59,6 +60,22 @@ range, inclusive at both ends; a fully used range fails; an untouched range repo
 **Cross-tool agreement.** `query --layer X --json` must equal the JSON filtered by hand; `--no-mpq`
 must exclude every `dbc-rows`/`assets` entry; `verify-pair` must fail on value drift *and* on shape
 drift; `manifest verify` must distinguish MISSING, EXTRA and CHANGED in one run.
+
+**Cross-artifact agreement** (`test_tier_engineer_artifacts.py`). The VaultTerminal example describes
+one wire format four times — in `PROTOCOL.md`, in the addon's Lua, in the module's C++, and in the
+`.toc` — so the suite asserts they agree: the same prefix, the same protocol version, client opcodes
+confined to the spec's client table, server opcodes to its server table, error codes documented,
+every `(NN bytes)` annotation in the spec equal to the actual string length, and every SQL row that is
+inserted also deleted by the rollback file. It also refuses API that does not exist in 3.3.5a — no
+`C_Timer`, no `C_Map`, never `RegisterAddonMessagePrefix` — and fails the build if any document
+recommends one of them.
+
+It also **replays the specification's own conformance vectors** against `harness/vt_model.py` — the
+protocol in executable form — so the example's prose, its Lua, its C++ and its model are four
+descriptions of one thing, and any three of them can convict the fourth. Running the model as a script
+(`python3 harness/vt_model.py`) prints that conversation, and a test reads the transcript back: the
+vectors on the page, the replies in the terminal and the assertions in the suite are one artifact seen
+three ways.
 
 **Manifest edges.** dotfiles skipped, nested paths kept, Unicode names preserved, POSIX separators,
 empty staging is an error, no `.tmp` litter after success.
@@ -118,7 +135,21 @@ verifies. Scale tests are not about speed for its own sake — they are how you 
 scan is `O(n log n)` rather than `O(range)`, which matters the day someone asks for ID ranges in the
 millions.
 
-### 3.4 Guarantees
+### 3.4 Fuzzing a protocol, not a file format
+
+The DBC corpus above fuzzes a parser. The VaultTerminal model gets a different corpus, because the
+addon channel is a socket any client can write to: 4,000 deterministic payloads — mutated valid frames,
+random printable and non-ASCII noise, and prefix-shaped garbage — with four invariants after each one:
+no exception, every reply parses back, every reply is ≤255 bytes, and every emitted opcode and error
+code is one the spec documents. A separate counter asserts the corpus actually *reached* replies, or the
+fuzz would be passing by silence.
+
+The same tier moves the clock across midnight (cooldown resets by date, not by session), reconnects a
+second session for the same character (the store refuses the second claim, like the primary key), forges
+a client-side state frame (changes nothing), and drives 20,000 round trips through the model to show
+that batching is a complexity decision, not a performance one.
+
+### 3.5 Guarantees
 
 - the manifest write is **atomic** (temp file + `os.replace`), so a crash cannot leave a half-written
   release descriptor; a failed write is a clean exit 2 with no `.tmp` behind it
@@ -142,7 +173,24 @@ millions.
 4. **Test infrastructure itself was wrong:** importing a tool that uses `@dataclass` via
    `importlib` fails unless the module is registered in `sys.modules` first. A tier-3-only class of bug —
    it lives in the harness, not the product.
-5. **A documentation claim was wrong:** the example SQL said a door's `Data0` is its lock ID. Reading
+5. **A specification lied about itself:** six `(NN bytes)` annotations in `PROTOCOL.md` were wrong by
+   up to six bytes. Nothing *executes* a spec, which is exactly why the cross-artifact suite computes
+   the lengths instead of trusting them.
+6. **A documentation claim was wrong:** the example SQL said a door's `Data0` is its lock ID.
+
+7. **Three implementations of one protocol disagreed, and the prose was the tiebreaker.** The C++
+   module ranked 12 seals as `Initiate` while the spec's own sample answered `Adept`; it answered
+   unknown opcodes with `ERR INTERNAL` while rule 2 says ignore them; and `BYE` was documented and
+   never sent, so `VaultTerminal.Enable = 0` looked identical to a crash. None of these is visible to a
+   string-matching test — they were found by writing the protocol down as an executable model and
+   replaying the spec's vectors through it.
+8. **Three documents and two catalog entries recommended a 5.x API to 3.3.5a users.**
+   `RegisterAddonMessagePrefix` does not exist in build 12340; `docs/02`, `docs/03` and two lever
+   surfaces named it as the way to talk to a server. The fix was a repo-wide lint that fails the build
+   when any document or catalog surface recommends it unqualified.
+9. **Nothing checked that the module would load.** The loader symbol is derived from the directory name
+   (`modules/CMakeLists.txt`), so a typo there produces a module that compiles and never runs. The
+   loader, the config filename and the config key the code actually reads are now asserted. Reading
    `GameObjectData.h` shows `Data0 = startOpen`, `Data1 = lockId`. Fixed in
    `examples/ashen-vault/sql/03_gameobjects.sql`. Facts about closed-source behaviour need this
    treatment too — see [07](07-sources.md).

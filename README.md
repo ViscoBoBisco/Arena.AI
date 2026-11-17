@@ -11,8 +11,10 @@ Three things live here:
 2. **A catalog and a toolchain** (`catalog/`, `tools/`) — 110 alterations with their player-visible
    effects and patch cost, queryable; a DBC inspector/validator, a one-command preflight gate, and a
    patch manifest generator/verifier. No game files required to use or test any of it.
-3. **A worked example** (`examples/ashen-vault/`) — a complete custom dungeon spec that requires
-   **zero client changes**, laid out the way a release would be.
+3. **Two worked examples** — [`examples/ashen-vault/`](examples/ashen-vault/README.md), a complete
+   custom dungeon that requires **zero client changes**; and
+   [`examples/vault-terminal/`](examples/vault-terminal/README.md), a **server-fed custom interface**
+   (addon + module + protocol) that needs no client patch either.
 
 > **The constraint that carries the value:** build custom content out of parts the client already
 > has. The 3.3.5a client ships ~59k creature displays, ~117k game-object displays, six figures of
@@ -71,7 +73,8 @@ tools/
   preflight.sh                release gate: structure + parity + referential integrity
   manifest.py                 build/verify a manifest (sha256 per table, patch hash, version)
   selftest.py                 synthetic fixtures for dbc_tool.py
-examples/ashen-vault/         a zero-client-patch dungeon, spec → SQL → acceptance → rollback
+examples/ashen-vault/         a zero-client-patch dungeon: spec → SQL → acceptance → rollback
+examples/vault-terminal/      a zero-client-patch interface: protocol + model + addon + module + SQL
 tests/                        three test tiers: intern, engineer, master (stdlib only)
 Makefile                      `make check`, `make preflight CLIENT=… SERVER=…`, `make manifest`
 ```
@@ -90,7 +93,7 @@ Makefile                      `make check`, `make preflight CLIENT=… SERVER=�
 | [08 — How it actually works](docs/08-how-integration-actually-works.md) | The mechanics: boot sequence, DBC loading and SQL overlays in code, four runtime protocols, end-to-end traces, ten lossy joints, the consistency contract |
 | [09 — Alteration catalog](docs/09-alteration-catalog.md) | **What you can change and what players actually see**: the reflection model, six layers, three clocks, 110 levers, six patch-free compositions, and what will never show without a patch |
 | [10 — Novel alterations](docs/10-novel-alterations.md) | **Using the surface as a language**: the six escape hatches, books as a CMS, gossip as an app, the quest log as a HUD, the addon channel as a socket, gameobject types as devices, and the safety rules for clever content |
-| [11 — Testing ladder](docs/11-testing-ladder.md) | What an intern, an engineer and a master engineer each test — and the nine real defects those tiers found in this project's own tooling and claims |
+| [11 — Testing ladder](docs/11-testing-ladder.md) | What an intern, an engineer and a master engineer each test — and the twelve real defects those tiers found in this project's own tooling and claims |
 
 ## Glossary
 
