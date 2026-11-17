@@ -1,0 +1,64 @@
+{
+  "spec_version": 1,
+  "name": "frost-armory",
+  "version": "1.0.0",
+  "title": "Frost Armory — level-scaling frost equipment progression",
+  "description": "A complete frost-themed equipment progression built only from existing client assets: three level-scaling pieces, two triggered frost spells, a crafting chain with deterministic material identities, a vendor, a quest, and a weekly world event. No new art, no new models.",
+  "id_range": {"start": 901000, "end": 901999},
+  "requires": {"core": "azerothcore-wotlk@master", "client_build": "3.3.5a.12340"},
+  "items": [
+    {"key": "frostbrand-blade", "name": "Frostbrand Blade", "description": "Level-scaling frost blade. Display reuses an existing item display.", "display_id": {"value": 41179, "verified": false}},
+    {"key": "rimeplate-chest", "name": "Rimeplate Chestguard", "description": "Level-scaling chest. Display reuses an existing item display.", "display_id": {"value": 41180, "verified": false}},
+    {"key": "glacier-shard", "name": "Glacier Shard", "description": "Upgrade material. Existing item entry reused with new stats.", "display_id": {"value": 41181, "verified": false}},
+    {"key": "frost-essence", "name": "Frost Essence", "description": "Crafting material. Existing item entry reused with new stats.", "display_id": {"value": 41182, "verified": false}}
+  ],
+  "spells": [
+    {"key": "frostbrand-proc", "name": "Frostbrand Proc", "visual_id": {"value": 1, "verified": false}, "icon_id": {"value": 1, "verified": false}},
+    {"key": "rimeward-aura", "name": "Rimeward Aura", "visual_id": {"value": 1, "verified": false}, "icon_id": {"value": 1, "verified": false}}
+  ],
+  "quests": [
+    {"key": "prove-the-cold", "title": "Prove the Cold", "objectives": "Defeat the Frost Armory keeper and return with proof.", "requires_items": ["glacier-shard"]}
+  ],
+  "creatures": [
+    {"key": "armory-keeper", "name": "Frost Armory Keeper", "minlevel": 80, "maxlevel": 80, "display_id": {"value": 24954, "verified": false}}
+  ],
+  "vendors": [
+    {"key": "armory-vendor", "creature_key": "armory-keeper", "rows": [
+      {"item_key": "frostbrand-blade", "slot": 1, "maxcount": 1, "incrtime": 0},
+      {"item_key": "rimeplate-chest", "slot": 2, "maxcount": 1, "incrtime": 0},
+      {"item_key": "glacier-shard", "slot": 3, "maxcount": 0, "incrtime": 0}
+    ]}
+  ],
+  "recipes": [
+    {"key": "recipe-blade", "result_key": "frostbrand-blade", "ingredients": [
+      {"item_key": "glacier-shard", "count": 4},
+      {"item_key": "frost-essence", "count": 2}
+    ]},
+    {"key": "recipe-chest", "result_key": "rimeplate-chest", "ingredients": [
+      {"item_key": "glacier-shard", "count": 6},
+      {"item_key": "frost-essence", "count": 3}
+    ]}
+  ],
+  "events": [
+    {"key": "frost-festival", "name": "Frost Festival", "id": 241, "occurence": 10080, "length": 720, "start_time": "2026-01-01 00:00:00", "end_time": "2026-12-31 00:00:00"}
+  ],
+  "config": {
+    "FrostArmory.Enable": 1,
+    "FrostArmory.ProcChance": 15,
+    "FrostArmory.MaterialExchangeIdentity": "frost-armory-v1"
+  },
+  "addon": {"title": "Frost Armory", "prefix": "FA1"},
+  "module": {"conf_key": "FrostArmory.Enable"},
+  "dependencies": ["azerothcore-wotlk world DB", "existing ItemDisplayInfo rows (see TODO(verify))"],
+  "acceptance": [
+    {"check": "Load sql/01_world.sql on a disposable world DB; it applies without error.", "expected": "exit 0, rows present"},
+    {"check": "Run sql/99_rollback.sql; all Frost Armory rows are gone.", "expected": "zero rows in each touched table"},
+    {"check": "Re-run sql/01_world.sql after rollback; it applies cleanly again.", "expected": "idempotent"},
+    {"check": "Talk to the Frost Armory Keeper; the vendor lists blade, chest and shard.", "expected": "3 vendor rows"},
+    {"check": "Craft the blade from 4 shards + 2 essences; the result is deterministic.", "expected": "same output every time"},
+    {"check": "Equip the blade; the frost proc fires with an existing spell visual.", "expected": "proc visual appears, no client patch"},
+    {"check": "During the Frost Festival event window the vendor stock refreshes.", "expected": "event active in game_event"},
+    {"check": "Disable FrostArmory.Enable; the module stays silent and the addon degrades visibly.", "expected": "no errors, feature off"}
+  ],
+  "notes": "All display/visual/icon ids are TODO(verify): confirm them in your own client DBCs with tools/dbc_tool.py before loading. The game_event id 241 is deliberate: that column is tinyint (0-255), so it cannot live in the 901xxx window."
+}

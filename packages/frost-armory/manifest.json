@@ -1,0 +1,68 @@
+{
+  "client_build": "3.3.5a.12340",
+  "files": {
+    "README.md": {
+      "sha256": "3ec97838e1499b6f5ade3c4a3224777e7a82145befc76285e42a53bcfcfa3959",
+      "size": 1742
+    },
+    "addon/FrostArmory/FrostArmory.lua": {
+      "sha256": "13162b043225c320f2b4c630a139932f9dccec0ceab9333090e736e55cf882ca",
+      "size": 529
+    },
+    "addon/FrostArmory/FrostArmory.toc": {
+      "sha256": "34459780e0f38e27c6a8ab45ac4b8ba69867bf34618462f3b364b651b69c4ac3",
+      "size": 161
+    },
+    "conf/frost-armory.conf": {
+      "sha256": "3cd0a7381f9c88d9241a318750bc7cf7c554a01644b1545e712c2f003ba6d128",
+      "size": 204
+    },
+    "server/mod-frost-armory/README.md": {
+      "sha256": "843be15ae7e83b85a9ece3dead5d09c56727c2e72667717e07574002d2adf191",
+      "size": 265
+    },
+    "server/mod-frost-armory/conf/mod-frost-armory.conf.dist": {
+      "sha256": "1044a53450fc4b6a3884459e1b2de1bba749cc636bbdacd8f1d82f7430367376",
+      "size": 105
+    },
+    "server/mod-frost-armory/src/FrostArmory.cpp": {
+      "sha256": "08f562ccaab910d67471cd6fc3cd92005e3e4108c351a08720f71ef4e7318b32",
+      "size": 738
+    },
+    "server/mod-frost-armory/src/mod-frost-armory_loader.cpp": {
+      "sha256": "376d210246e2463bc0bf052eb2516bb0294f9e0049ec12b4ea9598937f695a98",
+      "size": 176
+    },
+    "spec.json": {
+      "sha256": "48f0bfc60365ae2b82be2f0923d6e6c690cedd8edb356ea6356fba1d3297f6d2",
+      "size": 5649
+    },
+    "sql/01_world.sql": {
+      "sha256": "fcc6fd95fae31726e82ff242e5d3d23eba553964c69ea1b0f4dd02bd98631b49",
+      "size": 4170
+    },
+    "sql/99_rollback.sql": {
+      "sha256": "6f01702c4520e4fef7d79fb6edd5626178aa9d7916d9a457715489dc6fdbb933",
+      "size": 849
+    }
+  },
+  "metadata_files": {
+    "compatibility.json": {
+      "sha256": "2a762ba6814a9932bcbae193aecc775894dd42d4c9078def180aa7af3955e9cf",
+      "size": 263
+    },
+    "evidence.json": {
+      "sha256": "d2e20b2f967393e29a9b97e9a89aaf19733d28a272b9a95b173021aeea9e079b",
+      "size": 4691
+    }
+  },
+  "package_version": "1.0.0",
+  "patch_cost": "client-files (addon folder; no MPQ)",
+  "schema": "arena-foundry-manifest/1",
+  "spec": "frost-armory",
+  "spec_version": 1,
+  "summary": {
+    "bytes": 14588,
+    "files": 11
+  }
+}

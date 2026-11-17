@@ -1,0 +1,7 @@
+## Interface: 30300
+## Title: Frost Armory
+## Version: 1.0.0
+## Notes: Presentation only. The server is authoritative.
+## SavedVariables: FA1DB
+
+FrostArmory.lua

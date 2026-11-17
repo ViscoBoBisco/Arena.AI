@@ -1,0 +1,131 @@
+{
+  "acceptance": [
+    {
+      "evidence": null,
+      "expected": "exit 0, rows present",
+      "statement": "Load sql/01_world.sql on a disposable world DB; it applies without error.",
+      "status": "NOT_ASSESSED"
+    },
+    {
+      "evidence": null,
+      "expected": "zero rows in each touched table",
+      "statement": "Run sql/99_rollback.sql; all Frost Armory rows are gone.",
+      "status": "NOT_ASSESSED"
+    },
+    {
+      "evidence": null,
+      "expected": "idempotent",
+      "statement": "Re-run sql/01_world.sql after rollback; it applies cleanly again.",
+      "status": "NOT_ASSESSED"
+    },
+    {
+      "evidence": null,
+      "expected": "3 vendor rows",
+      "statement": "Talk to the Frost Armory Keeper; the vendor lists blade, chest and shard.",
+      "status": "NOT_ASSESSED"
+    },
+    {
+      "evidence": null,
+      "expected": "same output every time",
+      "statement": "Craft the blade from 4 shards + 2 essences; the result is deterministic.",
+      "status": "NOT_ASSESSED"
+    },
+    {
+      "evidence": null,
+      "expected": "proc visual appears, no client patch",
+      "statement": "Equip the blade; the frost proc fires with an existing spell visual.",
+      "status": "NOT_ASSESSED"
+    },
+    {
+      "evidence": null,
+      "expected": "event active in game_event",
+      "statement": "During the Frost Festival event window the vendor stock refreshes.",
+      "status": "NOT_ASSESSED"
+    },
+    {
+      "evidence": null,
+      "expected": "no errors, feature off",
+      "statement": "Disable FrostArmory.Enable; the module stays silent and the addon degrades visibly.",
+      "status": "NOT_ASSESSED"
+    }
+  ],
+  "allow_unverified": true,
+  "evidence_levels": {
+    "ARENA-COMPILE": "pending (module not compiled against a pinned core)",
+    "ARENA-DB": "pending (requires disposable compatible database)",
+    "ARENA-PACK": "bundle assembled; run foundry verify before claiming integrity qualification",
+    "ARENA-STATIC": "spec validation executed; see per-check verdicts above",
+    "ARENA-SYNTHETIC": "NOT_ASSESSED by package build; run repository tests separately",
+    "CAMPAIGN-ADMISSION": "pending (needs the real Campaign Party baseline)",
+    "CAMPAIGN-LIVE": "pending (needs client + Playerbots)"
+  },
+  "generated_scope": {
+    "addon": "presentation placeholder only; not client-runtime tested",
+    "asset_ids": "unverified unless supported by local source evidence",
+    "cpp_module": "registration skeleton only; not compiled or feature-complete",
+    "dbc_delta": "narrow Item.dbc delta only when explicitly requested; no MPQ assembly",
+    "recipes": "descriptive dependency comments; no executable profession recipe",
+    "rollback": "generated; rollback not DB-qualified",
+    "sql_migrations": "generated; schema/application not DB-qualified"
+  },
+  "package_version": "1.0.0",
+  "patch_cost": "client-files (addon folder; no MPQ)",
+  "spec": "frost-armory",
+  "spec_version": 1,
+  "validation": {
+    "ok": false,
+    "problems": [
+      {
+        "check": "tables",
+        "message": "all emitted tables exist in world_tables.txt",
+        "verdict": "PASS"
+      },
+      {
+        "check": "patch-cost",
+        "message": "patch cost: client-files (addon folder; no MPQ)",
+        "verdict": "PASS"
+      },
+      {
+        "check": "asset-verification",
+        "message": "9 unverified asset reference(s) (allowed by caller): item:'frostbrand-blade'.display_id=41179, item:'rimeplate-chest'.display_id=41180, item:'glacier-shard'.display_id=41181, item:'frost-essence'.display_id=41182, spell:'frostbrand-proc'.visual_id=1, spell:'frostbrand-proc'.icon_id=1, spell:'rimeward-aura'.visual_id=1, spell:'rimeward-aura'.icon_id=1...",
+        "verdict": "SKIPPED"
+      },
+      {
+        "check": "acceptance",
+        "message": "8 acceptance checks",
+        "verdict": "PASS"
+      },
+      {
+        "check": "dependencies",
+        "message": "2 declared dependencies",
+        "verdict": "PASS"
+      },
+      {
+        "check": "schema",
+        "message": "spec_version, name, version, title, id_range ok",
+        "verdict": "PASS"
+      },
+      {
+        "check": "references",
+        "message": "all object references resolve within the spec",
+        "verdict": "PASS"
+      },
+      {
+        "check": "ids",
+        "message": "all ids in range and within per-table limits",
+        "verdict": "PASS"
+      }
+    ],
+    "spec": "frost-armory",
+    "verdicts": {
+      "acceptance": "PASS",
+      "asset-verification": "SKIPPED",
+      "dependencies": "PASS",
+      "ids": "PASS",
+      "patch-cost": "PASS",
+      "references": "PASS",
+      "schema": "PASS",
+      "tables": "PASS"
+    }
+  }
+}
