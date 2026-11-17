@@ -1397,7 +1397,7 @@
         "log both sides",
         "send a message and watch the frame update"
       ],
-      "notes": "This is how you get a real UI without a client patch: ship only an addon folder, keep all truth on the server.",
+      "notes": "This is how you get a real UI without a client patch: ship only an addon folder, keep all truth on the server. Worked example: examples/vault-terminal (protocol, addon, module, SQL).",
       "docs": [
         "08"
       ]
@@ -1978,7 +1978,7 @@
         "send a request and log both sides",
         "kill the server and confirm the UI degrades gracefully"
       ],
-      "notes": "This is the difference between a static panel and a live one: client-side polling, server-side push, and commands bound to keys or macros. Batch small messages; rate limits and the 255-char cap are the design constraints.",
+      "notes": "This is the difference between a static panel and a live one: client-side polling, server-side push, and commands bound to keys or macros. Batch small messages; rate limits and the 255-char cap are the design constraints. Worked example: examples/vault-terminal (protocol, addon, module, SQL).",
       "docs": [
         "10"
       ]

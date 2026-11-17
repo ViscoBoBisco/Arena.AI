@@ -1,0 +1,7 @@
+###############################################################################
+#  mod-vault-terminal
+#  Server half of the VaultTerminal example. The addon channel itself is a core
+#  feature: keep AddonChannel = 1 in worldserver.conf or nothing can be delivered.
+###############################################################################
+
+VaultTerminal.Enable = 1

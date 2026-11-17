@@ -6,7 +6,7 @@ question than the last, and each finding a different *kind* of defect:
 
 | Tier | Question | Finds | Runtime |
 | **1 — intern** | *does it run?* | crashes, typos, undecodable files, dead links | ~1 s (10 tests) |
-| **2 — engineer** | *does it behave at the edges?* | inconsistent exit codes, off-by-one ranges, silent skips | ~3 s (30 tests) |
+| **2 — engineer** | *does it behave at the edges?* | inconsistent exit codes, off-by-one ranges, specs that disagree with code | ~3 s (48 tests) |
 | **3 — master** | *is the test capable of failing?* | decorative checks, unsafe writes, invented schema, scale limits | ~5 s (18 tests) |
 
 ```bash
@@ -59,6 +59,14 @@ range, inclusive at both ends; a fully used range fails; an untouched range repo
 **Cross-tool agreement.** `query --layer X --json` must equal the JSON filtered by hand; `--no-mpq`
 must exclude every `dbc-rows`/`assets` entry; `verify-pair` must fail on value drift *and* on shape
 drift; `manifest verify` must distinguish MISSING, EXTRA and CHANGED in one run.
+
+**Cross-artifact agreement** (`test_tier_engineer_artifacts.py`). The VaultTerminal example describes
+one wire format four times — in `PROTOCOL.md`, in the addon's Lua, in the module's C++, and in the
+`.toc` — so the suite asserts they agree: the same prefix, the same protocol version, client opcodes
+confined to the spec's client table, server opcodes to its server table, error codes documented,
+every `(NN bytes)` annotation in the spec equal to the actual string length, and every SQL row that is
+inserted also deleted by the rollback file. It also refuses API that does not exist in 3.3.5a
+(`C_Timer`, `C_Map`, `RegisterAddonMessagePrefix`, …).
 
 **Manifest edges.** dotfiles skipped, nested paths kept, Unicode names preserved, POSIX separators,
 empty staging is an error, no `.tmp` litter after success.
@@ -142,7 +150,10 @@ millions.
 4. **Test infrastructure itself was wrong:** importing a tool that uses `@dataclass` via
    `importlib` fails unless the module is registered in `sys.modules` first. A tier-3-only class of bug —
    it lives in the harness, not the product.
-5. **A documentation claim was wrong:** the example SQL said a door's `Data0` is its lock ID. Reading
+5. **A specification lied about itself:** six `(NN bytes)` annotations in `PROTOCOL.md` were wrong by
+   up to six bytes. Nothing *executes* a spec, which is exactly why the cross-artifact suite computes
+   the lengths instead of trusting them.
+6. **A documentation claim was wrong:** the example SQL said a door's `Data0` is its lock ID. Reading
    `GameObjectData.h` shows `Data0 = startOpen`, `Data1 = lockId`. Fixed in
    `examples/ashen-vault/sql/03_gameobjects.sql`. Facts about closed-source behaviour need this
    treatment too — see [07](07-sources.md).

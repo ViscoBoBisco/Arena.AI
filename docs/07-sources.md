@@ -84,6 +84,23 @@ All paths are AzerothCore `master`; TrinityCore 3.3.5 is structurally similar bu
 - `src/server/game/Handlers/QuestHandler.cpp` — `HandleQuestQueryOpcode` →
   `SendQuestQueryResponse`: quest text is server-authored.
 
+## Addon transport cited in [10 §2.3] and `examples/vault-terminal` (primary, AzerothCore `master`)
+
+Read from the sources at `github.com/azerothcore/azerothcore-wotlk`, not from memory:
+
+- `src/server/game/Scripting/ScriptDefines/PlayerScript.h` — `PLAYERHOOK_ON_BEFORE_SEND_CHAT_MESSAGE`
+  and `OnPlayerBeforeSendChatMessage(Player*, uint32& type, uint32& lang, std::string& msg)`; the
+  out-parameters are the *only* supported way to see an addon message before the core consumes it.
+- `src/server/game/Handlers/ChatHandler.cpp` — the `LANG_ADDON` branch: >255-byte messages are
+  dropped before any hook runs, the client must whisper *itself*, and the message is then offered to
+  `AddonChannelCommandHandler(this).ParseCommands(msg)`. Warden additionally watches
+  `CHAT_MSG_GUILD` + `LANG_ADDON`.
+- `src/server/game/Chat/Chat.h` / `Chat.cpp` — `AddonChannelCommandHandler`: prefix `AzerothCore\t`
+  (12 bytes), opcode byte (`p`/`h`/`i`), 4-digit counter, command from offset 17; replies are built by
+  `ChatHandler::BuildChatPacket(..., CHAT_MSG_WHISPER, LANG_ADDON, player, player, msg)` and sent with
+  `Player::SendDirectMessage`. `SendAck`/`SendOK`/`SendFailed` are `a`/`o`/`f` plus a 4-byte echo.
+  **Do not reuse this prefix** for your own protocol.
+
 ## Field reports that shaped the "drift is silent" warning
 
 - **CoA PR #1484 — build the server DBC set from the client players run**
