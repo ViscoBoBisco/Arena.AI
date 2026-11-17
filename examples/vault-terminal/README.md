@@ -14,6 +14,12 @@ addon is a folder.
 | The truth (seals, cooldown, rank) | server module + `vault_terminal_claims` | no |
 | The channel | `AddonChannel = 1` in `worldserver.conf` | no |
 
+| | |
+|---|---|
+| **Patch cost** | none — the client-side piece is an addon folder (catalog kind `client-files`), not an MPQ |
+| **Reused client assets** | default UI textures and font paths, and the chat channel itself |
+| **Clock** | 1–2 — a server module plus an addon folder, no archive |
+
 ## What is here
 
 ```
@@ -75,7 +81,7 @@ politeness: a panel showing stale or invented numbers is worse than a panel that
 | No client files changed | `git status` in your patch repo is empty; `Interface/AddOns` is not in the MPQ |
 | The protocol is well-formed offline | `python3 harness/vt_model.py` prints the conversation in `PROTOCOL.md`; `make test-master` fuzzes it |
 
-## Why this needs no patch — and what would
+## Where this stops being free — and what would need a patch
 
 The client's interface is Lua running in a sandbox, and addons are how Blizzard itself authored the
 default UI. Shipping a folder is not a modification of the client; it is the client's own extension

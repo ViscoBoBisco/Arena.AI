@@ -7,7 +7,7 @@ question than the last, and each finding a different *kind* of defect:
 | Tier | Question | Finds | Runtime |
 |---|---|---|---|
 | **1 — intern** | *does it run?* | crashes, typos, undecodable files, dead links | ~1 s (10 tests) |
-| **2 — engineer** | *does it behave at the edges?* | inconsistent exit codes, off-by-one ranges, specs that disagree with code | ~3 s (63 tests) |
+| **2 — engineer** | *does it behave at the edges?* | inconsistent exit codes, off-by-one ranges, specs that disagree with code | ~3 s (81 tests) |
 | **3 — master** | *is the test capable of failing?* | decorative checks, unsafe writes, invented schema, scale limits | ~6 s (28 tests) |
 
 ```bash
@@ -76,6 +76,14 @@ descriptions of one thing, and any three of them can convict the fourth. Running
 (`python3 harness/vt_model.py`) prints that conversation, and a test reads the transcript back: the
 vectors on the page, the replies in the terminal and the assertions in the suite are one artifact seen
 three ways.
+
+**The example contract** (`test_tier_engineer_examples.py`). `examples/INDEX.md` says a complete
+example has seven parts; this file walks every example and fails if one is missing — a patch-cost
+statement, the reused assets, a file list, install steps, an *acceptance table* with at least five
+checks, the nearest variant that would need a patch, and a rollback. It also checks the SQL side:
+every `INSERT` targets a table in `world_tables.txt`, every inserted table is deleted by the rollback
+file, every ID sits in its example's reserved range and collides with no other example, and the one
+table that cannot hold a 900xxx value (`game_event.eventEntry`, `tinyint`) is checked as such.
 
 **Manifest edges.** dotfiles skipped, nested paths kept, Unicode names preserved, POSIX separators,
 empty staging is an error, no `.tmp` litter after success.

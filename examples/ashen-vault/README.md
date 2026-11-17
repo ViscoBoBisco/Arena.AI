@@ -8,6 +8,13 @@ Use it as a template. The shape of the work matters more than the specific numbe
 is either an entry the server owns (9xxxxx range) or a *display* ID that must already exist in the
 client's DBCs.
 
+| | |
+|---|---|
+| **Patch cost** | none |
+| **Reused client assets** | `CreatureDisplayInfo`, `GameObjectDisplayInfo`, `Spell.dbc`, stock item entries |
+| **Clock** | 1 — data, read at boot or reload ([docs/09 §3](../../docs/09-alteration-catalog.md)) |
+
+
 ## What the feature is
 
 A sealed vault in a cave in Ashenvale (map `1`). A Warden NPC outside gates access; inside, two
@@ -60,20 +67,29 @@ and `.reload creature_template` / `.reload smart_scripts` if you are iterating w
 > core (or use Keira3) before running, and replace every value marked `TODO(verify)` with an ID you
 > confirmed in your own client files with `tools/dbc_tool.py ids`.
 
+## Install
+
+```bash
+for f in sql/0*.sql; do mysql -u acore -p acore_world < "$f"; done
+```
+
+Restart the worldserver, then `.tele ashenvale` and walk to the coordinates in `sql/02_spawns.sql`.
+Replace every `TODO(verify)` display or item ID before loading — they are placeholders, not facts.
+
 ## Acceptance checks
 
-Before you call it done, all of these should hold:
+| Check | How |
+|---|---|
+| Templates loaded | `SELECT COUNT(*) FROM creature_template WHERE entry BETWEEN 900100 AND 900199;` matches the file |
+| Displays exist | every `CreatureDisplayID` resolves in the client's `CreatureDisplayInfo.dbc` |
+| The boss renders | spawn it: model, name, level — no red `?`, no naked cube |
+| Abilities fire | they appear in the combat log as the spells you configured (server authority) |
+| Loot opens | the items are the ones in `05_loot.sql` |
+| The door works | the gate object opens and closes; a brazier is decorative and never interactive |
+| Nothing was patched | no file in the client's `Data/`; `git status` in your patch repo is empty |
+| Rollback is clean | `99_rollback.sql`, then re-run 01–05 and it is identical |
 
-1. `SELECT COUNT(*) FROM creature_template WHERE entry BETWEEN 900100 AND 900199;` → the expected count.
-2. Every `CreatureDisplayID` you used exists in the client's `CreatureDisplayInfo.dbc`
-   (`tools/dbc_tool.py ids CreatureDisplayInfo.dbc --from 0 --to 999999 | grep <id>`).
-3. Spawning the boss shows a model, a name, a level, and no red `?` or naked cube.
-4. The boss's abilities appear in your combat log as the spells you configured (server authority).
-5. Loot opens and the items are the ones you configured.
-6. `sql/99_rollback.sql` returns the world DB to its pre-install state (run it, then re-run 01–05).
-7. No file was added to the client's `Data/` directory. `git status` on your patch repo is empty.
-
-## What would force a client patch
+## Where this stops being free
 
 Only these, and each is a deliberate choice rather than an accident:
 

@@ -39,7 +39,7 @@ test-intern:
 	$(PY) -m unittest tests.test_tier_intern -v
 
 test-engineer:
-	$(PY) -m unittest tests.test_tier_engineer tests.test_tier_engineer_artifacts -v
+	$(PY) -m unittest tests.test_tier_engineer tests.test_tier_engineer_artifacts tests.test_tier_engineer_examples -v
 
 test-master:
 	$(PY) -m unittest tests.test_tier_master -v
