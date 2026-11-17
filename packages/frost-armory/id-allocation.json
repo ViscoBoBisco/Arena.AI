@@ -1,0 +1,17 @@
+{
+  "allocations": {
+    "armory-keeper": 901000,
+    "frost-essence": 901003,
+    "frost-festival": 241,
+    "frostbrand-blade": 901000,
+    "frostbrand-proc": 901000,
+    "glacier-shard": 901002,
+    "prove-the-cold": 901000,
+    "rimeplate-chest": 901001,
+    "rimeward-aura": 901001
+  },
+  "baseline_sha256": "a7830c7e18af09980141e9ac392ff1859640264acc4a835866ff8c0b8a3b222f",
+  "package_version": "1.0.0",
+  "schema": "arena-id-allocation/1",
+  "spec": "frost-armory"
+}

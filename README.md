@@ -75,9 +75,10 @@ explicit `--allow-unverified`; it is not release approval.
 
 ```
 README.md                     this page
-docs/                         the knowledge base + Foundry and adapter contracts (01–13)
+docs/                         knowledge base, Foundry/adapter contracts, world-scale design (01–14)
 foundry/                      spec validation, ID policy, assets, generators, adapter, bundler, CLI
 specs/                        versioned declarative feature specifications
+designs/                      creative world-scale campaign blueprint; explicitly not compiler input
 packages/                     reproducible generated handoff bundles (evidence attached)
 catalog/alterations.json      110 levers: what you can change, what players see, patch cost
 tools/
@@ -118,6 +119,7 @@ Makefile                      `make check`, `make preflight CLIENT=… SERVER=�
 | [11 — Testing ladder](docs/11-testing-ladder.md) | What an intern, an engineer and a master engineer each test — and the thirteen real defects those tiers found in this project's own tooling, docs and claims |
 | [12 — Content Foundry](docs/12-content-foundry.md) | Declarative spec v1, validation, local asset ingest, generators, release bundle, evidence ladder, current limits and task ledger |
 | [13 — Campaign Party adapter](docs/13-campaign-party-adapter.md) | Versioned offline admission seam, fake host, safety semantics and real-baseline requirements |
+| [14 — World Atlas frontier](docs/14-world-atlas-frontier.md) | Source-backed feasibility for old-world flight, iconic legendary equipment, level scaling, new professions/vocations, and a world-spanning five-character campaign |
 
 ## Glossary
 

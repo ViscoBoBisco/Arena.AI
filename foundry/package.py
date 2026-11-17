@@ -41,7 +41,7 @@ def _sha256(data: bytes) -> str:
 
 def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
                   allow_unverified: bool = False, stamp: bool = False,
-                  host: Optional[FakeHost] = None) -> dict:
+                  reserved=None, host: Optional[FakeHost] = None) -> dict:
     """Assemble the bundle. Raises ValueError if validation failed closed."""
     if not result.ok and not (allow_unverified and result.essential_blocked == ["asset-verification"]):
         raise ValueError(
@@ -53,9 +53,24 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
         files[rel] = content.encode() if isinstance(content, str) else content
 
     put("spec.json", generate.spec_json(spec))
-    put("sql/01_world.sql", generate.world_sql(spec))
-    put("sql/99_rollback.sql", generate.rollback_sql(spec))
-    delta = generate.dbc_delta(spec)
+    put("sql/01_world.sql", generate.world_sql(spec, reserved=reserved))
+    put("sql/99_rollback.sql", generate.rollback_sql(spec, reserved=reserved))
+    delta = generate.dbc_delta(spec, reserved=reserved)
+    baseline = {
+        "schema": "arena-id-baseline/1",
+        "reserved_ids": {table: sorted(values)
+                         for table, values in sorted((reserved or {}).items())},
+    }
+    baseline_bytes = (json.dumps(baseline, indent=2, sort_keys=True) + "\n").encode()
+    baseline_sha256 = _sha256(baseline_bytes)
+    put("id-baseline.json", baseline_bytes)
+    put("id-allocation.json", json.dumps({
+        "schema": "arena-id-allocation/1",
+        "spec": spec["name"],
+        "package_version": spec.get("version"),
+        "baseline_sha256": baseline_sha256,
+        "allocations": allocate_ids(spec, reserved=reserved),
+    }, indent=2, sort_keys=True) + "\n")
     if delta:
         put(f"dbc/{delta['table']}.delta.json",
             json.dumps(delta, indent=2, sort_keys=True) + "\n")
@@ -68,14 +83,14 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
     put("README.md", _readme(spec, result))
 
     # compatibility: dry-run the adapter contract against a host
-    ids = allocate_ids(spec)
+    ids = allocate_ids(spec, reserved=reserved)
     by_table: Dict[str, list] = {}
     for kind, (spec_key, table, _req) in _kind_tables().items():
         for obj in spec.get(spec_key) or []:
             if isinstance(obj, dict) and obj.get("key") in ids:
                 by_table.setdefault(table, []).append(ids[obj["key"]])
     unverified = _unverified_refs(spec)
-    host = host or FakeHost()
+    host = host or FakeHost(reserved_ids=reserved)
     intent = {
         "idempotency_key": f"{spec['name']}-{spec['version']}",
         "kind": "dry_run",
@@ -132,6 +147,7 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
         "spec_version": spec.get("spec_version"),
         "client_build": "3.3.5a.12340",
         "patch_cost": patch_cost(spec),
+        "id_baseline_sha256": baseline_sha256,
         "files": {rel: {"sha256": _sha256(data), "size": len(data)}
                   for rel, data in sorted(files.items())},
         "summary": {"files": len(files),
@@ -192,8 +208,10 @@ def _readme(spec: dict, result: ValidationResult) -> str:
         "",
         "```",
         "spec.json            the spec this package was built from",
-        "sql/01_world.sql     idempotent world migration",
-        "sql/99_rollback.sql  exact rollback",
+        "id-baseline.json     reserved IDs used for conflict-aware allocation",
+        "id-allocation.json   deterministic table/key -> ID assignment",
+        "sql/01_world.sql     generated world migration (not DB-qualified)",
+        "sql/99_rollback.sql  generated rollback (not DB-qualified)",
         "manifest.json        sha256 per file",
         "evidence.json        verdicts + evidence levels",
         "compatibility.json   adapter dry run",
@@ -201,7 +219,14 @@ def _readme(spec: dict, result: ValidationResult) -> str:
         "",
         generate.acceptance_md(spec).rstrip(),
         "",
-        "## Install",
+        "## Qualification warning",
+        "",
+        "This bundle is an engineering output, not evidence that gameplay acceptance passed. "
+        "Check `evidence.json`: generated acceptance items start as NOT_ASSESSED. Do not install "
+        "until the applicable database, compile, asset and downstream checks are independently "
+        "qualified and recorded.",
+        "",
+        "## Install (only after qualification)",
         "",
         "```bash",
         "mysql -u acore -p acore_world < sql/01_world.sql",

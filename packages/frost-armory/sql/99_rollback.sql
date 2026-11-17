@@ -2,14 +2,14 @@
 -- Removes every row the migration inserts, by entry. Safe to run twice.
 
 DELETE FROM game_event WHERE eventEntry = 241;
-DELETE FROM npc_vendor WHERE entry = 901007 AND item = 901000;
-DELETE FROM npc_vendor WHERE entry = 901007 AND item = 901001;
-DELETE FROM npc_vendor WHERE entry = 901007 AND item = 901002;
-DELETE FROM creature_template_model WHERE CreatureID = 901007;
-DELETE FROM creature_template WHERE entry = 901007;
-DELETE FROM quest_template WHERE Id = 901006;
-DELETE FROM spell_dbc WHERE Id = 901004;
-DELETE FROM spell_dbc WHERE Id = 901005;
+DELETE FROM npc_vendor WHERE entry = 901000 AND item = 901000;
+DELETE FROM npc_vendor WHERE entry = 901000 AND item = 901001;
+DELETE FROM npc_vendor WHERE entry = 901000 AND item = 901002;
+DELETE FROM creature_template_model WHERE CreatureID = 901000;
+DELETE FROM creature_template WHERE entry = 901000;
+DELETE FROM quest_template WHERE Id = 901000;
+DELETE FROM spell_dbc WHERE Id = 901000;
+DELETE FROM spell_dbc WHERE Id = 901001;
 DELETE FROM item_template WHERE entry = 901000;
 DELETE FROM item_template WHERE entry = 901001;
 DELETE FROM item_template WHERE entry = 901002;

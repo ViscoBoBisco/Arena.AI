@@ -28,7 +28,18 @@ A spec has `spec_version: 1`, a lowercase hyphenated `name`, semver `version`, t
 
 A client asset reference can be an integer (meaning the author asserts it is known) or an explicit object such as `{"value": 41179, "verified": false}`. For release-grade work, use a locally supplied DBC extract or source-backed inventory and record evidence for every referenced display, model, icon and visual. An integer alone is an author assertion, not independent verification. The current v1 schema validates a useful common subset; it is not yet a complete grammar for every field in every WoW content family.
 
-ID allocation is deterministic in object-kind order, unless an explicit ID is supplied. The current registry validates numeric bounds and can check a caller-supplied reservation map in Python; the CLI does not yet ingest a Campaign Party baseline or persistent cross-package registry. Always review `plan` output and reserve a non-overlapping project range before handoff.
+ID allocation is deterministic and table-aware. Explicit IDs are pre-reserved so an earlier automatic choice cannot steal a later explicit ID; automatic IDs skip IDs already used in their table and any supplied baseline. Most tables draw from the spec's inclusive custom range; narrow tables such as `game_event` allocate within their own numeric domain. Duplicate explicit IDs within one table and exhausted windows fail rather than reusing an ID. Separate tables may use the same integer because their keys are table-scoped. Vendor stock and recipe definitions are relationships, not rows with their own primary IDs; the allocator does not invent IDs for them.
+
+The CLI accepts a read-only reservation snapshot using `--baseline`:
+
+```json
+{
+  "schema": "arena-id-baseline/1",
+  "reserved_ids": {"item_template": [901000, 901001], "creature_template": [901000]}
+}
+```
+
+Pass the same baseline to `plan`, `validate`, and `build`. Packages include `id-baseline.json`, an `id-allocation.json` table/key mapping, and the baseline SHA-256 in both allocation metadata and the manifest. This is a reproducible snapshot contract, not a live Campaign Party scanner or a shared transactional registry; concurrent builds still require coordination and refreshed source snapshots.
 
 ## Artifacts and their status
 
@@ -41,7 +52,7 @@ The generated artifacts are **not all production implementations** yet. SQL gene
 | Level | What earns it | Frost Armory status on this branch |
 |---|---|---|
 | `ARENA-STATIC` | schema, structural and repository checks | Spec structure checks run; stock asset verification remains `NOT_ASSESSED` |
-| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | 53 Foundry-focused tests and all 202 repository tests pass in this branch; generated bundle does not attest test execution |
+| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | 64 Foundry-focused tests, 7 frontier-design guard tests and all 220 repository tests pass in this branch; generated bundle does not attest test execution |
 | `ARENA-DB` | apply and rollback on a disposable compatible DB | Pending; no MySQL/AzerothCore DB in this environment |
 | `ARENA-COMPILE` | module compile/API check against pinned compatible AzerothCore | Pending; generated module is a skeleton and is not compiled |
 | `ARENA-PACK` | reproducible package and independent integrity verification | `foundry verify packages/frost-armory` passes in this workspace; package evidence marks verification as an external required step, not a self-claim |
@@ -58,20 +69,20 @@ Acceptance conditions are deliberately explicit; `done` means the contract is im
 |---|---|---|
 | A | Fail-closed spec, ID/table bounds, visible verdicts | **Partial** — synthetic validation and negative tests; client/server parity, full DBC references, schema and pinned-core checks remain |
 | B | Local DBC/inventory ingest, deterministic keyword search and patch-cost query | **Partial** — implemented subset; semantic relationships, MPQ inventory parser and broad DBC coverage remain |
-| C | Versioned JSON spec, key references, ID allocation and preview | **Partial** — spec v1 common subset; migration tooling, cross-package registry and all content grammars remain |
+| C | Versioned JSON spec, key references, ID allocation and preview | **Partial** — spec v1 common subset and snapshot-aware ID allocation; transactional cross-package registry, migration tooling and all content grammars remain |
 | D | Deterministic bundle, rollback, manifest verification, lossless DBC delta writer | **Partial** — narrow writer and bundle; conflict-aware merge, MPQ assembly and cache invalidation remain |
 | E | Shared item/spell/equipment factories | **Not done** — current generated records are not a level-scaling/effect-complete factory |
 | F | Quest, world, dungeon and encounter factories | **Not done** — no complete five-member instance or encounter state machine |
 | G | Profession graph, Material Exchange interface and AHBot simulator | **Not done** — recipes are currently descriptive only; downstream economy remains authoritative |
 | H | Versioned party/Playerbot contracts and test doubles | **Partial** — package admission fake host only; no party state/command contract or bot behavior simulation |
 | I | Static/synthetic qualification and negative tests | **Partial** — synthetic suite done; disposable DB, compile, addon runtime, installer fault/rollback tests remain |
-| J | CLI create/inspect/plan/build/verify/compare/explain | **Partial** — validate/plan/build/verify/assets/explain available; compare, GUI and package baseline checker remain |
+| J | CLI create/inspect/plan/build/verify/compare/explain | **Partial** — validate/plan/build/verify/assets/explain and imported baseline snapshots available; compare, GUI and live baseline discovery remain |
 | K | Nine cohesive production showcases | **Not done** — Frost Armory is a compiler exercise, not a production-ready showcase; eight others not built |
 | L | Campaign Party contract, fake host and handoff | **Partial** — adapter v1 fake host exercises dry-run/admission/idempotency gates; actual baseline admission and complete handoff checker remain |
 
 ## Compatibility and risk
 
-- Target is 3.3.5a build 12340 / AzerothCore WotLK, but no real Campaign Party schema or core revision has been pinned by this package.
+- Target is 3.3.5a build 12340 / AzerothCore WotLK, but no real Campaign Party schema or core revision has been pinned by this package. The checked-in example package carries an empty baseline snapshot; it has not been collision-checked against Campaign Party.
 - A DBC row requires parity between client and server copies. Current package generation does not prove that parity.
 - Unknown stock IDs may render incorrectly or fail lookup. This spec marks these unknown; do not treat the placeholder numbers as stock-verified.
 - SQL syntax/column compatibility is not proven by text-level tests. Apply only to a disposable matching database after `ARENA-DB` qualification exists.

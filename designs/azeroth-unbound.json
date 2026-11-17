@@ -1,0 +1,150 @@
+{
+  "schema": "arena-frontier-design/1",
+  "name": "azeroth-unbound",
+  "maturity": "DESIGN_ONLY_NOT_A_FOUNDRY_SPEC",
+  "target": {
+    "client": "World of Warcraft 3.3.5a build 12340",
+    "core": "AzerothCore WotLK; exact Campaign Party revision not supplied",
+    "party": "one controlled character plus up to four Playerbots"
+  },
+  "non_negotiable_constraints": [
+    "Reuse assets and mechanics already in the 3.3.5a client; no new models or textures.",
+    "AzerothCore remains authoritative for levels, items, quests, skills, inventory and rewards.",
+    "Playerbots remain responsible for bot movement, combat and execution.",
+    "Campaign Party remains authoritative for party selection, permissions and command routing.",
+    "Never assume ownership of or overwrite an existing custom MPQ.",
+    "Asset IDs, database effects and gameplay remain unverified until qualified against supplied target data."
+  ],
+  "source_snapshot": {
+    "repository": "https://github.com/azerothcore/azerothcore-wotlk",
+    "revision": "6ffb62abb867dabb258de6813ff5d06d6b011543",
+    "revision_date": "2026-11-17",
+    "note": "Public upstream master source inspected for capability boundaries; this is not a pin for Campaign Party."
+  },
+  "capability_assessments": [
+    {
+      "id": "old-world-flight-charter",
+      "fantasy": "Unlock ordinary flying mounts over the outdoor zones of Kalimdor and the Eastern Kingdoms, while keeping interiors, dungeons and intentional no-fly story spaces grounded.",
+      "existing_335_mechanics": ["flying-mount spells", "server movement flags", "AreaTable flyable/no-fly flags"],
+      "earliest_delivery": "client+server AreaTable.dbc delta plus server policy hook; reuse existing mount visuals",
+      "client_patch": "required for zones whose AreaTable row is not flyable; DBC parity required",
+      "source_symbols": ["AreaTableEntry::IsFlyable", "SpellInfo::CheckLocation", "Player::canFlyInZone", "OnPlayerCanFlyInZone", "PLAYERHOOK_ON_CAN_PLAYER_FLY_IN_ZONE"],
+      "hard_limits": ["The stock AzerothCore check reads AREA_FLAG_OUTLAND before consulting the PlayerScript zone hook, so the hook alone cannot grant flight in non-flyable zones.", "Keep AREA_FLAG_NO_FLY_ZONE and use a reviewed outdoor-zone allowlist; do not blanket-enable every area.", "Client handling, collision, roofs, transports, anticheat and bot follow behavior require runtime qualification."],
+      "patch_cost": "DBC rows; no new art",
+      "evidence": "UPSTREAM_SOURCE_PATH_INSPECTED; target revision, DBC records, client and Playerbots NOT_ASSESSED"
+    },
+    {
+      "id": "kingfall-regalia",
+      "fantasy": "A campaign-earned Frostmourne echo and Lich King-inspired plate regalia become a personalized, level-scaling endgame chase rather than GM-only curiosities.",
+      "existing_335_mechanics": ["item_template", "Item.dbc", "ItemDisplayInfo.dbc", "existing item-set and spell mechanics", "scaling stat tables"],
+      "earliest_delivery": "new server item entries; add matching Item.dbc records only if no reusable item row already has the verified display/class/slot; reuse existing display IDs and frost effects",
+      "client_patch": "conditional DBC rows; no new M2/BLP",
+      "source_symbols": ["Player::_ApplyItemBonuses", "ScalingStatDistributionEntry", "ScalingStatValuesEntry"],
+      "hard_limits": ["Do not invent ItemDisplayInfo IDs. Search supplied local DBCs and trace their dependent assets.", "A creature/NPC appearance is not automatically a wearable ItemDisplayInfo appearance; if the exact armor display is absent, kitbash a verified stock wearable set.", "WotLK has no stock transmog system: the item must equip in a real slot or be presented as a separate cosmetic illusion with its own supported mechanism."],
+      "patch_cost": "none if a usable Item.dbc row and display already exist; otherwise DBC rows; no new art",
+      "evidence": "ENGINE_MECHANISM_SOURCE_BACKED; candidate stock appearance IDs NOT_ASSESSED"
+    },
+    {
+      "id": "world-level-weave",
+      "fantasy": "A level-18 hero can follow the same world-spanning campaign through Duskwood, Tanaris or Grizzly Hills; the local wildlife remains a fair challenge instead of becoming gray scenery.",
+      "existing_335_mechanics": ["creature min/max levels", "CreatureBaseStats", "AllCreatureScript level-selection hook", "stock scaling item data"],
+      "earliest_delivery": "compiled server module with a deterministic scaling policy; reuse zone creatures, spawns and stock stats",
+      "client_patch": "not inherently required for creatures; item rows may separately need Item.dbc",
+      "source_symbols": ["AllCreatureScript::OnBeforeCreatureSelectLevel", "Creature::SelectLevel", "CreatureBaseStats::GenerateHealth", "Player::_ApplyItemBonuses"],
+      "hard_limits": ["The source hook runs when a creature selects its level, before base stats are generated; it is not proof of a working module.", "Keep level results within available CreatureBaseStats and content-specific bounds.", "Choose a party anchor, clamp bosses, and do not change a live combat encounter when another character arrives.", "Quest reward and quest-level scaling are separate problems; use verified, normalized campaign currencies until those paths are tested."],
+      "patch_cost": "server module/config; no client patch for reused creatures; no new art",
+      "evidence": "ENGINE_HOOK_SOURCE_BACKED; balance, party selection, bot levels and compiled behavior NOT_ASSESSED"
+    },
+    {
+      "id": "the-unbounded-atlas",
+      "fantasy": "Let the player choose any discovered region for the next campaign chapter; story progression follows evidence, alliances and choices, not an imposed level corridor.",
+      "existing_335_mechanics": ["quest_template", "gossip", "phaseMask", "conditions", "server-authored quest text", "addon presentation"],
+      "earliest_delivery": "world SQL, scripts and optional 3.3.5a addon; existing zones/NPCs/objects",
+      "client_patch": "none for server-authored quest text and reused assets; local asset check still required",
+      "source_symbols": ["HandleQuestQueryOpcode", "SendQuestQueryResponse", "conditions", "spell_area"],
+      "hard_limits": ["Quest graph, breadcrumb admission, character persistence and party/altbot quest semantics need explicit tests.", "A quest log is not an unlimited narrative database; keep optional branches in server-owned records and present summaries through supported UI."],
+      "patch_cost": "server SQL/module; optional addon folder; no new art",
+      "evidence": "MECHANIC_SOURCE_BACKED_IN_REPOSITORY; complete compiler/runtime path NOT_ASSESSED"
+    },
+    {
+      "id": "field-vocation",
+      "fantasy": "Add Cartography or Relicwright as a world-exploration vocation: discover, record and restore ancient sites, using the existing Material Exchange as an adapter rather than replacing professions or inventory.",
+      "existing_335_mechanics": ["SkillLine categories", "profession spells", "recipe abilities", "MaxPrimaryTradeSkill configuration", "addon panels", "server character data"],
+      "earliest_delivery": "either a true client-visible profession with SkillLine/SkillRaceClassInfo/SkillLineAbility DBC records and server spells, or a no-slot server-side vocation presented in an addon",
+      "client_patch": "true skill profession requires DBC rows and stock icon reuse; sidecar vocation can avoid skill-line DBC edits",
+      "source_symbols": ["SKILL_CATEGORY_PROFESSION", "SpellInfo::IsPrimaryProfession", "CONFIG_MAX_PRIMARY_TRADE_SKILL", "Player::GetFreePrimaryProfessionPoints"],
+      "hard_limits": ["Upstream config documents a maximum of 11 primary profession slots; this raises the cap, it does not create a skill line or recipes.", "A genuine profession needs client skill-line data, eligibility rows, abilities, spells, recipes and UI acceptance.", "A sidecar vocation must not silently consume primary-profession slots or replace Campaign Party's Material Exchange."],
+      "patch_cost": "DBC rows for a true profession; server module/addon only for sidecar vocation; no new art",
+      "evidence": "ENGINE_CLASSIFICATION_AND_CONFIG_SOURCE_BACKED; new profession integration NOT_ASSESSED"
+    },
+    {
+      "id": "sky-road-network",
+      "fantasy": "Connect remote campaign sites through existing taxi routes, ships and zeppelins; a recovered skyway becomes a meaningful reward before unrestricted flight is earned.",
+      "existing_335_mechanics": ["TaxiPath", "taxi nodes", "transport routes", "gossip", "quest unlocks"],
+      "earliest_delivery": "world SQL/config and reused transport models/routes; DBC rows only for genuinely new client-visible taxi nodes",
+      "client_patch": "none for reused routes; conditional DBC for new taxi nodes/routes",
+      "source_symbols": ["TaxiPath*.dbc", "Transports", "transport_* tables"],
+      "hard_limits": ["Playerbot boarding/follow and cross-map handoff must be qualified; a visual transport is not proof that bots can ride it.", "Never add fake taxi nodes without matching client data."],
+      "patch_cost": "none or DBC rows depending on whether routes/nodes are reused; no new art",
+      "evidence": "REUSE_PATTERN_SOURCE_DOCUMENTED; target route inventory and bot operation NOT_ASSESSED"
+    },
+    {
+      "id": "living-fronts",
+      "fantasy": "Every week a different region becomes an active front: towns change phase, patrols move, rare leaders appear, and campaign choices alter which faction controls the next objective.",
+      "existing_335_mechanics": ["game_event", "phaseMask", "SmartAI", "conditions", "spawn groups", "quest state"],
+      "earliest_delivery": "server SQL plus event/module logic; reuse stock creature and gameobject displays",
+      "client_patch": "none for reused stock assets",
+      "source_symbols": ["game_event.eventEntry", "phaseMask", "smart_scripts", "conditions"],
+      "hard_limits": ["game_event.eventEntry is a tinyint; reserve only 1-255 after checking the target database.", "Per-character choices need durable server state; world-global effects can expose one player's progress to others unless phased or instanced."],
+      "patch_cost": "server SQL/module; no client patch; no new art",
+      "evidence": "MECHANIC_SOURCE_BACKED_IN_REPOSITORY; concurrency, persistence and live event tests NOT_ASSESSED"
+    },
+    {
+      "id": "echo-dungeons",
+      "fantasy": "Revisit familiar 3.3.5 dungeons as five-person memory echoes: rotating objectives, optional affixes, checkpoints after wipes and rewards that scale to the campaign band.",
+      "existing_335_mechanics": ["existing maps/instances", "instance scripts", "SmartAI", "loot tables", "party roles"],
+      "earliest_delivery": "server module + SQL in existing instance maps; reuse all environment and creature assets",
+      "client_patch": "none unless a new client-visible spell/item row is required",
+      "source_symbols": ["InstanceScript", "instance_template", "CreatureScript", "Playerbot runtime is downstream-owned"],
+      "hard_limits": ["Dynamic scaling and loot must be tested for one controlled character plus four actual Playerbots, not just five human players.", "Recoverable wipes, lockouts, loot ownership and bot interrupts/healing are separate acceptance gates."],
+      "patch_cost": "server module/SQL; no new art",
+      "evidence": "REUSE_PATTERN; encounter and Playerbots behavior NOT_ASSESSED"
+    },
+    {
+      "id": "relic-memory",
+      "fantasy": "A legendary item remembers the world: its name, proc cadence and campaign title evolve when the player completes regional chapters, while stats remain bounded to the current character level.",
+      "existing_335_mechanics": ["item_template", "spell proc data", "server-owned quest flags", "scaling stat tables", "addon presentation"],
+      "earliest_delivery": "server-side upgrade stages represented by distinct validated item templates and quest states; reuse a verified item appearance and spell visual",
+      "client_patch": "conditional Item.dbc row for each distinct item identity; no patch if a supported existing identity can be reused safely",
+      "source_symbols": ["item_template", "spell_dbc", "Player::_ApplyItemBonuses"],
+      "hard_limits": ["Avoid silently mutating a player's owned item or bypassing AzerothCore ownership; stage upgrades as explicit server-validated item exchanges.", "Proc balance and triggered-spell recursion need server tests."],
+      "patch_cost": "server SQL/module plus conditional DBC rows; no new art",
+      "evidence": "MECHANIC_SOURCE_BACKED; feature behavior and assets NOT_ASSESSED"
+    },
+    {
+      "id": "field-notes-atlas",
+      "fantasy": "Turn exploration into a detective game: discover landmarks, inspect old-world relics, piece together clues and unlock optional branches without forcing the character to level in a particular zone.",
+      "existing_335_mechanics": ["gameobjects", "gossip", "page_text", "quest chains", "addon map presentation"],
+      "earliest_delivery": "world SQL/module and optional addon; reuse existing books, objects, icons and map APIs available to 3.3.5a",
+      "client_patch": "none if existing assets are reused",
+      "source_symbols": ["page_text", "gossip_menu", "gameobject_template", "quest_template"],
+      "hard_limits": ["Map API and addon calls must be checked against the 3.3.5a interface, not modern retail examples.", "Clue state is server-owned; client map pins are only a presentation cache."],
+      "patch_cost": "server SQL/module; optional addon folder; no new art",
+      "evidence": "REUSE_PATTERN_SOURCE_DOCUMENTED; addon implementation NOT_ASSESSED"
+    }
+  ],
+  "flagship_campaign": {
+    "title": "The Atlas of Unfinished Wars",
+    "premise": "A survey order discovers that old-world conflicts are connected by a network of abandoned skyways and relic sites. The player can start in any unlocked region; evidence, not level, advances the story.",
+    "chapter_order": "player-selected among available regions; finale admission checks a short list of campaign proofs, not a mandatory leveling route",
+    "chapters": [
+      {"title": "The Map That Lies", "regions": ["Eastern Kingdoms", "Kalimdor"], "loop": "Choose a frontier, investigate a local mystery, return with a clue; enemies scale within a declared band."},
+      {"title": "Roads Above the Ruins", "regions": ["Eastern Kingdoms", "Kalimdor", "Outland"], "loop": "Restore reused taxi/transport links and earn a flight charter; old-world flight is gated by the separate DBC + server policy work."},
+      {"title": "The King's Last Shadow", "regions": ["Northrend"], "loop": "Recover verified relic appearances and decide whether to bind a Frostmourne echo or dismantle it; no exact stock display IDs are presumed."},
+      {"title": "Five Against the Echo", "regions": ["existing dungeon instances"], "loop": "Run a bot-operable memory encounter with interrupts, tank swaps, healer thresholds, hazards and a recoverable checkpoint."},
+      {"title": "A World That Remembers", "regions": ["all previously visited regions"], "loop": "A scheduled living front reflects campaign choices; optional branches and collection rewards remain repeatable."}
+    ],
+    "reward_contract": "AzerothCore validates quest completion and item ownership. Rewards use deterministic campaign identities, explicit upgrade exchanges and level-banded stock scaling; Material Exchange is called through an adapter and remains authoritative downstream.",
+    "status": "DESIGN_ONLY; not valid Foundry spec; no generated gameplay claims"
+  }
+}
