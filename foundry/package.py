@@ -27,7 +27,8 @@ from typing import Dict, Optional
 from . import ADAPTER_VERSION, SPEC_VERSION
 from . import generate
 from .adapter import FakeHost
-from .spec import ValidationResult, allocate_ids, delivery_requirements, patch_cost
+from .spec import (ValidationResult, allocate_ids, asset_evidence_matches,
+                   delivery_requirements, patch_cost)
 
 EVIDENCE_LEVELS = (
     "ARENA-STATIC", "ARENA-SYNTHETIC", "ARENA-DB", "ARENA-COMPILE",
@@ -74,9 +75,13 @@ def _matching_compile_qualification(spec: dict, files: dict) -> Optional[dict]:
 
 def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
                   allow_unverified: bool = False, stamp: bool = False,
-                  reserved=None, host: Optional[FakeHost] = None) -> dict:
+                  reserved=None, asset_index=None,
+                  host: Optional[FakeHost] = None) -> dict:
     """Assemble the bundle. Raises ValueError if validation failed closed."""
-    if not result.ok and not (allow_unverified and result.essential_blocked == ["asset-verification"]):
+    if not result.ok and not (
+            allow_unverified
+            and result.essential_blocked == ["asset-verification"]
+            and result.verdicts.get("asset-verification") == "SKIPPED"):
         raise ValueError(
             "validation failed closed: " + "; ".join(result.essential_blocked))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -123,7 +128,7 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
         for obj in spec.get(spec_key) or []:
             if isinstance(obj, dict) and obj.get("key") in ids:
                 by_table.setdefault(table, []).append(ids[obj["key"]])
-    unverified = _unverified_refs(spec)
+    unverified = _unverified_refs(spec, asset_index=asset_index)
     requirements = delivery_requirements(spec)
     available_artifacts = []
     if "sql/01_world.sql" in files and any(
@@ -166,6 +171,7 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
         "patch_cost": patch_cost(spec),
         "delivery_requirements": requirements,
         "allow_unverified": allow_unverified,
+        "unverified_asset_refs": unverified,
         "acceptance": [
             {"statement": item.get("check", str(item)) if isinstance(item, dict) else str(item),
              "expected": item.get("expected") if isinstance(item, dict) else None,
@@ -237,17 +243,23 @@ def _kind_tables():
     return KINDS
 
 
-def _unverified_refs(spec: dict) -> list:
+def _unverified_refs(spec: dict, *, asset_index=None) -> list:
     out = []
-    for spec_key, _table, _req in _kind_tables().values():
+    for kind, (spec_key, _table, _req) in _kind_tables().items():
         for obj in spec.get(spec_key) or []:
             if not isinstance(obj, dict):
                 continue
             for field_name in ("display_id", "model_id", "spell_id", "item_id",
                                "visual_id", "icon_id"):
                 ref = obj.get(field_name)
-                if isinstance(ref, dict) and not ref.get("verified"):
-                    out.append(f"{obj.get('key')}.{field_name}={ref.get('value')}")
+                if ref is None:
+                    continue
+                value = ref.get("value") if isinstance(ref, dict) else ref
+                evidence = ref.get("evidence") if isinstance(ref, dict) else None
+                if (not isinstance(value, int) or isinstance(value, bool)
+                        or not asset_evidence_matches(kind, field_name, value,
+                                                      evidence, asset_index)):
+                    out.append(f"{obj.get('key')}.{field_name}={value}")
     return out
 
 

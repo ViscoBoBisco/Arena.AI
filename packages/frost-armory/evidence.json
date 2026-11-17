@@ -173,6 +173,17 @@
   "patch_cost": "client-files (addon folder; no MPQ)",
   "spec": "frost-armory",
   "spec_version": 1,
+  "unverified_asset_refs": [
+    "frostbrand-blade.display_id=41179",
+    "rimeplate-chest.display_id=41180",
+    "glacier-shard.display_id=41181",
+    "frost-essence.display_id=41182",
+    "frostbrand-proc.visual_id=1",
+    "frostbrand-proc.icon_id=1",
+    "rimeward-aura.visual_id=1",
+    "rimeward-aura.icon_id=1",
+    "armory-keeper.display_id=24954"
+  ],
   "validation": {
     "ok": false,
     "problems": [
@@ -193,7 +204,7 @@
       },
       {
         "check": "asset-verification",
-        "message": "9 unverified asset reference(s) (allowed by caller): item:'frostbrand-blade'.display_id=41179, item:'rimeplate-chest'.display_id=41180, item:'glacier-shard'.display_id=41181, item:'frost-essence'.display_id=41182, spell:'frostbrand-proc'.visual_id=1, spell:'frostbrand-proc'.icon_id=1, spell:'rimeward-aura'.visual_id=1, spell:'rimeward-aura'.icon_id=1...",
+        "message": "9 asset reference(s) lack verifiable local DBC provenance (allowed by caller): item:'frostbrand-blade'.display_id=41179, item:'rimeplate-chest'.display_id=41180, item:'glacier-shard'.display_id=41181, item:'frost-essence'.display_id=41182, spell:'frostbrand-proc'.visual_id=1, spell:'frostbrand-proc'.icon_id=1, spell:'rimeward-aura'.visual_id=1, spell:'rimeward-aura'.icon_id=1...",
         "verdict": "SKIPPED"
       },
       {

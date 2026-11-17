@@ -28,11 +28,11 @@ def _sql_str(value) -> str:
 
 
 def _ref(obj: dict, field: str):
-    """Asset ref value + TODO marker when unverified."""
+    """Asset ref value + TODO marker when source evidence is absent."""
     ref = obj.get(field)
     if isinstance(ref, dict):
-        return ref.get("value"), not ref.get("verified")
-    return ref, False
+        return ref.get("value"), not isinstance(ref.get("evidence"), dict)
+    return ref, ref is not None
 
 
 def _todo(unverified: bool) -> str:

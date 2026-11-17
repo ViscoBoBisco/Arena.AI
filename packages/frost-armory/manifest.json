@@ -130,8 +130,8 @@
       "size": 263
     },
     "evidence.json": {
-      "sha256": "c512c4c82f6ba7ff3b22c27c29db10414787ce79a4f36793164c78a5e22a7cc7",
-      "size": 8632
+      "sha256": "41db6b0c9b98c54e678d3b0ef7a12e1d094a224834638ba0f728f73e93a1d994",
+      "size": 9018
     }
   },
   "package_version": "1.0.0",

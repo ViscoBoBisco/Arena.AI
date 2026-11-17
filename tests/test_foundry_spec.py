@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import helpers  # noqa: E402
 
 sys.path.insert(0, str(helpers.REPO))
+from foundry.assets import ingest_dbc_dir  # noqa: E402
 from foundry.spec import validate_spec, load_spec  # noqa: E402
 
 SPEC = json.loads((helpers.REPO / "specs" / "frost-armory.json").read_text(encoding="utf-8"))
@@ -36,7 +37,7 @@ class TheGateIsFailClosed(unittest.TestCase):
         self.assertEqual(result.verdicts["asset-verification"], "SKIPPED")
         self.assertFalse(result.ok, "a skipped essential check is not a pass")
 
-    def test_fully_verified_spec_passes(self):
+    def test_verified_true_without_source_evidence_is_not_proof(self):
         spec = copy.deepcopy(SPEC)
         for key in ("items", "spells", "creatures"):
             for obj in spec[key]:
@@ -44,7 +45,70 @@ class TheGateIsFailClosed(unittest.TestCase):
                     if isinstance(obj.get(field), dict):
                         obj[field]["verified"] = True
         result = validate(spec)
-        self.assertTrue(result.ok, result.to_dict())
+        self.assertFalse(result.ok)
+        self.assertEqual(result.verdicts["asset-verification"], "NOT_ASSESSED")
+
+    def test_matching_local_dbc_provenance_passes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixture_tables = {
+                "ItemDisplayInfo.dbc": (25, [(i, *([0] * 24)) for i in
+                                               (41179, 41180, 41181, 41182)]),
+                "SpellVisual.dbc": (2, [(1, 0)]),
+                "SpellIcon.dbc": (2, [(1, 0)]),
+                "CreatureDisplayInfo.dbc": (2, [(24954, 0)]),
+            }
+            for table, (fields, rows) in fixture_tables.items():
+                helpers.write_dbc(root / table, fields, rows)
+            asset_index = ingest_dbc_dir(root)
+            spec = copy.deepcopy(SPEC)
+            refs = (
+                ("items", "display_id", "item_display"),
+                ("spells", "visual_id", "spell_visual"),
+                ("spells", "icon_id", "spell_icon"),
+                ("creatures", "display_id", "creature_display"),
+            )
+            for collection, field, asset_kind in refs:
+                for obj in spec[collection]:
+                    ref = obj[field]
+                    ref["verified"] = True  # claim alone is ignored; evidence is checked
+                    ref["evidence"] = asset_index[asset_kind][str(ref["value"])]["evidence"]
+            result = validate(spec, asset_index=asset_index)
+            self.assertTrue(result.ok, result.to_dict())
+            self.assertEqual(result.verdicts["asset-verification"], "PASS")
+
+    def test_wrong_hash_and_stale_dbc_are_rejected_even_with_allowance(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            helpers.write_dbc(root / "ItemDisplayInfo.dbc", 1,
+                              [(41179,), (41180,), (41181,), (41182,)])
+            helpers.write_dbc(root / "SpellVisual.dbc", 2, [(1, 0)])
+            helpers.write_dbc(root / "SpellIcon.dbc", 2, [(1, 0)])
+            helpers.write_dbc(root / "CreatureDisplayInfo.dbc", 2, [(24954, 0)])
+            asset_index = ingest_dbc_dir(root)
+            spec = copy.deepcopy(SPEC)
+            for obj in spec["items"]:
+                ref = obj["display_id"]
+                ref["evidence"] = asset_index["item_display"][str(ref["value"])]["evidence"]
+            # A spec-embedded claim without a parser-built local index is not proof.
+            result = validate(spec)
+            self.assertEqual(result.verdicts["asset-verification"], "FAIL")
+            # One evidence hash is altered; --allow-unverified must not waive tampering.
+            spec["items"][0]["display_id"]["evidence"]["sha256"] = "0" * 64
+            result = validate(spec, asset_index=asset_index, allow_unverified=True)
+            self.assertEqual(result.verdicts["asset-verification"], "FAIL")
+
+            # A previously indexed source changing after ingest also invalidates its evidence.
+            spec = copy.deepcopy(SPEC)
+            for obj in spec["items"]:
+                ref = obj["display_id"]
+                ref["evidence"] = asset_index["item_display"][str(ref["value"])]["evidence"]
+            helpers.write_dbc(root / "ItemDisplayInfo.dbc", 1,
+                              [(41179,), (41180,), (41181,), (41182,), (99999,)])
+            result = validate(spec, asset_index=asset_index)
+            self.assertEqual(result.verdicts["asset-verification"], "FAIL")
 
 
 class NegativeTests(unittest.TestCase):

@@ -26,7 +26,15 @@ python3 tools/foundry.py verify /tmp/frost-armory
 
 A spec has `spec_version: 1`, a lowercase hyphenated `name`, semver `version`, title, inclusive `id_range`, optional dependency declarations, and object arrays (`items`, `spells`, `quests`, `creatures`, `gameobjects`, `vendors`, `recipes`, `events`) plus addon/module/config, optional table-scoped `delivery` declarations, and at least three acceptance statements. The derived `arena-delivery-requirements/1` contract enumerates required artifacts and host capabilities; `patch_cost` is display-only. Object references use stable `key` values. The validator rejects unknown top-level fields, malformed IDs, duplicate keys, dangling vendor/recipe/quest references, IDs outside table bounds and unknown world tables. `game_event.eventEntry` is constrained to its own 0–255 table limit rather than inheriting the spec's custom-ID window.
 
-A client asset reference can be an integer (meaning the author asserts it is known) or an explicit object such as `{"value": 41179, "verified": false}`. For release-grade work, use a locally supplied DBC extract or source-backed inventory and record evidence for every referenced display, model, icon and visual. An integer alone is an author assertion, not independent verification. The current v1 schema validates a useful common subset; it is not yet a complete grammar for every field in every WoW content family.
+A client asset reference may remain an integer or use a legacy object such as `{"value": 41179, "verified": true}`; neither the integer nor the boolean is proof. To qualify a supported reference, extract the relevant DBCs locally, query them, and copy the returned `evidence` object into the reference:
+
+```sh
+python3 tools/foundry.py assets --dbc-dir /path/to/local/dbc --query 41179 --kind item_display
+python3 tools/foundry.py validate specs/my-feature.json --dbc-dir /path/to/local/dbc
+python3 tools/foundry.py build specs/my-feature.json --out /tmp/my-feature --dbc-dir /path/to/local/dbc
+```
+
+The evidence binds a table, row ID, and SHA-256 to parsed WDBC bytes. Validation requires the evidence to match the locally parsed row and rechecks the source hash, so changed or absent extracts, wrong-table evidence, and self-asserted `verified: true` fail or remain unassessed. This proves row presence in the supplied bytes; it does not independently certify that those bytes came from an unmodified 3.3.5a client. Inventory JSON remains useful for discovery, but its `verified` fields are shown as claims, do not qualify references, and its patch-cost estimate stays conservative. Packages preserve evidence hashes but do not bundle proprietary DBC extracts. The supported reference-to-table mapping is a useful subset, not yet a complete grammar for every WoW content family.
 
 ID allocation is deterministic and table-aware. Explicit IDs are pre-reserved so an earlier automatic choice cannot steal a later explicit ID; automatic IDs skip IDs already used in their table and any supplied baseline. Most tables draw from the spec's inclusive custom range; narrow tables such as `game_event` allocate within their own numeric domain. Duplicate explicit IDs within one table and exhausted windows fail rather than reusing an ID. Separate tables may use the same integer because their keys are table-scoped. Vendor stock and recipe definitions are relationships, not rows with their own primary IDs; the allocator does not invent IDs for them.
 
@@ -52,7 +60,7 @@ The generated artifacts are **not all production implementations** yet. SQL gene
 | Level | What earns it | Frost Armory status on this branch |
 |---|---|---|
 | `ARENA-STATIC` | schema, structural and repository checks | Spec structure checks run; stock asset verification remains `NOT_ASSESSED` |
-| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | All 244 repository tests pass at the current working tree; generated bundle does not attest test execution |
+| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | All 247 repository tests pass at the current working tree; generated bundle does not attest test execution |
 | `ARENA-DB` | apply and rollback on a disposable compatible DB | Pending; no disposable AzerothCore database was provisioned |
 | `ARENA-COMPILE` | module compile/API check against pinned compatible AzerothCore | **PASS** for exact Frost Armory source hashes and AzerothCore `6ffb62abb867dabb258de6813ff5d06d6b011543`; [CI run](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44201459186/job/134456328585). This is a targeted object/linkage check, not a full server build or gameplay qualification. |
 | `ARENA-PACK` | reproducible package and independent integrity verification | `foundry verify packages/frost-armory` passes in this workspace; package evidence marks verification as an external required step, not a self-claim |

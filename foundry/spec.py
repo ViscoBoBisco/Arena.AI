@@ -61,6 +61,19 @@ SQL_TABLES = {
     "smart_scripts", "creature_text",
 }
 
+# Object kind + reference field -> asset index kind from a parsed local DBC.
+ASSET_REFERENCE_KINDS = {
+    ("item", "display_id"): "item_display",
+    ("creature", "display_id"): "creature_display",
+    ("gameobject", "display_id"): "gameobject_display",
+    ("creature", "model_id"): "creature_model",
+    ("gameobject", "model_id"): "gameobject_model",
+    ("*", "spell_id"): "spell",
+    ("*", "item_id"): "item",
+    ("*", "visual_id"): "spell_visual",
+    ("*", "icon_id"): "spell_icon",
+}
+
 
 @dataclass
 class Problem:
@@ -108,6 +121,31 @@ class SpecError(Exception):
     """The spec file could not be read or is not JSON at all (exit 2)."""
 
 
+def asset_evidence_matches(object_kind: str, ref_field: str, value: int,
+                           evidence, asset_index) -> bool:
+    """Check evidence against a parser-built, still-current local DBC source."""
+    from .assets import AssetIndex, DBC_KINDS
+
+    if not isinstance(asset_index, AssetIndex):
+        return False
+    expected_kind = ASSET_REFERENCE_KINDS.get((object_kind, ref_field)) \
+        or ASSET_REFERENCE_KINDS.get(("*", ref_field))
+    indexed = asset_index.get(expected_kind, {}).get(str(value)) if expected_kind else None
+    expected_evidence = indexed.get("evidence") if indexed else None
+    if not isinstance(evidence, dict) or expected_evidence is None \
+            or evidence != expected_evidence:
+        return False
+    table = expected_evidence.get("table")
+    if table not in DBC_KINDS:
+        return False
+    try:
+        source = (asset_index.source_root / table).read_bytes()
+    except OSError:
+        return False
+    import hashlib
+    return hashlib.sha256(source).hexdigest() == expected_evidence.get("sha256")
+
+
 def load_spec(path: Path) -> dict:
     try:
         text = path.read_text(encoding="utf-8-sig")
@@ -127,7 +165,7 @@ def _is_int(v) -> bool:
 
 
 def validate_spec(spec: dict, *, world_tables=None, reserved=None,
-                  allow_unverified: bool = False) -> ValidationResult:
+                  asset_index=None, allow_unverified: bool = False) -> ValidationResult:
     """Validate *spec*. ``world_tables``/``reserved`` are optional allowlists;
     when omitted, the repo catalog files are used if present."""
     invalid_root = not isinstance(spec, dict)
@@ -201,6 +239,7 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
     keys: Dict[str, str] = {}          # key -> kind
     allocated: Dict[str, int] = {}     # key -> numeric id
     unverified: List[str] = []
+    invalid_asset_evidence: List[str] = []
     try:
         allocated = allocate_ids(spec, reserved=reserved)
     except ValueError as exc:
@@ -254,22 +293,38 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
                 add(Problem("ids", FAIL, f"{where}: {problem}"))
             if reserved and nid in reserved.get(table, set()):
                 add(Problem("ids", FAIL, f"{where}: id {nid} collides with baseline {table}"))
-            # asset references must be verified or flagged
+            # A verified flag is only an author claim. A reference qualifies
+            # only when its DBC evidence matches a parser-built local index.
             for ref_field in ("display_id", "model_id", "spell_id", "item_id",
                               "visual_id", "icon_id"):
                 ref = obj.get(ref_field)
                 if isinstance(ref, dict):
-                    if not _is_int(ref.get("value")):
+                    unknown_ref_keys = sorted(set(ref) - {"value", "verified", "evidence"})
+                    if unknown_ref_keys:
+                        add(Problem("schema", FAIL,
+                                    f"{where}: {ref_field} has unknown keys: "
+                                    + ", ".join(unknown_ref_keys)))
+                    value = ref.get("value")
+                    if not _is_int(value):
                         add(Problem("references", FAIL,
                                     f"{where}: {ref_field}.value must be an integer"))
-                    if not isinstance(ref.get("verified"), bool):
+                        continue
+                    if "verified" in ref and not isinstance(ref["verified"], bool):
                         add(Problem("references", FAIL,
-                                    f"{where}: {ref_field}.verified must be boolean"))
-                    elif not ref["verified"]:
-                        unverified.append(f"{where}.{ref_field}={ref.get('value')}")
-                elif ref is not None and not _is_int(ref):
-                    add(Problem("references", FAIL,
-                                f"{where}: {ref_field} must be an int or {{value, verified}}"))
+                                    f"{where}: {ref_field}.verified must be boolean when present"))
+                    evidence = ref.get("evidence")
+                    if evidence is None:
+                        unverified.append(f"{where}.{ref_field}={value}")
+                        continue
+                    if not asset_evidence_matches(kind, ref_field, value, evidence, asset_index):
+                        invalid_asset_evidence.append(
+                            f"{where}.{ref_field}={value} does not match a parsed local DBC source")
+                elif ref is not None:
+                    if not _is_int(ref):
+                        add(Problem("references", FAIL,
+                                    f"{where}: {ref_field} must be an integer or evidence object"))
+                    else:
+                        unverified.append(f"{where}.{ref_field}={ref}")
 
     # cross-references between objects; defensively skip malformed entries
     # after recording their schema errors above (never leak AttributeError).
@@ -336,15 +391,23 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
     patch = patch_cost(spec)
     add(Problem("patch-cost", PASS, f"display summary only: {patch}"))
 
-    # --- unverified assets (fail-closed) ----------------------------------
-    if unverified:
+    # --- source-backed asset provenance (fail-closed) --------------------
+    if invalid_asset_evidence:
+        add(Problem(
+            "asset-verification", FAIL,
+            f"{len(invalid_asset_evidence)} asset evidence claim(s) could not be "
+            "matched to parsed local DBC data: " + ", ".join(invalid_asset_evidence[:8])
+            + ("..." if len(invalid_asset_evidence) > 8 else "")))
+    elif unverified:
         verdict = NOT_ASSESSED if not allow_unverified else SKIPPED
         note = "allowed by caller" if allow_unverified else "blocks build"
         add(Problem("asset-verification", verdict,
-                    f"{len(unverified)} unverified asset reference(s) ({note}): "
-                    + ", ".join(unverified[:8]) + ("..." if len(unverified) > 8 else "")))
+                    f"{len(unverified)} asset reference(s) lack verifiable local DBC provenance "
+                    f"({note}): " + ", ".join(unverified[:8])
+                    + ("..." if len(unverified) > 8 else "")))
     else:
-        add(Problem("asset-verification", PASS, "all asset references verified"))
+        add(Problem("asset-verification", PASS,
+                    "all asset references match content-hashed local DBC rows"))
 
     # --- acceptance --------------------------------------------------------
     acceptance = spec.get("acceptance") or []

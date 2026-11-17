@@ -66,6 +66,17 @@ def _reserved_arg(args):
         return None
 
 
+def _asset_index_arg(args):
+    dbc_dir = getattr(args, "dbc_dir", None)
+    if dbc_dir is None:
+        return None
+    try:
+        return ingest_dbc_dir(dbc_dir)
+    except AssetError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return False
+
+
 def cmd_validate(args) -> int:
     spec = _load(args.spec)
     if spec is None:
@@ -73,7 +84,11 @@ def cmd_validate(args) -> int:
     reserved = _reserved_arg(args)
     if reserved is None:
         return 2
+    asset_index = _asset_index_arg(args)
+    if asset_index is False:
+        return 2
     result = validate_spec(spec, world_tables=_world_tables(), reserved=reserved,
+                           asset_index=asset_index,
                            allow_unverified=args.allow_unverified)
     print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
     return 0 if result.ok else 1
@@ -87,13 +102,16 @@ def cmd_plan(args) -> int:
     reserved = _reserved_arg(args)
     if reserved is None:
         return 2
+    asset_index = _asset_index_arg(args)
+    if asset_index is False:
+        return 2
     try:
         ids = allocate_ids(spec, reserved=reserved)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     result = validate_spec(spec, world_tables=_world_tables(), reserved=reserved,
-                           allow_unverified=True)
+                           asset_index=asset_index, allow_unverified=True)
     print(json.dumps({
         "spec": spec.get("name"),
         "patch_cost": patch_cost(spec),
@@ -114,12 +132,17 @@ def cmd_build(args) -> int:
     reserved = _reserved_arg(args)
     if reserved is None:
         return 2
+    asset_index = _asset_index_arg(args)
+    if asset_index is False:
+        return 2
     result = validate_spec(spec, world_tables=_world_tables(), reserved=reserved,
+                           asset_index=asset_index,
                            allow_unverified=args.allow_unverified)
     try:
         manifest = build_package(spec, result, args.out,
                                  allow_unverified=args.allow_unverified,
                                  reserved=reserved,
+                                 asset_index=asset_index,
                                  stamp=args.stamp)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -224,11 +247,13 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("spec", type=Path)
     v.add_argument("--allow-unverified", action="store_true")
     v.add_argument("--baseline", type=Path, help="reserved-ID snapshot (arena-id-baseline/1 JSON)")
+    v.add_argument("--dbc-dir", type=Path, help="local client DBC extracts for provenance verification")
     v.set_defaults(func=cmd_validate)
 
     pl = sub.add_parser("plan", help="preview ids + patch cost without building")
     pl.add_argument("spec", type=Path)
     pl.add_argument("--baseline", type=Path, help="reserved-ID snapshot (arena-id-baseline/1 JSON)")
+    pl.add_argument("--dbc-dir", type=Path, help="local client DBC extracts for provenance verification")
     pl.set_defaults(func=cmd_plan)
 
     b = sub.add_parser("build", help="build a package bundle from a spec")
@@ -236,6 +261,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--out", type=Path, required=True)
     b.add_argument("--allow-unverified", action="store_true")
     b.add_argument("--baseline", type=Path, help="reserved-ID snapshot (arena-id-baseline/1 JSON)")
+    b.add_argument("--dbc-dir", type=Path, help="local client DBC extracts for provenance verification")
     b.add_argument("--stamp", action="store_true")
     b.set_defaults(func=cmd_build)
 
