@@ -17,7 +17,7 @@ STAGING  ?= patch
 OUT      ?= manifest.json
 DBC      ?= Item.dbc
 
-.PHONY: all help check test selftest preflight manifest info clean
+.PHONY: all help check test selftest preflight manifest catalog info clean
 
 all: help
 
@@ -25,6 +25,7 @@ help:
 	@echo "make check                              selftest + tests (no game files needed)"
 	@echo "make preflight CLIENT=dir [SERVER=dir]  release gate for a client patch"
 	@echo "make manifest VERSION=2026.11.1         stamp $(STAGING)/ -> $(OUT)"
+	@echo "make catalog                            what can be altered, and what players see"
 	@echo "make info DBC=Item.dbc                  summarise a DBC file"
 	@echo "make clean                              remove caches and $(OUT)"
 
@@ -42,6 +43,11 @@ preflight:
 
 manifest:
 	$(PY) tools/manifest.py make --staging "$(STAGING)" --version "$(VERSION)" --out "$(OUT)"
+
+catalog:
+	$(PY) tools/catalog.py stats
+	@echo ""
+	@$(PY) tools/catalog.py matrix
 
 info:
 	$(PY) tools/dbc_tool.py info "$(DBC)"

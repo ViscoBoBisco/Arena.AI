@@ -167,6 +167,35 @@ All paths are AzerothCore `master`; TrinityCore 3.3.5 is structurally similar bu
 
 ---
 
+## Surfaces cited in 09 (the alteration catalog)
+
+The catalog's table names, column names and config keys are not guesses: they were read from the
+core's own schema and configuration files at the time of writing, so a row or key that does not
+exist in your fork is a *version* difference rather than an invented name.
+
+- **`data/sql/base/db_world/*.sql`** (AzerothCore `azerothcore-wotlk`, master) — the authoritative
+  list of world-database tables. Every `table:` surface in `catalog/alterations.json` appears there,
+  including the `*_dbc` overlay tables (`item_dbc`, `itemdisplayinfo_dbc`, `itemset_dbc`,
+  `itemextendedcost_dbc`, `spellitemenchantment_dbc`, `spelldifficulty_dbc`, `talent_dbc`,
+  `chartitles_dbc`, `currencytypes_dbc`, …). Read as: `gh api repos/azerothcore/azerothcore-wotlk/contents/data/sql/base/db_world`.
+- **`src/server/apps/worldserver/worldserver.conf.dist`** — the source of every `conf:` surface:
+  `Rate.*` (XP, drop, reputation, honor, talent, move speed, rest), `MaxPlayerLevel`,
+  `StartPlayerLevel/Money`, `Death.CorpseReclaimDelay.*`, `Corpse.Decay.*`, `Guild.*`,
+  `AllowTwoSide.*`, `Instance.ResetTimeHour`, `PvPToken.*`, `AddonChannel`,
+  `DBC.EnforceItemAttributes`, `Warden.*`.
+- **`src/server/game/AI/SmartScripts/SmartScriptMgr.h`** — SmartAI event/action/target enums used by
+  `mech.smartai` and by `examples/ashen-vault/`.
+- **Schema corroboration for the example** — `creature_template`, `creature_template_model`,
+  `creature`, `gameobject`, `gameobject_template`, `smart_scripts`, `creature_loot_template`,
+  `instance_template`, `conditions`, `gossip_menu_option` column lists, read individually.
+
+Two caveats that matter for anyone editing the catalog: forks rename columns (`creature_template`
+model columns became `creature_template_model` in current AzerothCore), and TrinityCore's table set
+differs in places. `tools/catalog.py validate` checks the catalog's *shape*, not your database's —
+`SHOW COLUMNS` does the rest.
+
+---
+
 ## Things explicitly *not* verified here
 
 - Exact `ItemSet.dbc` field count beyond the first 10 item slots (cores read 10; the file may
