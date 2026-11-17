@@ -11,16 +11,17 @@ Three things live here:
 2. **A catalog and a toolchain** (`catalog/`, `tools/`) — 110 alterations with their player-visible
    effects and patch cost, queryable; a DBC inspector/validator, a one-command preflight gate, and a
    patch manifest generator/verifier. No game files required to use or test any of it.
-3. **Seven worked examples** — see [`examples/INDEX.md`](examples/INDEX.md) for the standard each one
-   meets and the ID ranges they own. A dungeon, a server-fed interface, a book system, a
-   three-person gate, a scheduled shop, a phasing pair, and a config-only season: every one loads on
-   a stock world DB, every one is verifiable in game, every one needs **no client patch**.
+3. **Seven worked examples** — see [`examples/INDEX.md`](examples/INDEX.md) for the structural
+   contract and ID ranges. They cover a dungeon, server-fed interface, books, cooperative ritual,
+   scheduled vendor, phasing, and configuration presets. Their SQL and model-level checks are
+   repository-tested; none has been qualified against a disposable live AzerothCore database in
+   this environment, and every referenced stock asset still requires local verification.
 
 > **The constraint that carries the value:** build custom content out of parts the client already
-> has. The 3.3.5a client ships ~59k creature displays, ~117k game-object displays, six figures of
-> item display rows, tens of thousands of spells and thousands of spell visuals. A server-driven
-> design built from those needs **no client patch at all** for most features, and a *tiny* patch
-> (a few hundred bytes of DBC rows, never models) for the rest.
+> has. Prefer existing IDs, models, spell visuals, DBC rows and server mechanics. A locally supplied
+> client extract is the evidence source for whether a particular ID exists and what its dependencies
+> are; no proprietary client files are shipped here. Never import new art/models or overwrite an
+> unknown custom archive.
 
 ---
 
@@ -33,10 +34,19 @@ python3 tools/catalog.py query --no-mpq            # what needs no client patch 
 python3 tools/dbc_tool.py info Item.dbc
 python3 tools/manifest.py make --staging patch/ --version 2026.11.1 --out manifest.json
 python3 tools/manifest.py verify --manifest manifest.json --staging patch/
+python3 tools/foundry.py plan specs/frost-armory.json
+python3 tools/foundry.py build specs/frost-armory.json --out /tmp/frost-armory --allow-unverified
+python3 tools/foundry.py verify /tmp/frost-armory
 ```
 
-Nothing here needs a WoW client, a database, or Windows. The DBC tooling is stdlib Python; its
-test suite generates its own fixtures, so you can validate the validator before trusting it.
+The Frost Armory command deliberately emits a **preview bundle**: its stock asset IDs are not
+verified, its SQL/module are not DB- or compile-qualified, and allowlisting unknown assets does not
+make the result production-ready. See `evidence.json` and [docs/12](docs/12-content-foundry.md).
+
+The static and synthetic tools need no WoW client, database, or Windows; they generate their own
+fixtures. Asset verification, SQL qualification, core compilation and live acceptance do require
+locally supplied compatible inputs and remain distinct evidence levels. The Foundry preview uses
+explicit `--allow-unverified`; it is not release approval.
 
 ---
 
@@ -65,14 +75,20 @@ test suite generates its own fixtures, so you can validate the validator before 
 
 ```
 README.md                     this page
-docs/                         the knowledge base (01–11)
+docs/                         the knowledge base + Foundry and adapter contracts (01–13)
+foundry/                      spec validation, ID policy, assets, generators, adapter, bundler, CLI
+specs/                        versioned declarative feature specifications
+packages/                     reproducible generated handoff bundles (evidence attached)
 catalog/alterations.json      110 levers: what you can change, what players see, patch cost
 tools/
   catalog.py                  query the catalog (layers, clocks, surfaces, patch kinds)
   dbc_tool.py                 inspect/validate DBCs: header, duplicates, free IDs, refs, drift
   preflight.sh                release gate: structure + parity + referential integrity
   manifest.py                 build/verify a manifest (sha256 per table, patch hash, version)
+  foundry.py                  validate/plan/build/verify/search/explain feature packages
   selftest.py                 synthetic fixtures for dbc_tool.py
+specs/frost-armory.json       Foundry v1 pipeline exercise; asset IDs explicitly unverified
+packages/frost-armory/        generated preview bundle; see evidence.json before any use
 examples/INDEX.md             the "full example" contract: seven parts, enforced by tests
 examples/ashen-vault/         a zero-client-patch dungeon: spec → SQL → acceptance → rollback
 examples/vault-terminal/      a zero-client-patch interface: protocol + model + addon + module + SQL
@@ -100,6 +116,8 @@ Makefile                      `make check`, `make preflight CLIENT=… SERVER=�
 | [09 — Alteration catalog](docs/09-alteration-catalog.md) | **What you can change and what players actually see**: the reflection model, six layers, three clocks, 110 levers, six patch-free compositions, and what will never show without a patch |
 | [10 — Novel alterations](docs/10-novel-alterations.md) | **Using the surface as a language**: the six escape hatches, books as a CMS, gossip as an app, the quest log as a HUD, the addon channel as a socket, gameobject types as devices, and the safety rules for clever content |
 | [11 — Testing ladder](docs/11-testing-ladder.md) | What an intern, an engineer and a master engineer each test — and the thirteen real defects those tiers found in this project's own tooling, docs and claims |
+| [12 — Content Foundry](docs/12-content-foundry.md) | Declarative spec v1, validation, local asset ingest, generators, release bundle, evidence ladder, current limits and task ledger |
+| [13 — Campaign Party adapter](docs/13-campaign-party-adapter.md) | Versioned offline admission seam, fake host, safety semantics and real-baseline requirements |
 
 ## Glossary
 

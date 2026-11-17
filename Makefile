@@ -6,6 +6,10 @@
 #   make preflight CLIENT=dbc-client/ [SERVER=dbc-server/]
 #   make manifest VERSION=2026.11.1 [STAGING=patch/]
 #   make info DBC=Item.dbc
+#   make foundry-validate SPEC=specs/frost-armory.json [ALLOW_UNVERIFIED=1]
+#   make foundry-plan SPEC=specs/frost-armory.json
+#   make foundry-build SPEC=specs/frost-armory.json FOUNDRY_OUT=packages/frost-armory [ALLOW_UNVERIFIED=1]
+#   make foundry-verify PACKAGE=packages/frost-armory
 #   make clean
 
 SHELL    := /bin/sh
@@ -16,8 +20,12 @@ SERVER   ?=
 STAGING  ?= patch
 OUT      ?= manifest.json
 DBC      ?= Item.dbc
+SPEC     ?= specs/frost-armory.json
+PACKAGE  ?= packages/frost-armory
+FOUNDRY_OUT ?= packages/frost-armory
+ALLOW_UNVERIFIED ?= 0
 
-.PHONY: all help check test test-intern test-engineer test-master selftest preflight manifest catalog info clean
+.PHONY: all help check test test-intern test-engineer test-master selftest preflight manifest catalog info foundry-validate foundry-plan foundry-build foundry-verify clean
 
 all: help
 
@@ -28,6 +36,10 @@ help:
 	@echo "make manifest VERSION=2026.11.1         stamp $(STAGING)/ -> $(OUT)"
 	@echo "make catalog                            what can be altered, and what players see"
 	@echo "make info DBC=Item.dbc                  summarise a DBC file"
+	@echo "make foundry-validate SPEC=...           fail-closed feature-spec validation"
+	@echo "make foundry-plan SPEC=...               preview IDs and patch cost"
+	@echo "make foundry-build SPEC=... FOUNDRY_OUT=... generate bundle (allowlist unknowns explicitly)"
+	@echo "make foundry-verify PACKAGE=...          verify bundle file hashes"
 	@echo "make clean                              remove caches and $(OUT)"
 
 check: selftest test
@@ -61,6 +73,18 @@ catalog:
 
 info:
 	$(PY) tools/dbc_tool.py info "$(DBC)"
+
+foundry-validate:
+	$(PY) tools/foundry.py validate "$(SPEC)" $(if $(filter 1 true yes,$(ALLOW_UNVERIFIED)),--allow-unverified,)
+
+foundry-plan:
+	$(PY) tools/foundry.py plan "$(SPEC)"
+
+foundry-build:
+	$(PY) tools/foundry.py build "$(SPEC)" --out "$(FOUNDRY_OUT)" $(if $(filter 1 true yes,$(ALLOW_UNVERIFIED)),--allow-unverified,)
+
+foundry-verify:
+	$(PY) tools/foundry.py verify "$(PACKAGE)"
 
 clean:
 	rm -rf tools/__pycache__ tests/__pycache__ __pycache__ "$(OUT)"
