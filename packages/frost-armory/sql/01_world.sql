@@ -17,32 +17,32 @@ INSERT INTO item_template (entry, name, description, VerifiedBuild) VALUES (9010
 -- display_id 41182 must already exist in ItemDisplayInfo.dbc (patch cost: dbc-rows if missing) -- TODO(verify): confirm this id in your own client data
 
 -- spells (spell_dbc overlay; visual/icon must already exist client-side)
-DELETE FROM spell_dbc WHERE Id = 901004;
-INSERT INTO spell_dbc (Id, Name) VALUES (901004, 'Frostbrand Proc');
-DELETE FROM spell_dbc WHERE Id = 901005;
-INSERT INTO spell_dbc (Id, Name) VALUES (901005, 'Rimeward Aura');
+DELETE FROM spell_dbc WHERE Id = 901000;
+INSERT INTO spell_dbc (Id, Name) VALUES (901000, 'Frostbrand Proc');
+DELETE FROM spell_dbc WHERE Id = 901001;
+INSERT INTO spell_dbc (Id, Name) VALUES (901001, 'Rimeward Aura');
 
 -- quests (quest_template)
-DELETE FROM quest_template WHERE Id = 901006;
-INSERT INTO quest_template (Id, Title, Objectives, VerifiedBuild) VALUES (901006, 'Prove the Cold', 'Defeat the Frost Armory keeper and return with proof.', 12340);
+DELETE FROM quest_template WHERE Id = 901000;
+INSERT INTO quest_template (Id, Title, Objectives, VerifiedBuild) VALUES (901000, 'Prove the Cold', 'Defeat the Frost Armory keeper and return with proof.', 12340);
 
 -- creatures (creature_template + model)
-DELETE FROM creature_template_model WHERE CreatureID = 901007;
-DELETE FROM creature_template WHERE entry = 901007;
-INSERT INTO creature_template (entry, name, minlevel, maxlevel, VerifiedBuild) VALUES (901007, 'Frost Armory Keeper', 80, 80, 12340);
-INSERT INTO creature_template_model (CreatureID, Idx, CreatureDisplayID, DisplayScale, Probability, VerifiedBuild) VALUES (901007, 0, 24954, 1.0, 1, 12340); -- TODO(verify): confirm this id in your own client data
+DELETE FROM creature_template_model WHERE CreatureID = 901000;
+DELETE FROM creature_template WHERE entry = 901000;
+INSERT INTO creature_template (entry, name, minlevel, maxlevel, VerifiedBuild) VALUES (901000, 'Frost Armory Keeper', 80, 80, 12340);
+INSERT INTO creature_template_model (CreatureID, Idx, CreatureDisplayID, DisplayScale, Probability, VerifiedBuild) VALUES (901000, 0, 24954, 1.0, 1, 12340); -- TODO(verify): confirm this id in your own client data
 
 -- vendors (npc_vendor)
-DELETE FROM npc_vendor WHERE entry = 901007 AND item = 901000;
-INSERT INTO npc_vendor (entry, slot, item, maxcount, incrtime, ExtendedCost, VerifiedBuild) VALUES (901007, 1, 901000, 1, 0, 0, 12340);
-DELETE FROM npc_vendor WHERE entry = 901007 AND item = 901001;
-INSERT INTO npc_vendor (entry, slot, item, maxcount, incrtime, ExtendedCost, VerifiedBuild) VALUES (901007, 2, 901001, 1, 0, 0, 12340);
-DELETE FROM npc_vendor WHERE entry = 901007 AND item = 901002;
-INSERT INTO npc_vendor (entry, slot, item, maxcount, incrtime, ExtendedCost, VerifiedBuild) VALUES (901007, 3, 901002, 0, 0, 0, 12340);
+DELETE FROM npc_vendor WHERE entry = 901000 AND item = 901000;
+INSERT INTO npc_vendor (entry, slot, item, maxcount, incrtime, ExtendedCost, VerifiedBuild) VALUES (901000, 1, 901000, 1, 0, 0, 12340);
+DELETE FROM npc_vendor WHERE entry = 901000 AND item = 901001;
+INSERT INTO npc_vendor (entry, slot, item, maxcount, incrtime, ExtendedCost, VerifiedBuild) VALUES (901000, 2, 901001, 1, 0, 0, 12340);
+DELETE FROM npc_vendor WHERE entry = 901000 AND item = 901002;
+INSERT INTO npc_vendor (entry, slot, item, maxcount, incrtime, ExtendedCost, VerifiedBuild) VALUES (901000, 3, 901002, 0, 0, 0, 12340);
 
 -- recipes (crafting: result <- ingredients; deterministic identity)
--- recipe 901009: produces item 901000 from 901002x4, 901003x2
--- recipe 901010: produces item 901001 from 901002x6, 901003x3
+-- recipe recipe-blade: produces item 901000 from 901002x4, 901003x2
+-- recipe recipe-chest: produces item 901001 from 901002x6, 901003x3
 
 -- world events (game_event; eventEntry is tinyint 0-255)
 DELETE FROM game_event WHERE eventEntry = 241;

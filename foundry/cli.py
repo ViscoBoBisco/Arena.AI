@@ -35,11 +35,45 @@ def _load(path: Path) -> Optional[dict]:
         return None
 
 
+def _load_reserved(path: Optional[Path]):
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SpecError(f"{path}: cannot read ID baseline ({exc})") from exc
+    if not isinstance(data, dict) or data.get("schema") != "arena-id-baseline/1":
+        raise SpecError(f"{path}: expected schema 'arena-id-baseline/1'")
+    values = data.get("reserved_ids")
+    if not isinstance(values, dict):
+        raise SpecError(f"{path}: reserved_ids must be an object mapping table names to ID arrays")
+    reserved = {}
+    for table, ids in values.items():
+        if not isinstance(table, str) or not isinstance(ids, list) or any(
+                not isinstance(value, int) or isinstance(value, bool) for value in ids):
+            raise SpecError(f"{path}: reserved_ids entries must be table -> integer array")
+        if len(set(ids)) != len(ids):
+            raise SpecError(f"{path}: duplicate reserved ID in table {table}")
+        reserved[table] = set(ids)
+    return reserved
+
+
+def _reserved_arg(args):
+    try:
+        return _load_reserved(getattr(args, "baseline", None))
+    except SpecError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return None
+
+
 def cmd_validate(args) -> int:
     spec = _load(args.spec)
     if spec is None:
         return 2
-    result = validate_spec(spec, world_tables=_world_tables(),
+    reserved = _reserved_arg(args)
+    if reserved is None:
+        return 2
+    result = validate_spec(spec, world_tables=_world_tables(), reserved=reserved,
                            allow_unverified=args.allow_unverified)
     print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
     return 0 if result.ok else 1
@@ -50,26 +84,41 @@ def cmd_plan(args) -> int:
     if spec is None:
         return 2
     from .spec import allocate_ids, patch_cost
+    reserved = _reserved_arg(args)
+    if reserved is None:
+        return 2
+    try:
+        ids = allocate_ids(spec, reserved=reserved)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    result = validate_spec(spec, world_tables=_world_tables(), reserved=reserved,
+                           allow_unverified=True)
     print(json.dumps({
         "spec": spec.get("name"),
         "patch_cost": patch_cost(spec),
-        "ids": allocate_ids(spec),
+        "ids": ids,
+        "validation": result.to_dict(),
         "objects": {k: len(spec.get(k) or []) for k in
                     ("items", "spells", "quests", "creatures", "gameobjects",
                      "vendors", "recipes", "events")},
     }, indent=2, sort_keys=True))
-    return 0
+    return 0 if not result.essential_blocked or result.essential_blocked == ["asset-verification"] else 1
 
 
 def cmd_build(args) -> int:
     spec = _load(args.spec)
     if spec is None:
         return 2
-    result = validate_spec(spec, world_tables=_world_tables(),
+    reserved = _reserved_arg(args)
+    if reserved is None:
+        return 2
+    result = validate_spec(spec, world_tables=_world_tables(), reserved=reserved,
                            allow_unverified=args.allow_unverified)
     try:
         manifest = build_package(spec, result, args.out,
                                  allow_unverified=args.allow_unverified,
+                                 reserved=reserved,
                                  stamp=args.stamp)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -167,22 +216,25 @@ def cmd_explain(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="foundry",
-        description=f"Arena Content Foundry v{__version__}: spec -> qualified package")
+        description=f"Arena Content Foundry v{__version__}: spec -> reproducible handoff bundle")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     v = sub.add_parser("validate", help="validate a spec (fail-closed)")
     v.add_argument("spec", type=Path)
     v.add_argument("--allow-unverified", action="store_true")
+    v.add_argument("--baseline", type=Path, help="reserved-ID snapshot (arena-id-baseline/1 JSON)")
     v.set_defaults(func=cmd_validate)
 
     pl = sub.add_parser("plan", help="preview ids + patch cost without building")
     pl.add_argument("spec", type=Path)
+    pl.add_argument("--baseline", type=Path, help="reserved-ID snapshot (arena-id-baseline/1 JSON)")
     pl.set_defaults(func=cmd_plan)
 
     b = sub.add_parser("build", help="build a package bundle from a spec")
     b.add_argument("spec", type=Path)
     b.add_argument("--out", type=Path, required=True)
     b.add_argument("--allow-unverified", action="store_true")
+    b.add_argument("--baseline", type=Path, help="reserved-ID snapshot (arena-id-baseline/1 JSON)")
     b.add_argument("--stamp", action="store_true")
     b.set_defaults(func=cmd_build)
 

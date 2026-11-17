@@ -47,6 +47,10 @@ KINDS = {
     "recipe": ("recipes", "spell_dbc", ("key", "result_key")),
     "event": ("events", "game_event", ("key", "name")),
 }
+# These are relationships/compositions, not rows with their own primary ID.
+# Vendor stock is keyed by creature+item; recipes are represented by their
+# result/spell relationship. Their stable `key` is for references only.
+NON_ID_KINDS = {"vendor", "recipe"}
 # tables the generators may emit SQL for (subset of catalog/world_tables.txt;
 # the full allowlist is enforced against that file at validation time).
 SQL_TABLES = {
@@ -170,9 +174,13 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
     # --- objects, references, IDs ----------------------------------------
     keys: Dict[str, str] = {}          # key -> kind
     allocated: Dict[str, int] = {}     # key -> numeric id
-    next_id = lo if lo is not None else 0
     unverified: List[str] = []
+    try:
+        allocated = allocate_ids(spec, reserved=reserved)
+    except ValueError as exc:
+        add(Problem("ids", FAIL, str(exc)))
 
+    ids_by_table: Dict[str, Dict[int, str]] = {}
     for kind, (spec_key, table, required) in KINDS.items():
         objs = spec.get(spec_key) or []
         if not isinstance(objs, list):
@@ -193,17 +201,19 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
                 add(Problem("references", FAIL, f"duplicate key '{key}'"))
                 continue
             keys[key] = kind
-            # explicit id or allocate from the spec range
             explicit = obj.get("id")
-            if explicit is not None:
-                if not _is_int(explicit):
-                    add(Problem("ids", FAIL, f"{where}: id must be an integer"))
-                    continue
-                nid = explicit
+            if explicit is not None and not _is_int(explicit):
+                add(Problem("ids", FAIL, f"{where}: id must be an integer"))
+                continue
+            nid = allocated.get(key)
+            if nid is None:
+                continue
+            previous_key = ids_by_table.setdefault(table, {}).get(nid)
+            if previous_key is not None:
+                add(Problem("ids", FAIL,
+                            f"{where}: id {nid} duplicates {table} id assigned to '{previous_key}'"))
             else:
-                nid = next_id
-                next_id += 1
-            allocated[key] = nid
+                ids_by_table[table][nid] = key
             # Per-table range policy: a table whose ceiling is below the
             # spec range (game_event: tinyint 0-255) uses its own window.
             from .ids import TABLE_LIMITS as _TL
@@ -350,21 +360,77 @@ def patch_cost(spec: dict) -> str:
     return "none (server-side only)"
 
 
-def allocate_ids(spec: dict) -> Dict[str, int]:
-    """Deterministic key -> id map (explicit ids win, else range order)."""
+def allocate_ids(spec: dict, *, reserved=None) -> Dict[str, int]:
+    """Allocate deterministic, table-aware IDs without internal collisions.
+
+    Explicit IDs are reserved before automatic allocation, so an early
+    implicit object cannot steal a later explicit ID. Most objects allocate
+    inside the spec's inclusive custom range. Tables whose entire numeric
+    domain is smaller (notably ``game_event``) allocate within their own
+    table bounds. ``reserved`` maps table names to IDs from an external
+    baseline and is honored for automatic allocations; explicit collisions
+    are retained for the validator to report as a baseline conflict.
+    """
+    if not isinstance(spec, dict):
+        raise ValueError("spec must be an object")
     id_range = spec.get("id_range") or {}
-    nxt = id_range.get("start", 0)
-    out: Dict[str, int] = {}
-    for kind, (spec_key, _table, _req) in KINDS.items():
+    if not isinstance(id_range, dict):
+        raise ValueError("id_range must be an object")
+    range_lo, range_hi = id_range.get("start"), id_range.get("end")
+    if not (_is_int(range_lo) and _is_int(range_hi) and 0 <= range_lo <= range_hi):
+        raise ValueError("id_range must contain integer start/end with start<=end")
+    reserved = reserved or {}
+    explicit_by_table: Dict[str, set] = {}
+    entries = []
+    seen_keys = set()
+    for _kind, (spec_key, table, _required) in KINDS.items():
         objects = spec.get(spec_key)
-        for obj in objects if isinstance(objects, list) else []:
-            if not isinstance(obj, dict) or "key" not in obj:
+        if objects is None:
+            continue
+        if not isinstance(objects, list):
+            continue  # schema validator emits the structural error
+        for obj in objects:
+            if not isinstance(obj, dict) or not isinstance(obj.get("key"), str):
                 continue
-            if _is_int(obj.get("id")):
-                out[obj["key"]] = obj["id"]
-            else:
-                out[obj["key"]] = nxt
-                nxt += 1
+            key = obj["key"]
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            if _kind in NON_ID_KINDS:
+                if "id" in obj:
+                    raise ValueError(f"{_kind}:{key} is a relationship and does not allocate an ID")
+                continue
+            explicit = obj.get("id")
+            if explicit is not None and not _is_int(explicit):
+                continue  # schema validator reports malformed ID
+            entries.append((key, table, explicit))
+            if explicit is not None:
+                explicit_by_table.setdefault(table, set()).add(explicit)
+
+    for table, values in explicit_by_table.items():
+        if len(values) != sum(1 for _key, t, value in entries if t == table and value is not None):
+            raise ValueError(f"duplicate explicit IDs in table {table}")
+
+    out: Dict[str, int] = {}
+    used_by_table: Dict[str, set] = {table: set(values)
+                                     for table, values in explicit_by_table.items()}
+    for key, table, explicit in entries:
+        if explicit is not None:
+            out[key] = explicit
+            continue
+        minimum, maximum, _why = TABLE_LIMITS.get(table, (range_lo, range_hi, "spec range"))
+        if table not in TABLE_LIMITS or maximum >= range_lo:
+            low, high = range_lo, min(range_hi, maximum)
+        else:
+            low, high = max(minimum, 1), maximum
+        occupied = used_by_table.setdefault(table, set()) | set(reserved.get(table, set()))
+        candidate = low
+        while candidate <= high and candidate in occupied:
+            candidate += 1
+        if candidate > high:
+            raise ValueError(f"no free IDs remain for {table} in [{low}, {high}]")
+        out[key] = candidate
+        used_by_table[table].add(candidate)
     return out
 
 

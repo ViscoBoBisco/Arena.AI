@@ -6,9 +6,9 @@
 #   make preflight CLIENT=dbc-client/ [SERVER=dbc-server/]
 #   make manifest VERSION=2026.11.1 [STAGING=patch/]
 #   make info DBC=Item.dbc
-#   make foundry-validate SPEC=specs/frost-armory.json [ALLOW_UNVERIFIED=1]
-#   make foundry-plan SPEC=specs/frost-armory.json
-#   make foundry-build SPEC=specs/frost-armory.json FOUNDRY_OUT=packages/frost-armory [ALLOW_UNVERIFIED=1]
+#   make foundry-validate SPEC=specs/frost-armory.json [BASELINE=ids.json] [ALLOW_UNVERIFIED=1]
+#   make foundry-plan SPEC=specs/frost-armory.json [BASELINE=ids.json]
+#   make foundry-build SPEC=specs/frost-armory.json FOUNDRY_OUT=packages/frost-armory [BASELINE=ids.json] [ALLOW_UNVERIFIED=1]
 #   make foundry-verify PACKAGE=packages/frost-armory
 #   make clean
 
@@ -23,6 +23,7 @@ DBC      ?= Item.dbc
 SPEC     ?= specs/frost-armory.json
 PACKAGE  ?= packages/frost-armory
 FOUNDRY_OUT ?= packages/frost-armory
+BASELINE ?=
 ALLOW_UNVERIFIED ?= 0
 
 .PHONY: all help check test test-intern test-engineer test-master selftest preflight manifest catalog info foundry-validate foundry-plan foundry-build foundry-verify clean
@@ -75,13 +76,13 @@ info:
 	$(PY) tools/dbc_tool.py info "$(DBC)"
 
 foundry-validate:
-	$(PY) tools/foundry.py validate "$(SPEC)" $(if $(filter 1 true yes,$(ALLOW_UNVERIFIED)),--allow-unverified,)
+	$(PY) tools/foundry.py validate "$(SPEC)" $(if $(BASELINE),--baseline "$(BASELINE)",) $(if $(filter 1 true yes,$(ALLOW_UNVERIFIED)),--allow-unverified,)
 
 foundry-plan:
-	$(PY) tools/foundry.py plan "$(SPEC)"
+	$(PY) tools/foundry.py plan "$(SPEC)" $(if $(BASELINE),--baseline "$(BASELINE)",)
 
 foundry-build:
-	$(PY) tools/foundry.py build "$(SPEC)" --out "$(FOUNDRY_OUT)" $(if $(filter 1 true yes,$(ALLOW_UNVERIFIED)),--allow-unverified,)
+	$(PY) tools/foundry.py build "$(SPEC)" --out "$(FOUNDRY_OUT)" $(if $(BASELINE),--baseline "$(BASELINE)",) $(if $(filter 1 true yes,$(ALLOW_UNVERIFIED)),--allow-unverified,)
 
 foundry-verify:
 	$(PY) tools/foundry.py verify "$(PACKAGE)"

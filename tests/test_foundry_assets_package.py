@@ -53,6 +53,8 @@ class Packaging(unittest.TestCase):
             evidence = json.loads((out / "evidence.json").read_text(encoding="utf-8"))
             self.assertEqual(len(evidence["acceptance"]), 8)
             self.assertTrue(all(c["status"] == "NOT_ASSESSED" for c in evidence["acceptance"]))
+            readme = (out / "README.md").read_text(encoding="utf-8")
+            self.assertIn("Do not install", readme)
             verified = helpers.run_tool(FOUNDRY, "verify", out)
             self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
 

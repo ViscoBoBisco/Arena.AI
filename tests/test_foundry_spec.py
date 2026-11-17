@@ -104,6 +104,7 @@ class NegativeTests(unittest.TestCase):
 
     def test_baseline_collision_fails(self):
         spec = copy.deepcopy(SPEC)
+        spec["items"][0]["id"] = 901000
         result = validate(spec, allow_unverified=True,
                           reserved={"item_template": {901000}})
         self.assertEqual(result.verdicts["ids"], "FAIL")
