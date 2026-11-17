@@ -24,7 +24,7 @@ python3 tools/foundry.py verify /tmp/frost-armory
 
 ## Spec v1 contract
 
-A spec has `spec_version: 1`, a lowercase hyphenated `name`, semver `version`, title, inclusive `id_range`, optional dependency declarations, and object arrays (`items`, `spells`, `quests`, `creatures`, `gameobjects`, `vendors`, `recipes`, `events`) plus addon/module/config and at least three acceptance statements. Object references use stable `key` values. The validator rejects unknown top-level fields, malformed IDs, duplicate keys, dangling vendor/recipe/quest references, IDs outside table bounds and unknown world tables. `game_event.eventEntry` is constrained to its own 0–255 table limit rather than inheriting the spec's custom-ID window.
+A spec has `spec_version: 1`, a lowercase hyphenated `name`, semver `version`, title, inclusive `id_range`, optional dependency declarations, and object arrays (`items`, `spells`, `quests`, `creatures`, `gameobjects`, `vendors`, `recipes`, `events`) plus addon/module/config, optional table-scoped `delivery` declarations, and at least three acceptance statements. The derived `arena-delivery-requirements/1` contract enumerates required artifacts and host capabilities; `patch_cost` is display-only. Object references use stable `key` values. The validator rejects unknown top-level fields, malformed IDs, duplicate keys, dangling vendor/recipe/quest references, IDs outside table bounds and unknown world tables. `game_event.eventEntry` is constrained to its own 0–255 table limit rather than inheriting the spec's custom-ID window.
 
 A client asset reference can be an integer (meaning the author asserts it is known) or an explicit object such as `{"value": 41179, "verified": false}`. For release-grade work, use a locally supplied DBC extract or source-backed inventory and record evidence for every referenced display, model, icon and visual. An integer alone is an author assertion, not independent verification. The current v1 schema validates a useful common subset; it is not yet a complete grammar for every field in every WoW content family.
 
@@ -52,7 +52,7 @@ The generated artifacts are **not all production implementations** yet. SQL gene
 | Level | What earns it | Frost Armory status on this branch |
 |---|---|---|
 | `ARENA-STATIC` | schema, structural and repository checks | Spec structure checks run; stock asset verification remains `NOT_ASSESSED` |
-| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | 64 Foundry-focused tests, 7 frontier-design guard tests, 6 catalytic-crafting design guard tests and all 226 repository tests pass in this branch; generated bundle does not attest test execution |
+| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | 76 Foundry-focused tests, 7 frontier-design guard tests, 6 catalytic-crafting design guard tests and all 238 repository tests pass in this branch; generated bundle does not attest test execution |
 | `ARENA-DB` | apply and rollback on a disposable compatible DB | Pending; no MySQL/AzerothCore DB in this environment |
 | `ARENA-COMPILE` | module compile/API check against pinned compatible AzerothCore | Pending; generated module is a skeleton and is not compiled |
 | `ARENA-PACK` | reproducible package and independent integrity verification | `foundry verify packages/frost-armory` passes in this workspace; package evidence marks verification as an external required step, not a self-claim |
@@ -67,7 +67,7 @@ Acceptance conditions are deliberately explicit; `done` means the contract is im
 
 | Track | Work item | State / acceptance condition |
 |---|---|---|
-| A | Fail-closed spec, ID/table bounds, visible verdicts | **Partial** — synthetic validation and negative tests; client/server parity, full DBC references, schema and pinned-core checks remain |
+| A | Fail-closed spec, ID/table bounds, visible verdicts | **Partial** — structured artifact/capability requirements and client/server hash-parity admission gates are synthetic-tested; full asset provenance, DBC references, schema and pinned-core checks remain |
 | B | Local DBC/inventory ingest, deterministic keyword search and patch-cost query | **Partial** — implemented subset; semantic relationships, MPQ inventory parser and broad DBC coverage remain |
 | C | Versioned JSON spec, key references, ID allocation and preview | **Partial** — spec v1 common subset and snapshot-aware ID allocation; transactional cross-package registry, migration tooling and all content grammars remain |
 | D | Deterministic bundle, rollback, manifest verification, lossless DBC delta writer | **Partial** — narrow writer and bundle; conflict-aware merge, MPQ assembly and cache invalidation remain |
@@ -78,7 +78,7 @@ Acceptance conditions are deliberately explicit; `done` means the contract is im
 | I | Static/synthetic qualification and negative tests | **Partial** — synthetic suite done; disposable DB, compile, addon runtime, installer fault/rollback tests remain |
 | J | CLI create/inspect/plan/build/verify/compare/explain | **Partial** — validate/plan/build/verify/assets/explain and imported baseline snapshots available; compare, GUI and live baseline discovery remain |
 | K | Nine cohesive production showcases | **Not done** — Frost Armory is a compiler exercise, not a production-ready showcase; eight others not built |
-| L | Campaign Party contract, fake host and handoff | **Partial** — adapter v1 fake host exercises dry-run/admission/idempotency gates; actual baseline admission and complete handoff checker remain |
+| L | Campaign Party contract, fake host and handoff | **Partial** — adapter v1.1 fake host exercises structured delivery requirements, DBC hash-parity and idempotency gates; actual downstream baseline admission and complete handoff checker remain |
 
 ## Compatibility and risk
 

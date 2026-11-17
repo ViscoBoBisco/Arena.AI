@@ -27,7 +27,7 @@ from typing import Dict, Optional
 from . import ADAPTER_VERSION, SPEC_VERSION
 from . import generate
 from .adapter import FakeHost
-from .spec import ValidationResult, allocate_ids, patch_cost
+from .spec import ValidationResult, allocate_ids, delivery_requirements, patch_cost
 
 EVIDENCE_LEVELS = (
     "ARENA-STATIC", "ARENA-SYNTHETIC", "ARENA-DB", "ARENA-COMPILE",
@@ -90,6 +90,21 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
             if isinstance(obj, dict) and obj.get("key") in ids:
                 by_table.setdefault(table, []).append(ids[obj["key"]])
     unverified = _unverified_refs(spec)
+    requirements = delivery_requirements(spec)
+    available_artifacts = []
+    if "sql/01_world.sql" in files and any(
+            spec.get(spec_key) for spec_key, _table, _req in _kind_tables().values()):
+        available_artifacts.extend(({"kind": "world_sql"}, {"kind": "data_migration"}))
+    if any(path.startswith("server/") for path in files):
+        available_artifacts.append({"kind": "server_module"})
+    if any(path.startswith("addon/") for path in files):
+        available_artifacts.append({"kind": "addon_files"})
+    if any(path.startswith("conf/") or path.endswith(".conf.dist") for path in files):
+        available_artifacts.append({"kind": "config"})
+    for path, content in files.items():
+        if path.startswith("dbc/") and path.endswith(".delta.json"):
+            table = json.loads(content.decode("utf-8")).get("table")
+            available_artifacts.append({"kind": "client_dbc", "table": table})
     host = host or FakeHost(reserved_ids=reserved)
     intent = {
         "idempotency_key": f"{spec['name']}-{spec['version']}",
@@ -97,6 +112,9 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
         "allow_unverified": allow_unverified,
         "payload": {
             "patch_cost": patch_cost(spec),
+            "feature_spec": spec,
+            "delivery_requirements": requirements,
+            "available_artifacts": available_artifacts,
             "ids": by_table,
             "schema_version": "1.0.0",
             "unverified": unverified,
@@ -112,6 +130,7 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
         "package_version": spec.get("version"),
         "validation": result.to_dict(),
         "patch_cost": patch_cost(spec),
+        "delivery_requirements": requirements,
         "allow_unverified": allow_unverified,
         "acceptance": [
             {"statement": item.get("check", str(item)) if isinstance(item, dict) else str(item),
@@ -147,6 +166,7 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
         "spec_version": spec.get("spec_version"),
         "client_build": "3.3.5a.12340",
         "patch_cost": patch_cost(spec),
+        "delivery_requirements": requirements,
         "id_baseline_sha256": baseline_sha256,
         "files": {rel: {"sha256": _sha256(data), "size": len(data)}
                   for rel, data in sorted(files.items())},

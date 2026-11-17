@@ -83,7 +83,7 @@ def cmd_plan(args) -> int:
     spec = _load(args.spec)
     if spec is None:
         return 2
-    from .spec import allocate_ids, patch_cost
+    from .spec import allocate_ids, delivery_requirements, patch_cost
     reserved = _reserved_arg(args)
     if reserved is None:
         return 2
@@ -97,6 +97,7 @@ def cmd_plan(args) -> int:
     print(json.dumps({
         "spec": spec.get("name"),
         "patch_cost": patch_cost(spec),
+        "delivery_requirements": delivery_requirements(spec),
         "ids": ids,
         "validation": result.to_dict(),
         "objects": {k: len(spec.get(k) or []) for k in

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import SPEC_VERSION
+from . import ADAPTER_VERSION, SPEC_VERSION
 from .ids import TABLE_LIMITS, check_id
 
 # Verdicts. Fail-closed: only PASS counts as good.
@@ -34,7 +34,7 @@ TOP_LEVEL_KEYS = {
     "spec_version", "name", "version", "title", "description",
     "id_range", "requires", "items", "spells", "quests", "creatures",
     "gameobjects", "vendors", "recipes", "events", "config",
-    "addon", "module", "dependencies", "acceptance", "notes",
+    "addon", "module", "dependencies", "acceptance", "notes", "delivery",
 }
 # object kind -> (spec key, id table it allocates from, required fields)
 KINDS = {
@@ -163,6 +163,32 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
             add(Problem("schema", FAIL, f"{field_name} must be an object"))
     if spec.get("config") is not None and not isinstance(spec.get("config"), dict):
         add(Problem("schema", FAIL, "config must be an object"))
+    delivery = spec.get("delivery")
+    if delivery is not None:
+        allowed_delivery_keys = {"client_dbc_tables", "server_dbc_tables", "characters_sql_tables"}
+        if not isinstance(delivery, dict):
+            add(Problem("schema", FAIL, "delivery must be an object"))
+        else:
+            unknown_delivery = sorted(set(delivery) - allowed_delivery_keys)
+            if unknown_delivery:
+                add(Problem("schema", FAIL,
+                            f"unknown delivery keys: {', '.join(unknown_delivery)}"))
+            for table_key in allowed_delivery_keys:
+                tables = delivery.get(table_key, [])
+                if (not isinstance(tables, list)
+                        or any(not isinstance(table, str) or not table.strip() for table in tables)
+                        or len(set(tables)) != len(tables)):
+                    add(Problem("schema", FAIL,
+                                f"delivery.{table_key} must be a unique list of non-empty strings"))
+            client_tables = set(delivery.get("client_dbc_tables", [])) \
+                if isinstance(delivery.get("client_dbc_tables", []), list) else set()
+            server_tables = set(delivery.get("server_dbc_tables", [])) \
+                if isinstance(delivery.get("server_dbc_tables", []), list) else set()
+            if client_tables != server_tables:
+                add(Problem(
+                    "delivery", FAIL,
+                    "client_dbc_tables and server_dbc_tables must declare "
+                    "the same tables for parity"))
     id_range = spec.get("id_range") or {}
     if not isinstance(id_range, dict):
         id_range = {}
@@ -195,6 +221,8 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
             for req in required:
                 if req not in obj:
                     add(Problem("references", FAIL, f"{where}: missing required field '{req}'"))
+            if "dbc_row" in obj and not isinstance(obj["dbc_row"], bool):
+                add(Problem("schema", FAIL, f"{where}: dbc_row must be boolean"))
             if not isinstance(key, str) or not key:
                 continue
             if key in keys:
@@ -299,9 +327,14 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
     else:
         add(Problem("tables", SKIPPED, "no world_tables allowlist supplied"))
 
-    # --- patch cost --------------------------------------------------------
+    # --- structured delivery contract + display-only summary --------------
+    requirements = delivery_requirements(spec)
+    if not any(p.check == "delivery" and p.verdict == FAIL for p in result.problems):
+        add(Problem("delivery", PASS,
+                    f"{len(requirements['artifacts'])} required artifact(s), "
+                    f"{len(requirements['capabilities'])} host capability gate(s)"))
     patch = patch_cost(spec)
-    add(Problem("patch-cost", PASS, f"patch cost: {patch}"))
+    add(Problem("patch-cost", PASS, f"display summary only: {patch}"))
 
     # --- unverified assets (fail-closed) ----------------------------------
     if unverified:
@@ -348,15 +381,103 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
     return result
 
 
-def patch_cost(spec: dict) -> str:
-    """Classify delivery cost from the spec's own content. Never guesses."""
+def delivery_requirements(spec: dict) -> dict:
+    """Return independent artifact and host-capability requirements.
+
+    The summary string returned by :func:`patch_cost` is for display only;
+    admission must consume this structured contract instead.
+    """
+    declared = spec.get("delivery") if isinstance(spec.get("delivery"), dict) else {}
+
+    def string_set(key: str) -> set:
+        values = declared.get(key, [])
+        if not isinstance(values, list):
+            return set()
+        return {value for value in values if isinstance(value, str)}
+
+    client_tables = string_set("client_dbc_tables")
+    server_tables = string_set("server_dbc_tables")
+    items = spec.get("items")
+    for obj in items if isinstance(items, list) else []:
+        if isinstance(obj, dict) and obj.get("dbc_row"):
+            client_tables.add("Item.dbc")
+            server_tables.add("Item.dbc")
+    spells = spec.get("spells")
+    for obj in spells if isinstance(spells, list) else []:
+        if isinstance(obj, dict) and obj.get("dbc_row"):
+            client_tables.add("Spell.dbc")
+            server_tables.add("Spell.dbc")
+
+    artifacts = []
+
+    def artifact(kind: str, *, table: Optional[str] = None, activation: str) -> None:
+        entry = {
+            "kind": kind,
+            "version": str(spec.get("version", "0.0.0")),
+            "trust": "generated_unqualified",
+            "activation": activation,
+        }
+        if table is not None:
+            entry["table"] = table
+        if entry not in artifacts:
+            artifacts.append(entry)
+
+    has_world_content = any(spec.get(spec_key) for spec_key, _table, _required in KINDS.values())
+    if has_world_content:
+        artifact("world_sql", activation="apply_after_schema_qualification")
+        artifact("data_migration", activation="apply_after_backup_and_review")
+    for table in sorted(string_set("characters_sql_tables")):
+        artifact("characters_sql", table=table, activation="apply_after_schema_qualification")
+        artifact("data_migration", table=table, activation="apply_after_backup_and_review")
+    if spec.get("module"):
+        artifact("server_module", activation="compile_before_install")
     if spec.get("addon"):
+        artifact("addon_files", activation="copy_after_protocol_review")
+    for table in sorted(client_tables):
+        artifact("client_dbc", table=table, activation="merge_into_new_patch_after_parity")
+    for table in sorted(server_tables):
+        artifact("server_dbc", table=table, activation="install_with_matching_client_dbc")
+    if client_tables:
+        artifact("mpq", activation="build_separate_archive_after_collision_review")
+    if spec.get("config") or spec.get("module"):
+        artifact("config", activation="install_after_module_review")
+
+    capability_names = set()
+    artifact_kinds = {entry["kind"] for entry in artifacts}
+    if "world_sql" in artifact_kinds:
+        capability_names.add("world_db")
+    if "characters_sql" in artifact_kinds:
+        capability_names.add("characters_db")
+    if "server_module" in artifact_kinds:
+        capability_names.add("server_module")
+    if "addon_files" in artifact_kinds:
+        capability_names.add("addon_channel")
+    if "mpq" in artifact_kinds:
+        capability_names.update(("mpq_patch", "client_server_dbc_parity"))
+    if "config" in artifact_kinds:
+        capability_names.add("config_activation")
+    capabilities = [{
+        "name": name,
+        "version": "adapter:" + ADAPTER_VERSION,
+        "required": True,
+        "trust": "host_claim_and_snapshot_required",
+        "activation": "admission_gate",
+    } for name in sorted(capability_names)]
+    return {"schema": "arena-delivery-requirements/1",
+            "artifacts": artifacts, "capabilities": capabilities}
+
+
+def patch_cost(spec: dict) -> str:
+    """Human-readable delivery summary only; never use this for admission."""
+    artifacts = {entry["kind"] for entry in delivery_requirements(spec)["artifacts"]}
+    needs_dbc = "client_dbc" in artifacts or "mpq" in artifacts
+    has_addon = "addon_files" in artifacts
+    if needs_dbc and has_addon:
+        return "mixed delivery (addon-files + dbc-rows; MPQ patch required)"
+    if needs_dbc:
+        return "dbc-rows (MPQ patch required)"
+    if has_addon:
         return "client-files (addon folder; no MPQ)"
-    for kind in ("items", "spells"):
-        objects = spec.get(kind)
-        for obj in objects if isinstance(objects, list) else []:
-            if isinstance(obj, dict) and obj.get("dbc_row"):
-                return "dbc-rows (MPQ patch required)"
     return "none (server-side only)"
 
 

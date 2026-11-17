@@ -1,4 +1,4 @@
-"""Campaign Party adapter contract v1 + fake integration host.
+"""Campaign Party adapter contract v1.1 + fake integration host.
 
 The contract is the stable seam between Arena (offline content engineering)
 and Campaign Party (the downstream runtime). Arena never imports Campaign
@@ -14,20 +14,23 @@ Contract summary (docs/13):
   apply(intent)   -> only after admission; server-side revalidation happens
                      inside the host, never trusting the caller.
 
-Error codes are stable strings: CAPABILITY_MISSING, ID_COLLISION,
-SCHEMA_MISMATCH, ALREADY_APPLIED, VALIDATION_FAILED, NOT_ASSESSED,
-UNKNOWN_INTENT.
+Error codes are stable strings: CAPABILITY_MISSING, DBC_PARITY_MISSING,
+ARTIFACT_MISSING, REQUIREMENTS_INVALID, ID_COLLISION, SCHEMA_MISMATCH,
+ALREADY_APPLIED, VALIDATION_FAILED, NOT_ASSESSED, UNKNOWN_INTENT.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Dict, List, Optional
 
 from . import ADAPTER_VERSION
 
 REQUIRED_CAPABILITIES = ("world_db", "characters_db")
+DELIVERY_SCHEMA = "arena-delivery-requirements/1"
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _hash(obj) -> str:
@@ -43,7 +46,9 @@ class FakeHost:
         self._capabilities = dict(capabilities or {
             "world_db": True, "characters_db": True, "addon_channel": True,
             "playerbots": True, "ahbot": True, "material_exchange": True,
-            "mpq_patch": False, "party_commands": True,
+            "mpq_patch": False, "client_server_dbc_parity": False,
+            "server_module": True, "config_activation": True,
+            "party_commands": True,
         })
         self._schema_version = schema_version
         self._reserved = {k: set(v) for k, v in (reserved_ids or {}).items()}
@@ -80,12 +85,72 @@ class FakeHost:
         if kind not in ("install_package", "rollback_package", "dry_run"):
             return self._error("UNKNOWN_INTENT", f"unknown intent kind {kind!r}")
         payload = intent.get("payload") or {}
-        # capability gate: a package needing an MPQ patch cannot be admitted
-        # by a host that cannot merge patches (e.g. patch-4.MPQ is owned).
-        if payload.get("patch_cost", "none").startswith("dbc-rows") \
-                and not self._capabilities.get("mpq_patch"):
-            return self._error("CAPABILITY_MISSING",
-                               "package needs an MPQ/DBC patch; host cannot merge patches")
+        # Delivery is a structured contract; labels such as patch_cost are
+        # presentation only and are never consulted for admission.
+        requirements = payload.get("delivery_requirements")
+        feature_spec = payload.get("feature_spec")
+        if (not isinstance(requirements, dict)
+                or requirements.get("schema") != DELIVERY_SCHEMA
+                or not isinstance(requirements.get("artifacts"), list)
+                or not isinstance(requirements.get("capabilities"), list)
+                or not isinstance(feature_spec, dict)):
+            return self._error("REQUIREMENTS_INVALID",
+                               "payload needs feature_spec and arena-delivery-requirements/1")
+        from .spec import delivery_requirements
+        if delivery_requirements(feature_spec) != requirements:
+            return self._error("REQUIREMENTS_INVALID",
+                               "delivery requirements do not match the embedded feature spec")
+        for capability in requirements["capabilities"]:
+            if (not isinstance(capability, dict)
+                    or not isinstance(capability.get("name"), str)
+                    or not isinstance(capability.get("required"), bool)
+                    or not isinstance(capability.get("version"), str)
+                    or not isinstance(capability.get("trust"), str)
+                    or not isinstance(capability.get("activation"), str)):
+                return self._error("REQUIREMENTS_INVALID", "malformed capability requirement")
+            if capability["required"] and not self._capabilities.get(capability["name"], False):
+                return self._error("CAPABILITY_MISSING",
+                                   f"host lacks required capability {capability['name']}")
+            if capability["required"] and capability["name"] == "client_server_dbc_parity":
+                dbc_artifacts = [entry for entry in requirements["artifacts"]
+                                 if isinstance(entry, dict)
+                                 and entry.get("kind") in ("client_dbc", "server_dbc")]
+                tables = {entry.get("table") for entry in dbc_artifacts
+                          if isinstance(entry.get("table"), str)}
+                client = self._dbc_hashes.get("client", {})
+                server = self._dbc_hashes.get("server", {})
+                if (not tables or not isinstance(client, dict) or not isinstance(server, dict)
+                        or any(table not in client or table not in server
+                               or not isinstance(client[table], str)
+                               or not _SHA256_RE.fullmatch(client[table])
+                               or client[table] != server[table]
+                               for table in tables)):
+                    return self._error("DBC_PARITY_MISSING",
+                                       "required client/server DBC hashes are absent or differ")
+        available = payload.get("available_artifacts")
+        if not isinstance(available, list):
+            return self._error("REQUIREMENTS_INVALID", "available_artifacts must be a list")
+        available_keys = set()
+        for entry in available:
+            if (not isinstance(entry, dict)
+                    or not isinstance(entry.get("kind"), str)
+                    or (entry.get("table") is not None
+                        and not isinstance(entry.get("table"), str))):
+                return self._error("REQUIREMENTS_INVALID", "malformed available artifact")
+            available_keys.add((entry["kind"], entry.get("table")))
+        for artifact in requirements["artifacts"]:
+            if (not isinstance(artifact, dict)
+                    or not isinstance(artifact.get("kind"), str)
+                    or not isinstance(artifact.get("version"), str)
+                    or not isinstance(artifact.get("trust"), str)
+                    or not isinstance(artifact.get("activation"), str)
+                    or (artifact.get("table") is not None
+                        and not isinstance(artifact.get("table"), str))):
+                return self._error("REQUIREMENTS_INVALID", "malformed artifact requirement")
+            if (artifact["kind"], artifact.get("table")) not in available_keys:
+                return self._error("ARTIFACT_MISSING",
+                                   f"required artifact missing: {artifact['kind']}"
+                                   + (f" ({artifact['table']})" if artifact.get("table") else ""))
         # Collision checks apply to installs. Rollback is allowed to release
         # exactly the identifiers it names, but may not silently free IDs the
         # host never reserved for this installation.

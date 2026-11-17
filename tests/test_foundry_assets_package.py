@@ -53,10 +53,35 @@ class Packaging(unittest.TestCase):
             evidence = json.loads((out / "evidence.json").read_text(encoding="utf-8"))
             self.assertEqual(len(evidence["acceptance"]), 8)
             self.assertTrue(all(c["status"] == "NOT_ASSESSED" for c in evidence["acceptance"]))
+            requirements = evidence["delivery_requirements"]
+            self.assertEqual(requirements["schema"], "arena-delivery-requirements/1")
+            self.assertTrue({"world_sql", "data_migration", "server_module",
+                             "addon_files", "config"} <=
+                            {entry["kind"] for entry in requirements["artifacts"]})
+            compat = json.loads((out / "compatibility.json").read_text(encoding="utf-8"))
+            self.assertEqual(compat["receipt"]["status"], "admitted")
             readme = (out / "README.md").read_text(encoding="utf-8")
             self.assertIn("Do not install", readme)
             verified = helpers.run_tool(FOUNDRY, "verify", out)
             self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+
+    def test_mixed_addon_dbc_package_carries_independent_gates(self):
+        spec = json.loads(SPEC.read_text(encoding="utf-8"))
+        spec["items"][0]["dbc_row"] = True
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_path = Path(tmp) / "mixed.json"
+            out = Path(tmp) / "pkg"
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+            built = helpers.run_tool(FOUNDRY, "build", spec_path, "--out", out,
+                                     "--allow-unverified")
+            self.assertEqual(built.returncode, 0, built.stderr)
+            manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+            self.assertIn("mixed", manifest["patch_cost"])
+            kinds = {entry["kind"] for entry in manifest["delivery_requirements"]["artifacts"]}
+            self.assertTrue({"addon_files", "client_dbc", "server_dbc", "mpq"} <= kinds)
+            compat = json.loads((out / "compatibility.json").read_text(encoding="utf-8"))
+            self.assertEqual(compat["receipt"]["status"], "error")
+            self.assertEqual(compat["receipt"]["code"], "CAPABILITY_MISSING")
 
     def test_build_without_allowance_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
