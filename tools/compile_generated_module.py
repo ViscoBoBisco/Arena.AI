@@ -37,8 +37,11 @@ def _compile(entry: dict) -> Path:
 
 
 def _symbol(output: str, kind: str, name: str) -> bool:
-    return any(re.search(rf"\s{kind}\s+{re.escape(name)}$", line)
-               for line in output.splitlines())
+    # GNU nm's demangled output appends () to functions; callers may provide
+    # either the source spelling or the nm spelling.
+    bare_name = name[:-2] if name.endswith("()") else name
+    pattern = rf"\s{kind}\s+{re.escape(bare_name)}\(\)?$"
+    return any(re.search(pattern, line) for line in output.splitlines())
 
 
 def verify(build_dir: Path, core_source: Path, module: str, registration: str) -> None:
