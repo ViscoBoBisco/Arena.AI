@@ -289,7 +289,8 @@ class TheCountsAreTrue(unittest.TestCase):
         ladder = (helpers.REPO / "docs" / "11-testing-ladder.md").read_text(encoding="utf-8")
         claimed = [int(n) for n in re.findall(r"\((\d+) tests\)", ladder)]
         groups = [["tests.test_tier_intern"],
-                  ["tests.test_tier_engineer", "tests.test_tier_engineer_artifacts"],
+                  ["tests.test_tier_engineer", "tests.test_tier_engineer_artifacts",
+                   "tests.test_tier_engineer_examples"],
                   ["tests.test_tier_master"]]
         actual = [ut.TestLoader().loadTestsFromNames(g).countTestCases() for g in groups]
         self.assertEqual(claimed, actual, f"docs/11 says {claimed}, the suite has {actual}")

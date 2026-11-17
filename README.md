@@ -11,10 +11,10 @@ Three things live here:
 2. **A catalog and a toolchain** (`catalog/`, `tools/`) — 110 alterations with their player-visible
    effects and patch cost, queryable; a DBC inspector/validator, a one-command preflight gate, and a
    patch manifest generator/verifier. No game files required to use or test any of it.
-3. **Two worked examples** — [`examples/ashen-vault/`](examples/ashen-vault/README.md), a complete
-   custom dungeon that requires **zero client changes**; and
-   [`examples/vault-terminal/`](examples/vault-terminal/README.md), a **server-fed custom interface**
-   (addon + module + protocol) that needs no client patch either.
+3. **Seven worked examples** — see [`examples/INDEX.md`](examples/INDEX.md) for the standard each one
+   meets and the ID ranges they own. A dungeon, a server-fed interface, a book system, a
+   three-person gate, a scheduled shop, a phasing pair, and a config-only season: every one loads on
+   a stock world DB, every one is verifiable in game, every one needs **no client patch**.
 
 > **The constraint that carries the value:** build custom content out of parts the client already
 > has. The 3.3.5a client ships ~59k creature displays, ~117k game-object displays, six figures of
@@ -73,8 +73,14 @@ tools/
   preflight.sh                release gate: structure + parity + referential integrity
   manifest.py                 build/verify a manifest (sha256 per table, patch hash, version)
   selftest.py                 synthetic fixtures for dbc_tool.py
+examples/INDEX.md             the "full example" contract: seven parts, enforced by tests
 examples/ashen-vault/         a zero-client-patch dungeon: spec → SQL → acceptance → rollback
 examples/vault-terminal/      a zero-client-patch interface: protocol + model + addon + module + SQL
+examples/reliquary/           books as content: page_text chains on type-9 objects
+examples/ritual-gate/         a door that needs three people: GO type 18, reqParticipants
+examples/fair-weather-market/ a scheduled shop with per-player stock: event + vendor + conditions
+examples/two-cities/          phasing: two NPCs, one spot, phaseMask + spell_area
+examples/season-dials/        a balance pass with no data: two config presets
 tests/                        three test tiers: intern, engineer, master (stdlib only)
 Makefile                      `make check`, `make preflight CLIENT=… SERVER=…`, `make manifest`
 ```
