@@ -153,9 +153,10 @@
       ],
       "effect": "Corpses pay more or less; repair, vendor and training costs stay fixed, so the economy gets looser or tighter without touching any item.",
       "verify": [
-        "loot a few humanoids and compare",
-        ".modify money to reach a price point quickly"
+        "in a disposable realm, record coin from the same creature over multiple kills before and after the rate change",
+        "compare the sample totals and account for random variation instead of treating one kill as a deterministic assertion"
       ],
+      "notes": "The .modify money command changes a character's wallet; it is a control, not evidence for a drop-rate change. BuyPrice and SellPrice are separate vendor sinks, so isolate those changes from the money-drop rate when measuring the effect.",
       "docs": [
         "02"
       ]
@@ -199,9 +200,10 @@
       ],
       "effect": "Faction bars fill faster; spillover makes one faction's gain nudge its allies, so a single grind unlocks several quartermasters.",
       "verify": [
-        "turn in one repeatable quest",
-        "watch the faction bar in the reputation pane"
+        "on a disposable character, record the same repeatable quest turn-in before and after the rate change",
+        "watch the faction bar and check any intended spillover factions separately"
       ],
+      "notes": "Keep the config multiplier, reward-rate rows and spillover template as separate causes in the test; one faction's visible gain does not by itself prove every reputation source or ally spillover is configured.",
       "docs": [
         "02"
       ]
@@ -263,8 +265,10 @@
       ],
       "effect": "Corpse runs get longer or shorter, and elite corpses linger; dying feels expensive or cheap without touching combat.",
       "verify": [
-        "die to a normal mob and watch the reclaim timer"
+        "on a test character, measure one PvE corpse-reclaim delay against the configured value",
+        "test corpse decay independently; PvP reclaim settings are a separate case"
       ],
+      "notes": "Corpse reclaim delay and corpse decay are distinct behaviors. Use controlled test characters and distinguish PvE from PvP rather than inferring all five settings from one death.",
       "docs": [
         "02"
       ]
@@ -308,8 +312,11 @@
       ],
       "effect": "Charters and bank tabs cost what you say; guilds become a real gold sink or a free convenience.",
       "verify": [
-        "buy a charter on a test character"
+        "on a disposable test character, compare guild-charter cost with Guild.CharterCost",
+        "in a throwaway test guild, check initial bank tabs and a tab purchase without modifying a live guild",
+        "verify member-cap behavior only within a controlled test guild"
       ],
+      "notes": "Charter cost, initial tabs, bank-tab purchase prices and member limit are separate settings. Do not validate this by changing an established guild or its bank.",
       "docs": [
         "02"
       ]
@@ -349,9 +356,10 @@
       ],
       "effect": "Raids reset at your hour; access requirements decide who may enter at all.",
       "verify": [
-        ".instance listbinds",
-        ".instance unbind all then re-enter"
+        "inspect the test character's binds with .instance listbinds",
+        "verify reset timing using a dedicated test lockout across the configured reset boundary"
       ],
+      "notes": "Do not use an unbind-all command as a routine test; it can clear player lockouts. Access requirements, instance templates and LFG mappings are separate from the scheduled reset setting.",
       "docs": [
         "02"
       ]
@@ -589,8 +597,10 @@
       ],
       "effect": "Content unlocks in an order you control: breadcrumbs, attunements, one-time story beats.",
       "verify": [
-        "try to accept out of order and confirm it is refused"
+        "on isolated test characters, compare quest acceptance with and without the required predecessor",
+        "exercise condition-based gates separately from PrevQuestID links"
       ],
+      "notes": "PrevQuestID and conditions are distinct gating mechanisms; verify the starter relation and the player's quest state as well as the prerequisite row. A static SQL check does not prove the live questgiver path.",
       "docs": [
         "03"
       ]
@@ -845,8 +855,10 @@
       ],
       "effect": "Dying in your custom area sends players to the graveyard you picked instead of the nearest stock one.",
       "verify": [
-        "die in the zone and watch where the ghost spawns"
+        "on a test character, die well inside the mapped zone and record the spirit-healer destination",
+        "repeat near the zone boundary to test the actual zone assignment"
       ],
+      "notes": "Check the graveyard_zone mapping against the target core's zone IDs and team rules; the destination observed in a real client/runtime remains an external acceptance check.",
       "docs": [
         "03"
       ]
@@ -929,9 +941,11 @@
       ],
       "effect": "Queue sizes, level brackets and rewards change; battleground holidays appear on the calendar.",
       "verify": [
-        ".bg start? or queue as a group",
-        "check the reward mail"
+        "use the target core's documented test-queue procedure on an isolated realm and check bracket/queue behavior",
+        "complete a controlled match and inspect the configured reward delivery",
+        "verify holiday/calendar visibility separately from battleground mechanics"
       ],
+      "notes": "Do not rely on the speculative `.bg start?` command. Existing battleground mechanics are server-side; a new PvP UI entry may require client DBC rows, and live queue, reward, and calendar behavior must be tested against the target core/client.",
       "docs": [
         "02"
       ]
@@ -969,8 +983,10 @@
       ],
       "effect": "Level-up letters, event gifts and compensation mails arrive with items attached.",
       "verify": [
-        ".send mail or trigger the level-up, then check the mailbox"
+        "on a disposable character, trigger only the intended mail source and inspect sender, subject and attachments",
+        "log out and back in, then confirm delivery/claim behavior for the selected mail path"
       ],
+      "notes": "Level rewards, loot-driven mail and template-driven message text are separate paths; test the exact one configured. Use a throwaway character and verify item references against local client/server data before claiming the reward is usable.",
       "docs": [
         "03"
       ]
@@ -1009,8 +1025,10 @@
       ],
       "effect": "Zones get rain or snow on a schedule, which the client renders from server weather packets.",
       "verify": [
-        ".weather <type> <intensity> for an instant check"
+        "use `.weather <type> <intensity>` as an immediate GM control and observe the target client",
+        "verify the scheduled zone behavior separately; a GM override does not prove game_weather scheduling"
       ],
+      "notes": "The command is an immediate control, not proof that zone scheduling is configured. Confirm that the chosen weather type renders on the exact client build and that the tested zone/schedule matches the row.",
       "docs": [
         "02"
       ]
@@ -1112,8 +1130,10 @@
       ],
       "effect": "A spell's cooldown shortens without editing 234-field rows; the client's sweep animates to the new value.",
       "verify": [
-        "cast twice and watch the sweep"
+        "on an isolated character, record the spell's baseline and changed cooldown using the same rank and conditions",
+        "cast again after the cooldown expires and compare the client sweep with actual server usability"
       ],
+      "notes": "Test one known spell without other cooldown modifiers first. The client sweep is presentation evidence; successful recast timing is the server behavior check.",
       "docs": [
         "03"
       ]
@@ -1130,8 +1150,10 @@
       ],
       "effect": "Tanking abilities generate more or less threat; the fight's shape changes without new tooltips.",
       "verify": [
-        "pull with a tank and watch the threat meter or mob behaviour"
+        "on a disposable encounter, repeat the same pull with controlled actions and record which player the creature targets",
+        "use a compatible threat meter if available; compare its readings separately from target changes"
       ],
+      "notes": "Threat-meter availability is client/addon dependent, and target selection is only a coarse signal. Keep spell_threat changes distinct from spell_bonus_data damage/healing modifiers.",
       "docs": [
         "03"
       ]
@@ -1167,9 +1189,10 @@
       ],
       "effect": "Existing spells start reacting to hits, crits or casts in new ways; the proc flash is the client's own.",
       "verify": [
-        "hit a dummy until it procs",
-        ".combatstop between attempts"
+        "use a disposable character and a target known to permit the configured proc event",
+        "record enough attempts to separate a low-probability proc from a missing trigger; test the no-proc control too"
       ],
+      "notes": "A single failed roll does not show that the proc is broken, and training dummies may not satisfy every proc condition. Keep hit/crit/cast events and any cooldown or proc-chance limits explicit in the test.",
       "docs": [
         "03"
       ]
@@ -1185,10 +1208,12 @@
         "table:spell_script_names",
         "code:SpellScript"
       ],
-      "effect": "A spell can do thing the DBC cannot express: spawn, teleport, set data, chain to a script.",
+      "effect": "A spell can do things the DBC cannot express: spawn, teleport, set data, or chain to a script.",
       "verify": [
-        "cast it and watch the effect, not the tooltip"
+        "on the target core build, cast from the documented trigger and check the expected scripted effect",
+        "exercise a negative path such as invalid target or unmet condition and confirm no unintended mutation"
       ],
+      "notes": "The SQL binding and C++ ScriptName/hook must both be present for a core script to run. A successful database row load alone does not prove the callback is registered or that client-visible spell data is available.",
       "docs": [
         "03"
       ]
@@ -1204,8 +1229,10 @@
       ],
       "effect": "Entering a zone applies a buff or debuff automatically: cold, corruption, a sanctuary rule.",
       "verify": [
-        "cross the zone border and watch the aura icon appear"
+        "on test characters with matching and non-matching conditions, cross into the configured zone and check the aura",
+        "cross back out and re-enter to check removal and reapplication behavior"
       ],
+      "notes": "Zone/area, quest and other spell_area conditions are separate inputs. Test both sides of a boundary and the relevant character state; a single entrance check does not verify cleanup or every condition path.",
       "docs": [
         "03"
       ]
@@ -1221,8 +1248,10 @@
       ],
       "effect": "A spell that moves the caster or target to coordinates you choose: mage portals, summons, escape hatches.",
       "verify": [
-        "cast it and note the arrival point"
+        "on an isolated test realm, cast from a known start location and record map, position and orientation after arrival",
+        "test each intended map/instance destination and caster-versus-target behavior separately"
       ],
+      "notes": "Use coordinates validated for the target map and safe landing area. A server-side teleport destination does not imply a custom map or new client assets are available.",
       "docs": [
         "03"
       ]
@@ -1239,8 +1268,10 @@
       ],
       "effect": "Decide which buffs overwrite each other, so two similar effects coexist instead of cancelling.",
       "verify": [
-        "apply both and watch the buff bar"
+        "apply the two test buffs in order A then B and record aura presence and effect",
+        "repeat in reverse order and after relog/reapply to distinguish stacking from replacement rules"
       ],
+      "notes": "Buff-bar icons alone do not prove both effects are active. Use controlled test spells and check both aura state and gameplay effect; ranking and other stack rules may be independent.",
       "docs": [
         "03"
       ]
@@ -1255,10 +1286,12 @@
         "table:spelldifficulty_dbc",
         "table:instance_encounters"
       ],
-      "effect": "The same boss casts a harder version in 25-man or heroic without a second creature entry.",
+      "effect": "The same boss can select a difficulty-specific spell version without duplicating the creature entry.",
       "verify": [
-        ".instance stats and run both sizes"
+        "run the same encounter in two difficulty modes supported by the target instance and compare the selected spell behavior",
+        "check instance encounter/difficulty state alongside casts; do not infer the variant from raid size alone"
       ],
+      "notes": "The mapping only applies when the target core and instance expose the relevant difficulties and encounter IDs. Client UI visibility and actual server-side spell selection are separate checks.",
       "docs": [
         "03"
       ]
@@ -1297,8 +1330,10 @@
       ],
       "effect": "NPCs walk routes and move as a pack, which reads as 'real world' far more than better stats do.",
       "verify": [
-        "watch the route for a minute"
+        "spawn one controlled test creature on an isolated path and confirm movement through each waypoint in order",
+        "observe a full route cycle and formation spacing after reload/restart using a unique path ID"
       ],
+      "notes": "Waypoint path assignment, point order and formation membership are separate data links. Avoid reusing live spawn/path IDs during tests; check the target core's supported waypoint table/script path.",
       "docs": [
         "03"
       ]
@@ -1353,8 +1388,10 @@
       ],
       "effect": "Rares rotate, camps refill at your pace, and killing one thing releases another.",
       "verify": [
-        "kill and time the respawn"
+        "in a disposable test area, record baseline respawn times for each linked/pool member",
+        "kill one member and observe pool release, respawn order and timer over more than one cycle"
       ],
+      "notes": "Pool selection and linked-respawn delays can be randomized or affected by other rows; one kill is not a reliable timing proof. Test only controlled spawns and keep production rare/respawn data untouched.",
       "docs": [
         "03"
       ]
@@ -1372,8 +1409,8 @@
       ],
       "effect": "Players type a command and something happens; the .help list can document it.",
       "verify": [
-        ".help <command>",
-        "run it as a player, not just a GM"
+        "as an ordinary player, confirm the command is listed by .help <command>",
+        "invoke it with valid, missing and malformed arguments; confirm permission failures do not mutate state"
       ],
       "notes": "The lightest-weight system hook there is: no client awareness, no UI.",
       "docs": [
@@ -1417,9 +1454,10 @@
       ],
       "effect": "Players earn a token by playing and spend it at your NPC; the UI is a gossip menu plus an existing item.",
       "verify": [
-        "earn, then spend, then check the bag count"
+        "on a test character, record token balance before earning, after earning and after spending",
+        "test insufficient funds and a repeated/competing spend attempt; verify no unintended extra debit or reward"
       ],
-      "notes": "Free if the token is an existing item. A new token item drags in Item.dbc rows, and an ExtendedCost price drags in ItemExtendedCost rows.",
+      "notes": "Free if the token is an existing item. A new token item drags in Item.dbc rows, and an ExtendedCost price drags in ItemExtendedCost rows. If the sink is custom code, define transaction, retry and concurrency semantics rather than relying on the displayed bag count alone.",
       "docs": [
         "03",
         "06"
@@ -1439,9 +1477,10 @@
       ],
       "effect": "Doing something on one character unlocks something for the account: vendors, teleports, a difficulty tier.",
       "verify": [
-        "unlock on one character, check another"
+        "unlock on one character, relog, then check a second character on the same account",
+        "check a character on a different test account to confirm the unlock scope is not global"
       ],
-      "notes": "Needs storage you own (a character or account table) plus conditions that read it.",
+      "notes": "Needs storage you own (a character or account table) plus conditions that read it. Verify the chosen account/character key, persistence across restart, and cleanup/reset policy; a second character alone does not prove account isolation.",
       "docs": [
         "02"
       ]
@@ -1459,9 +1498,10 @@
       ],
       "effect": "Dying means something: a broadcast, a level loss, a permanent flag, a graveyard-only existence.",
       "verify": [
-        "die on a test character and read the announcement"
+        "on a disposable test character, trigger death and confirm the configured rule and announcement",
+        "relog and test release/reclaim, resurrection and any permanent flag or penalty for the stated policy"
       ],
-      "notes": "The client shows death exactly as it always does; the meaning is entirely yours.",
+      "notes": "The client shows death exactly as it always does; the meaning is entirely yours. Validate all death/release paths and persistence before enabling a punitive rule; a broadcast alone proves neither enforcement nor recovery behavior.",
       "docs": [
         "02"
       ]
@@ -1479,8 +1519,10 @@
       ],
       "effect": "The same instance is tuned for the group that enters, so a 3-man run and a 5-man run both feel right.",
       "verify": [
-        "enter with two different group sizes and compare health pools"
+        "on an isolated instance, record the same creature's health and damage with two controlled group sizes",
+        "repeat with a solo/party control and check caps, reset behavior and non-scaled creatures"
       ],
+      "notes": "Scaling policy is custom module behavior, not supplied by HealthModifier alone. Validate the target AllCreatureScript hook and spawn timing on the exact core; a health comparison does not prove balanced damage, healing, bosses or a fair encounter.",
       "docs": [
         "02"
       ]
@@ -1498,8 +1540,10 @@
       ],
       "effect": "Loot that reacts: pity timers, guaranteed drops after N kills, per-player rolls.",
       "verify": [
-        "kill N times and watch the drop pattern"
+        "on a disposable realm and fresh test state, run the same kill sequence with a baseline control and record every result",
+        "test the guaranteed-drop/pity threshold and per-player case separately; repeat enough trials to expose random variance"
       ],
+      "notes": "A short random sample cannot prove a pity timer or guarantee. If the behavior persists across sessions, its state needs explicit storage, retry, concurrency and reset semantics; ordinary creature_loot_template rows do not implement those policies by themselves.",
       "docs": [
         "02"
       ]
@@ -1517,7 +1561,8 @@
       ],
       "effect": "Clients running altered memory or wrong files get caught; the check results are server-side.",
       "verify": [
-        "read the server log for check results"
+        "on a disposable test realm, enable the intended check and confirm its result is recorded with the expected account/session context",
+        "test a controlled known-good client and an approved test violation; verify alert handling and false-positive recovery without treating Warden as a content or patch validator"
       ],
       "notes": "Warden validates a narrow set of things; it is not a content validator, and it cannot confirm a player has your patch.",
       "docs": [
@@ -1540,7 +1585,8 @@
       ],
       "effect": "The client can resolve something it could not before: an icon, a tooltip line, a set block, a spell visual.",
       "verify": [
-        "client restart, then .additem / cast and read the tooltip"
+        "validate the row against the target build-12340 schema and paired client/server data before install",
+        "on a clean test client, restart and exercise the item/spell; inspect tooltip, icon/visual and client logs for missing or mismatched references"
       ],
       "notes": "Same field count, same field order, or the client refuses the table (and the server logs a field-count mismatch).",
       "docs": [
@@ -1561,7 +1607,8 @@
       ],
       "effect": "Every player who updates sees the new rows simultaneously, and nobody who skips the update does.",
       "verify": [
-        "fresh client, patch installed, check version in the launcher"
+        "on a clean supported client, verify the installed archive name, manifest and checksum before launch",
+        "launch with and without the patch in a disposable client profile; confirm expected assets and capture load errors without overwriting stock data"
       ],
       "notes": "Numeric patches outrank the stock patch-3; locale files outrank root files in most locales but not all. Manifest + checksum is how you know.",
       "docs": [
@@ -1582,8 +1629,8 @@
       ],
       "effect": "A panel that does not exist in the stock UI: scoreboards, trackers, a custom bank, a talent planner.",
       "verify": [
-        "/reload and see it appear",
-        "toggle it with a slash command"
+        "on a clean build-12340 client, confirm the addon loads without Lua errors and the frame anchors at expected UI scales",
+        "test show/hide, /reload, relog and disable/uninstall cleanup; confirm saved variables are scoped and no stock UI state is left altered"
       ],
       "notes": "Addons are client files but not MPQ entries: ship them as a folder and no patch archive is involved. 3.3.5 uses global API functions (no C_ namespaces).",
       "docs": [
@@ -1604,7 +1651,8 @@
       ],
       "effect": "The frame shows numbers that come from the server in real time, not values baked into the addon.",
       "verify": [
-        "change the server-side value and watch the frame without /reload"
+        "change the server-side value and confirm the frame updates without /reload",
+        "test malformed, oversized, out-of-order and unauthorized messages; verify bounds, rate limits and no client-authoritative state changes"
       ],
       "notes": "255-char message cap and rate limits; batch and compress if you need more.",
       "docs": [
@@ -1624,7 +1672,8 @@
       ],
       "effect": "Extra lines on any tooltip: drop locations, set progress, your own currency price.",
       "verify": [
-        "hover the item and read the added lines"
+        "on an uncached test item and a cached item, verify the tooltip eventually shows exactly one correct augmentation",
+        "test nil/unavailable item data, repeated tooltip opens and addon disable; check for Lua errors or duplicate lines"
       ],
       "notes": "GetItemInfo returns nil until the client has the item, so hook the update path rather than the first draw.",
       "docs": [
@@ -1645,8 +1694,10 @@
       ],
       "effect": "Markers, markers on the map, custom nameplate text: direction and discovery aids that feel native.",
       "verify": [
-        "open the map and look for your markers"
+        "on a clean build-12340 test client, verify map markers on WorldMapFrame and minimap overlays separately",
+        "enable a controlled test nameplate and verify the addon hook, text and cleanup when the unit leaves view"
       ],
+      "notes": "World map, minimap and nameplate hooks are distinct addon surfaces; passing one says nothing about the others. Test only against the target 3.3.5a API/interface and confirm the addon is enabled—retail UI APIs are not interchangeable.",
       "docs": [
         "06"
       ]
@@ -1664,7 +1715,8 @@
       ],
       "effect": "A roar, a bell, a coin: any of the client's existing SoundEntries ids can be played on an event.",
       "verify": [
-        "trigger the event and listen"
+        "on the target client, trigger the event and confirm the intended existing SoundEntries ID plays at expected volume",
+        "test a missing/invalid ID and repeated triggers; check client logs and ensure no new-file asset is assumed without a patch"
       ],
       "notes": "New audio files need an asset patch; existing ids need nothing.",
       "docs": [
@@ -1685,7 +1737,8 @@
       ],
       "effect": "New content that looks authored, because it is: Blizzard's art, your arrangement.",
       "verify": [
-        "look at it in game next to the source creature"
+        "in a clean target client, compare the reused display/model/texture with its source and check all intended equipment/animation states",
+        "inspect the client log and all referenced client/server display IDs; verify the result survives relog and works for another viewer"
       ],
       "notes": "The whole point of the reuse-first constraint: recolor-by-composition instead of importing art.",
       "docs": [
@@ -1706,7 +1759,8 @@
       ],
       "effect": "Art that never shipped with the game.",
       "verify": [
-        "in-game model check plus a client log scan for missing files"
+        "run asset-format and reference checks for the target client build before packaging, including model, texture and display linkage",
+        "on a clean client with the patch installed, inspect representative animations/attachments and logs; test a client without the patch to confirm failure is detected"
       ],
       "notes": "Out of scope here: it is an art pipeline (conversion, attachment points, LOD, animation names) and every mistake looks like a client crash.",
       "docs": [
@@ -1729,7 +1783,8 @@
       ],
       "effect": "A place that is not in the game: new geometry, new minimap, new zone name.",
       "verify": [
-        ".go xyz into it and check the map opens"
+        "validate map/area IDs, ADT/WDT references and client/server coordinates against the target build before packaging",
+        "on a clean patched client and isolated server, enter and exit safely; inspect minimap/world-map/area data, terrain seams and logs"
       ],
       "notes": "The most expensive alteration in this catalog. Reusing an existing instanced map's unused geometry is the budget alternative.",
       "docs": [
@@ -1750,7 +1805,8 @@
       ],
       "effect": "A realm that looks like its own game before the first character loads.",
       "verify": [
-        "restart the client and watch login"
+        "on a clean target client, exercise login, realm selection, character selection and loading screens with the skin installed",
+        "test missing/corrupt asset fallback and a stock-client control; preserve a recovery path before distributing changes that affect login"
       ],
       "notes": "Cosmetic and high-risk: wrong text or layout breaks the login flow for everyone.",
       "docs": [
@@ -1793,7 +1849,8 @@
       ],
       "effect": "New nodes on the tree with working icons and tooltips.",
       "verify": [
-        "open the talent pane and spend a point"
+        "on paired clean test client/server data, verify each talent/tab row, prerequisites, icons and tooltip IDs in the talent pane",
+        "spend and refund points at boundaries with rate/respec controls; relog and confirm server state, point totals and invalid-node handling"
       ],
       "notes": "Raising Rate.Talent gives more points; new *nodes* need client rows and are notoriously fragile.",
       "docs": [
@@ -1812,8 +1869,10 @@
       ],
       "effect": "A selectable title in the character pane.",
       "verify": [
-        "open the character pane dropdown"
+        "on the target client, confirm the new CharTitles.dbc ID appears in the title selector after a clean restart/cache check",
+        "test title unlock/award separately and compare the client row with the server chartitles_dbc data"
       ],
+      "notes": "A client DBC row makes the title selectable/displayable; it does not grant or unlock the title. Keep the client row, server overlay and award path in sync, and verify the entry from local build-12340 data before release.",
       "docs": [
         "02"
       ]
@@ -1830,7 +1889,8 @@
       ],
       "effect": "A tracked currency with an icon in the player's currency pane.",
       "verify": [
-        "open the currency pane"
+        "on paired target client/server data, confirm the currency row, icon and intended balance display in the currency pane",
+        "earn and spend through the intended server path, then relog and check balance persistence plus missing/invalid currency-ID behavior"
       ],
       "notes": "Without a client row, a custom currency still exists server-side — it just has no place to display itself.",
       "docs": [

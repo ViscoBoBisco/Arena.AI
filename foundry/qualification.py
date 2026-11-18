@@ -16,6 +16,8 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
 
+from .package import _rename_directory_noreplace
+
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -755,7 +757,7 @@ def release_package(package: Path, qualification_path: Path, out_dir: Path) -> d
         if (not staged_integrity["ok"]
                 or staged_integrity["manifest_sha256"] != integrity["manifest_sha256"]):
             raise ValueError("staged release copy failed integrity recheck")
-        os.replace(stage, out_dir)
+        _rename_directory_noreplace(stage, out_dir)
     except Exception:
         if stage.exists():
             shutil.rmtree(stage, ignore_errors=True)
