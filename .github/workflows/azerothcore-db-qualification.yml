@@ -48,13 +48,11 @@ jobs:
       - name: Assert unsupported World content fails closed
         run: |
           python3 tools/foundry.py verify packages/frost-armory
-          python3 tools/foundry.py validate specs/frost-armory.json \
-            --allow-unverified > /tmp/frost-validation.json || true
           python3 - <<'PY'
-          import json
           from pathlib import Path
-          result = json.loads(Path('/tmp/frost-validation.json').read_text())
-          assert result['verdicts']['emitter-coverage'] == 'FAIL'
+          from foundry.spec import load_spec, validate_spec
+          result = validate_spec(load_spec(Path('specs/frost-armory.json')), allow_unverified=True)
+          assert result.verdicts['emitter-coverage'] == 'FAIL'
           print('World DB qualification is intentionally blocked; no database was contacted.')
           PY
 
