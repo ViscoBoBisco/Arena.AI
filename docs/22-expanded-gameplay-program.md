@@ -86,9 +86,7 @@ The package CLI is intentionally limited to explicitly confirmed
 `arena_foundry_disposable_*` schemas. Install the optional pinned connector for that command with
 `python3 -m pip install -r requirements-world-qualification.txt`.
 The ordinary generated `sql/99_rollback.sql` guard and existing World ARENA-DB qualification remain
-closed: this new service is not a reason to apply legacy raw SQL. The initial disposable test schema
-is synthetic and uses only the tested `item_template` slice; exact AzerothCore schema initialization,
-interrupted-connection testing and manifest-bound World attestation remain P0-01b work.
+closed: this new service is not a reason to apply legacy raw SQL. The disposable MySQL 8.4 integration passed on source `aa2016076e2e68df60555d38ab507a3550683b38` (run `44412436391`). Its synthetic schema uses only the tested `item_template` slice and includes a dropped client connection after the first insert followed by same-request recovery. Exact AzerothCore schema initialization, server-process crash/restart recovery and manifest-bound World attestation remain P0-01b work.
 Changed-package upgrades currently refuse; a separately designed reversible upgrade protocol is
 required rather than interpreting changed output as ownership.
 

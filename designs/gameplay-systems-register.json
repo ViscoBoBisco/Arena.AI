@@ -42,10 +42,8 @@
       ],
       "implementation_state": "SYNTHETIC",
       "outstanding_tests": [
-        "Run MySQL 8.4 disposable CI integration",
-        "Exercise package migration against exact pinned AzerothCore World schema and all supported table engines",
-        "Prove crash/reconnect behavior with an interrupted real client connection",
-        "Bind DB qualification attestation to journal receipt and exact source/schema hashes"
+        "Exercise all supported generated tables against exact pinned AzerothCore World schema and engine definitions",
+        "Prove server-process crash/restart recovery and bind qualification attestation to journal receipt plus exact source/schema hashes"
       ],
       "risks": [
         "Legacy World SQL qualification remains fail-closed",
@@ -53,7 +51,16 @@
         "Changed manifests/versions are refused rather than upgraded",
         "Never use against production or populated shared DBs"
       ],
-      "next_milestone": "Pass disposable MySQL integration, then add exact pinned-schema disposable World qualification without enabling raw SQL rollback."
+      "next_milestone": "Run exact pinned World-schema qualification with source/schema hashes and process-crash recovery before enabling the existing ARENA-DB gate.",
+      "completed_evidence": [
+        {
+          "kind": "SYNTHETIC_DISPOSABLE_MYSQL",
+          "status": "PASS",
+          "run_id": "44412436391",
+          "source_sha": "aa2016076e2e68df60555d38ab507a3550683b38",
+          "scope": "MySQL 8.4 disposable InnoDB item_template fixture; apply/retry/rollback/reapply, partial collision rollback, client connection loss/retry, ownership/manifest checks, full-row modification refusal, concurrency, engine/primary-key guards and caller-transaction refusal"
+        }
+      ]
     },
     {
       "id": "foundry-dbc-materialization",
@@ -643,7 +650,7 @@
     {
       "id": "P0-01a",
       "title": "Transactional World ownership journal",
-      "status": "in progress",
+      "status": "implemented; synthetic MySQL CI passed; exact pinned schema proof pending",
       "acceptance": [
         "InnoDB-only atomic DML plus journal",
         "full-row snapshot protection",
