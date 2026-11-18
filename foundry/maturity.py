@@ -124,7 +124,8 @@ def _external_behavior_passes(records: Any, artifact: dict, behavior: str) -> bo
 
 
 def evaluate(package: Path, delivery: dict, evidence: dict, attestations: dict,
-             *, db_pass: bool, compile_pass: bool, assets_pass: bool) -> dict:
+             *, world_db_pass: bool, characters_db_pass: dict[str, bool],
+             compile_pass: bool, assets_pass: bool) -> dict:
     """Evaluate requirements from observed files and qualification evidence.
 
     User-supplied JSON evidence remains EXTERNAL_UNTRUSTED. This matrix records
@@ -145,8 +146,16 @@ def evaluate(package: Path, delivery: dict, evidence: dict, attestations: dict,
             if behavior in statuses:
                 continue
             if behavior in ("schema_valid", "migration_tested"):
-                passed = db_pass if kind in ("world_sql", "data_migration", "characters_sql") else \
-                    _external_behavior_passes(records, artifact, behavior)
+                if kind == "world_sql":
+                    passed = world_db_pass
+                elif kind == "characters_sql":
+                    passed = characters_db_pass.get(artifact.get("table"), False)
+                elif kind == "data_migration":
+                    table = artifact.get("table")
+                    passed = (characters_db_pass.get(table, False)
+                              if table else world_db_pass)
+                else:
+                    passed = _external_behavior_passes(records, artifact, behavior)
             elif behavior == "compiled":
                 passed = compile_pass
             elif behavior == "asset_verified":

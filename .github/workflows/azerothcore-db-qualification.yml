@@ -168,10 +168,13 @@ jobs:
           import os
           from pathlib import Path
           proof = json.loads(Path('/tmp/vault-terminal-characters-db-proof.json').read_text())
+          assert proof['schema'] == 'arena-characters-db-qualification/2'
           assert proof['qualification'] == 'ARENA-DB-CHARACTERS'
           assert proof['status'] == 'PASS'
           assert proof['trust'] == 'SYNTHETIC_DISPOSABLE_MYSQL'
           assert proof['table'] == 'vault_terminal_claims'
+          assert proof['table_schema']['engine'] == 'InnoDB'
+          assert proof['table_schema']['primary_key'] == 'guid'
           assert proof['checks']['migration_applied_twice'] == 'PASS'
           assert proof['checks']['concurrent_daily_increment_serialized'] == 'PASS'
           assert proof['checks']['concurrent_target_cap_enforced'] == 'PASS'
@@ -187,6 +190,58 @@ jobs:
               print(f"- MySQL: `{proof['server_version']}`", file=summary)
               print(f"- Package manifest SHA-256: `{proof['manifest_sha256']}`", file=summary)
               print('- No AzerothCore runtime or gameplay qualification is implied.', file=summary)
+          PY
+
+      - name: Evaluate table-scoped Characters maturity
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          proof = json.loads(Path('/tmp/vault-terminal-characters-db-proof.json').read_text())
+          attestations = {
+              'schema': 'arena-qualification-attestations/1',
+              'subject': {'manifest_sha256': proof['manifest_sha256']},
+              'characters_database_qualifications': [proof],
+          }
+          Path('/tmp/vault-terminal-attestations.json').write_text(
+              json.dumps(attestations, indent=2, sort_keys=True) + chr(10))
+          PY
+          set +e
+          python3 tools/foundry.py qualify /tmp/vault-terminal \
+            --attestations /tmp/vault-terminal-attestations.json \
+            --out /tmp/vault-terminal-qualification-report.json \
+            > /tmp/vault-terminal-qualification.log 2>&1
+          qualify_status=$?
+          set -e
+          if [ "$qualify_status" -ne 1 ]; then
+            cat /tmp/vault-terminal-qualification.log
+            echo "Expected qualification to remain blocked by runtime/client gates."
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          report = json.loads(Path('/tmp/vault-terminal-qualification-report.json').read_text())
+          gates = {gate['name']: gate['status'] for gate in report['gates']}
+          artifacts = {item['identity']: item for item in report['artifact_maturity']['artifacts']}
+          chars = artifacts['characters_sql:vault_terminal_claims']['status']
+          migration = artifacts['data_migration:vault_terminal_claims']['status']
+          assert gates['database_migrations:characters:vault_terminal_claims'] == 'PASS'
+          assert gates['database_migrations'] == 'PASS'
+          assert all(chars[key] == 'PASS' for key in ('schema_valid', 'migration_tested'))
+          assert all(migration[key] == 'PASS' for key in ('schema_valid', 'migration_tested'))
+          assert report['artifact_maturity']['trust'] == 'EXTERNAL_UNTRUSTED'
+          assert report['qualified'] is False and report['status'] == 'BLOCKED'
+          assert gates['artifact_maturity:server_module:runtime_exercised'] == 'BLOCKED'
+          assert gates['artifact_maturity:addon_files:runtime_exercised'] == 'BLOCKED'
+          assert gates['live_gameplay'] == 'BLOCKED'
+          print('Characters artifact maturity: PASS (table-scoped; externally supplied/untrusted evidence).')
+          print('Overall release remains BLOCKED by independent runtime/client/live gates.')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              print('- Foundry maturity: `characters_sql:vault_terminal_claims` schema and migration behavior **PASS**', file=summary)
+              print('- Evidence trust: `EXTERNAL_UNTRUSTED`; no release authorization is implied.', file=summary)
+              print('- Overall qualification: **BLOCKED** by runtime/client/live gates.', file=summary)
           PY
 
       - name: Preserve package and DB qualification records

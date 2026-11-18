@@ -179,6 +179,123 @@ def _valid_database_attestation(attestations: Any, manifest_sha256: str,
                 (json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n").encode()))
 
 
+def _valid_characters_database_attestation(proof: Any, manifest_sha256: str,
+                                           package: Path, table: str) -> bool:
+    """Validate one table-scoped Characters proof against this exact package.
+
+    The result establishes semantic correspondence to disposable-MySQL checks,
+    not provenance authenticity. Callers must keep externally supplied records
+    labelled EXTERNAL_UNTRUSTED and must never use this result to bypass release
+    gates for server/client/runtime evidence.
+    """
+    expected_keys = {
+        "schema", "qualification", "status", "trust", "package", "package_version",
+        "manifest_sha256", "table", "database", "server_version", "migration_sha256",
+        "rollback_note_sha256", "atomic_claim_upsert_sha256", "module_source_sha256",
+        "spec_sha256", "core_source", "table_schema", "checks", "sequence", "limitations",
+        "environment",
+    }
+    if not isinstance(proof, dict) or set(proof) != expected_keys:
+        return False
+    if (proof.get("schema") != "arena-characters-db-qualification/2"
+            or proof.get("qualification") != "ARENA-DB-CHARACTERS"
+            or proof.get("status") != "PASS"
+            or proof.get("trust") != "SYNTHETIC_DISPOSABLE_MYSQL"
+            or proof.get("manifest_sha256") != manifest_sha256
+            or proof.get("table") != table):
+        return False
+    if (proof.get("database") != "arena_foundry_disposable_characters_ci"
+            or not isinstance(proof.get("server_version"), str)
+            or not proof["server_version"].strip()):
+        return False
+
+    environment = proof.get("environment")
+    expected_environment_keys = {
+        "workflow_run_id", "workflow_job", "workflow_name", "workflow_ref",
+        "source_commit", "core_repository", "core_revision",
+    }
+    if (not isinstance(environment, dict) or set(environment) != expected_environment_keys
+            or not isinstance(environment.get("workflow_run_id"), str)
+            or not re.fullmatch(r"[0-9]{1,20}", environment["workflow_run_id"])
+            or environment.get("workflow_job") != "qualify-generated-world-sql"
+            or environment.get("workflow_name") != "pinned AzerothCore disposable DB qualification"
+            or not isinstance(environment.get("workflow_ref"), str)
+            or ".github/workflows/azerothcore-db-qualification.yml@" not in environment["workflow_ref"]
+            or not isinstance(environment.get("source_commit"), str)
+            or not re.fullmatch(r"[0-9a-f]{40}", environment["source_commit"])):
+        return False
+
+    try:
+        from .generate import characters_claim_upsert_sql, characters_sql_files
+        spec = _read_json(package / "spec.json")
+        protocol = spec.get("addon_protocol")
+        if (not isinstance(protocol, dict) or protocol.get("claims_table") != table
+                or proof.get("package") != spec.get("name")
+                or proof.get("package_version") != spec.get("version")):
+            return False
+        pins = _read_json(Path(__file__).resolve().parent / "core-pins.json")
+        pin = pins.get("azerothcore_wotlk") if isinstance(pins, dict) else None
+        if (not isinstance(pin, dict)
+                or proof.get("core_source") != {"repository": pin.get("repository"),
+                                                "revision": pin.get("revision")}
+                or environment.get("core_repository") != pin.get("repository")
+                or environment.get("core_revision") != pin.get("revision")):
+            return False
+        spec_bytes = (package / "spec.json").read_bytes()
+        migration_rel = f"sql/characters/{table}.sql"
+        rollback_rel = f"sql/characters/99_{spec['name']}_rollback.sql"
+        expected_files = characters_sql_files(spec)
+        migration_bytes = (package / migration_rel).read_bytes()
+        rollback_bytes = (package / rollback_rel).read_bytes()
+        if (migration_bytes != expected_files.get(migration_rel, "").encode("utf-8")
+                or rollback_bytes != expected_files.get(rollback_rel, "").encode("utf-8")):
+            return False
+        module_rel = (f"server/mod-{spec['name']}/src/"
+                      f"{''.join(part.capitalize() for part in spec['name'].split('-'))}.cpp")
+        module_hash = _sha256((package / module_rel).read_bytes())
+        test_guid = 4_294_967_000
+        claim_sql = characters_claim_upsert_sql({"addon_protocol": protocol}).replace(
+            "{}", str(test_guid))
+        expected_schema = {
+            "engine": "InnoDB",
+            "columns": [
+                "guid|int unsigned|NO|PRI|1",
+                "total_claims|int unsigned|NO||2",
+                "last_claim_day|date|YES||3",
+            ],
+            "primary_key": "guid",
+        }
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+    expected_checks = {
+        "migration_applied_twice", "schema_matches_declared_ledger",
+        "same_day_duplicate_ignored", "concurrent_daily_increment_serialized",
+        "concurrent_target_cap_enforced", "post_target_claim_refused",
+        "duplicate_character_row_rejected", "module_state_query", "fixture_rows_removed",
+    }
+    expected_sequence = [
+        "apply", "verify-schema", "apply-idempotently", "verify-schema",
+        "claim-same-day-twice", "simulate-day-boundary", "race-two-claim-connections",
+        "race-two-claims-at-target-minus-one", "attempt-claim-after-target",
+        "reject-second-character-row", "verify-module-state-query", "delete-test-fixture",
+    ]
+    return (
+        proof.get("migration_sha256") == _sha256(migration_bytes)
+        and proof.get("rollback_note_sha256") == _sha256(rollback_bytes)
+        and proof.get("atomic_claim_upsert_sha256") == _sha256(claim_sql.encode("utf-8"))
+        and proof.get("module_source_sha256") == module_hash
+        and proof.get("spec_sha256") == _sha256(spec_bytes)
+        and proof.get("table_schema") == expected_schema
+        and isinstance(proof.get("checks"), dict)
+        and set(proof["checks"]) == expected_checks
+        and all(value == "PASS" for value in proof["checks"].values())
+        and proof.get("sequence") == expected_sequence
+        and isinstance(proof.get("limitations"), list)
+        and all(isinstance(line, str) and line.strip() for line in proof["limitations"])
+    )
+
+
 _ARTIFACT_KINDS = {
     "world_sql", "data_migration", "characters_sql", "server_module", "addon_files",
     "client_dbc", "server_dbc", "mpq", "config",
@@ -221,6 +338,22 @@ def _valid_delivery_contract(delivery: Any) -> bool:
     if any(item["kind"] == "mpq" for item in artifacts) and not client_tables:
         return False
     return True
+
+
+def _database_scopes(artifacts: list) -> tuple[bool, set[str]]:
+    """Derive independent world and Characters DB scopes from delivery artifacts."""
+    world_required = any(
+        isinstance(item, dict)
+        and (item.get("kind") == "world_sql"
+             or item.get("kind") == "data_migration" and not item.get("table"))
+        for item in artifacts)
+    character_tables = {
+        item.get("table") for item in artifacts
+        if isinstance(item, dict)
+        and item.get("kind") in ("characters_sql", "data_migration")
+        and isinstance(item.get("table"), str)
+    }
+    return world_required, character_tables
 
 
 def _compile_qualification_matches(package: Path, evidence: dict) -> bool:
@@ -369,7 +502,23 @@ def qualify_package(package: Path, attestations_path: Optional[Path] = None,
         if isinstance(item, dict) and isinstance(item.get("kind"), str)
     }
     from .maturity import evaluate as evaluate_maturity
-    db_pass = False
+    world_required, character_tables = _database_scopes(artifact_list)
+    world_db_pass = (_valid_database_attestation(
+        attestations, integrity["manifest_sha256"], package) if attested and world_required else False)
+    character_records = (attestations.get("characters_database_qualifications", [])
+                         if attested else [])
+    if not isinstance(character_records, list):
+        character_records = []
+    records_by_table: dict[str, list[dict]] = {}
+    for record in character_records:
+        if isinstance(record, dict) and isinstance(record.get("table"), str):
+            records_by_table.setdefault(record["table"], []).append(record)
+    characters_db_pass = {
+        table: (len(records_by_table.get(table, [])) == 1
+                and _valid_characters_database_attestation(
+                    records_by_table[table][0], integrity["manifest_sha256"], package, table))
+        for table in character_tables
+    }
     compile_pass = False
     external_levels = attestations.get("levels", {}) if attested else {}
     if not isinstance(external_levels, dict):
@@ -392,13 +541,37 @@ def qualify_package(package: Path, attestations_path: Optional[Path] = None,
              f"client/server DBC hash-parity evidence required for {table}" if not parity_pass
              else f"client/server DBC hashes match for {table}")
 
-    if artifact_kinds & {"world_sql", "data_migration", "characters_sql"}:
-        db_pass = (_valid_database_attestation(attestations, integrity["manifest_sha256"],
-                                               package)
-                   if attested else False)
-        gate("database_migrations", db_pass,
-             "disposable-schema/apply/rollback evidence required" if not db_pass
-             else "database qualification record supplied")
+    database_kinds = {"world_sql", "data_migration", "characters_sql"}
+    if artifact_kinds & database_kinds:
+        world_scope_pass = not world_required or world_db_pass
+        if world_required:
+            gate("database_migrations:world", world_db_pass,
+                 "pinned world-schema apply/rollback proof required" if not world_db_pass
+                 else "world-schema proof matches this package and the pinned source")
+        for table in sorted(character_tables):
+            table_pass = characters_db_pass.get(table, False)
+            gate(f"database_migrations:characters:{table}", table_pass,
+                 f"matching table-scoped Characters proof required for {table}" if not table_pass
+                 else f"Characters proof semantically matches {table} and this package manifest")
+        records_exact = (
+            isinstance(attestations.get("characters_database_qualifications", []), list)
+            and len(character_records) == len(character_tables)
+            and set(records_by_table) == character_tables
+            and all(len(records_by_table.get(table, [])) == 1 for table in character_tables)
+        )
+        gate("characters_database_evidence_inventory", records_exact,
+             "one proof per declared Characters table and no undeclared proof records"
+             if records_exact else
+             "Characters proofs must be unique and exactly match declared table identities")
+        database_pass = world_scope_pass and all(characters_db_pass.values())
+        gate("database_migrations", database_pass,
+             "every declared database scope needs its own matching proof"
+             if not database_pass else
+             "all declared world and Characters database scopes have matching proofs")
+    else:
+        world_db_pass = False
+        characters_db_pass = {}
+
     if "server_module" in artifact_kinds:
         compile_pass = _compile_qualification_matches(package, evidence)
         gate("server_module", compile_pass,
@@ -409,7 +582,8 @@ def qualify_package(package: Path, attestations_path: Optional[Path] = None,
     try:
         maturity = evaluate_maturity(
             package, delivery, evidence, attestations,
-            db_pass=db_pass, compile_pass=compile_pass, assets_pass=assets_ok)
+            world_db_pass=world_db_pass, characters_db_pass=characters_db_pass,
+            compile_pass=compile_pass, assets_pass=assets_ok)
     except ValueError as exc:
         maturity = {"schema": "arena-artifact-maturity/1",
                     "trust": "EXTERNAL_UNTRUSTED", "inventory_issues": [], "artifacts": []}
@@ -478,6 +652,12 @@ def _required_gate_names(evidence: dict, manifest: dict) -> set:
              if isinstance(item, dict) and isinstance(item.get("kind"), str)}
     if kinds & {"world_sql", "data_migration", "characters_sql"}:
         required.add("database_migrations")
+        world_required, character_tables = _database_scopes(artifacts)
+        if world_required:
+            required.add("database_migrations:world")
+        for table in character_tables:
+            required.add(f"database_migrations:characters:{table}")
+        required.add("characters_database_evidence_inventory")
     if "server_module" in kinds:
         required.add("server_module")
     if "mpq" in kinds:
