@@ -42,8 +42,10 @@ def _verify_recovery_evidence(evidence: dict, source: dict, schema: dict) -> Non
     evidence_body = dict(evidence)
     evidence_hash = evidence_body.pop("evidence_sha256", None)
     binding_errors = []
-    if not isinstance(evidence_hash, str) or _canonical_hash(evidence_body) != evidence_hash:
-        binding_errors.append("evidence digest")
+    calculated_evidence_hash = _canonical_hash(evidence_body)
+    if not isinstance(evidence_hash, str) or calculated_evidence_hash != evidence_hash:
+        binding_errors.append(
+            f"evidence digest expected={evidence_hash!r} calculated={calculated_evidence_hash}")
     if (not isinstance(evidence.get("runtime_schema_sha256"), str)
             or _canonical_hash(schema_body) != evidence.get("runtime_schema_sha256")):
         binding_errors.append("runtime schema digest")
