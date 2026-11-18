@@ -34,6 +34,7 @@ jobs:
         run: |
           python3 tools/foundry.py build specs/frost-armory.json --out /tmp/frost-armory --allow-unverified
           cp -a /tmp/frost-armory/server/mod-frost-armory /tmp/azerothcore/modules/
+          cp -a examples/vault-terminal/server/mod-vault-terminal /tmp/azerothcore/modules/
           cmake -S /tmp/azerothcore -B /tmp/azerothcore-build \
             -DWITHOUT_GIT=1 -DNOJEM=1 -DUSE_COREPCH=0 -DUSE_SCRIPTPCH=0 \
             -DTOOLS_BUILD=none -DWITH_WARNINGS=0 -DMODULES=static
@@ -57,3 +58,22 @@ jobs:
           PY
           fi
           exit "$result"
+
+      - name: Compile Vault Terminal reference module against the pinned core
+        run: |
+          if ! python3 tools/compile_generated_module.py \
+            --build-dir /tmp/azerothcore-build \
+            --core-source /tmp/azerothcore \
+            --module mod-vault-terminal \
+            --registration AddVaultTerminalScripts > /tmp/vault-terminal-compile.log 2>&1; then
+            cat /tmp/vault-terminal-compile.log
+            python3 - <<'PY'
+          from pathlib import Path
+          lines = Path('/tmp/vault-terminal-compile.log').read_text(errors='replace').strip().splitlines()
+          detail = lines[-1] if lines else 'compile command failed'
+          detail = detail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print(f'::error title=Vault Terminal compile failure::{detail}')
+          PY
+            exit 1
+          fi
+          cat /tmp/vault-terminal-compile.log
