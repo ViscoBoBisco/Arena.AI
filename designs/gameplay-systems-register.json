@@ -31,7 +31,9 @@
         "foundry/world_ownership.py",
         "foundry/db_qualification.py",
         "foundry/core-pins.json",
-        "tests/test_foundry_world_ownership.py"
+        "tests/test_foundry_world_ownership.py",
+        "foundry/world_schema.py",
+        "tests/test_foundry_world_schema.py"
       ],
       "manifest_id_needs": [
         "package manifest SHA-256",
@@ -51,7 +53,7 @@
         "Changed manifests/versions are refused rather than upgraded",
         "Never use against production or populated shared DBs"
       ],
-      "next_milestone": "Run exact pinned World-schema qualification with source/schema hashes and process-crash recovery before enabling the existing ARENA-DB gate.",
+      "next_milestone": "Run the added disposable CI fixture against exact pinned World DDL and prove abrupt process death/restart recovery; then cover every supported generated table and bind a durable attestation to source/schema/receipt hashes before enabling the ARENA-DB gate.",
       "completed_evidence": [
         {
           "kind": "SYNTHETIC_DISPOSABLE_MYSQL",
