@@ -418,6 +418,19 @@ def _readme(spec: dict, result: ValidationResult,
         "until the applicable database, compile, asset and downstream checks are independently "
         "qualified and recorded.",
         "",
+        "## Integration candidate export (non-installing, non-authorizing)",
+        "",
+        "For review or integration testing, export the integrity-checked package without changing "
+        "its qualification or release status:",
+        "",
+        "```bash",
+        "python3 tools/foundry.py export-candidate /path/to/package --out /tmp/feature-candidate.zip",
+        "```",
+        "",
+        "The ZIP contains `CANDIDATE.json` marking `installable: false` and `release_authorized: false`. "
+        "This path does not admit, install, qualify, or release the package and does not bypass the "
+        "production release gate.",
+        "",
         "## Install (only after qualification)",
         "",
         "Run the following in order after inspecting the ID baseline and qualification evidence:",

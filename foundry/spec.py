@@ -197,8 +197,9 @@ def _addon_protocol_problems(spec: dict) -> List[Problem]:
     table = protocol.get("claims_table")
     if not isinstance(table, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", table):
         fail("addon_protocol.claims_table must be a lowercase SQL identifier")
-    if not _is_int(protocol.get("target")) or protocol["target"] < 1:
-        fail("addon_protocol.target must be a positive integer")
+    if (not _is_int(protocol.get("target"))
+            or not 1 <= protocol["target"] <= 2147483647):
+        fail("addon_protocol.target must be an integer in [1, 2147483647]")
     if protocol.get("claims_per_day") != 1 or isinstance(protocol.get("claims_per_day"), bool):
         fail("daily-counter v1 requires claims_per_day = 1")
     if protocol.get("client_opcodes") != ["HELLO", "STATE", "CLAIM", "PING"]:

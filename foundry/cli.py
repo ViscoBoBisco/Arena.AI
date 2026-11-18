@@ -13,6 +13,7 @@ from typing import Optional, Sequence
 
 from . import __version__
 from .assets import AssetError, ingest_dbc_dir, ingest_inventory, search, summary
+from .candidate import export_candidate
 from .package import build_package
 from .qualification import integrity_check, qualify_package, release_package
 from .spec import SpecError, load_spec, validate_spec
@@ -215,6 +216,16 @@ def cmd_release(args) -> int:
     return 0
 
 
+def cmd_export_candidate(args) -> int:
+    try:
+        receipt = export_candidate(args.package, args.out)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"candidate export blocked: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(receipt, indent=2, sort_keys=True))
+    return 0
+
+
 def cmd_assets(args) -> int:
     try:
         if args.dbc_dir:
@@ -292,6 +303,14 @@ def build_parser() -> argparse.ArgumentParser:
     rel.add_argument("--qualification", type=Path, required=True)
     rel.add_argument("--out", type=Path, required=True)
     rel.set_defaults(func=cmd_release)
+
+    candidate = sub.add_parser(
+        "export-candidate",
+        help="export an integrity-checked, non-installing, non-authorizing candidate ZIP")
+    candidate.add_argument("package", type=Path)
+    candidate.add_argument("--out", type=Path, required=True,
+                           help="new .zip path outside the source package")
+    candidate.set_defaults(func=cmd_export_candidate)
 
     a = sub.add_parser("assets", help="index + search client assets")
     a.add_argument("--dbc-dir", type=Path)

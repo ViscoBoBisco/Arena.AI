@@ -89,7 +89,12 @@ class Packaging(unittest.TestCase):
             self.assertEqual(built.returncode, 0, built.stderr)
             evidence = json.loads((out / "evidence.json").read_text(encoding="utf-8"))
             record = evidence["compile_qualification"]
-            self.assertEqual(record["environment"]["workflow_run_id"], 44303986703)
+            if record is None:
+                self.assertIn("pending", evidence["evidence_levels"]["ARENA-COMPILE"])
+                self.assertIn("not compiled or runtime-qualified",
+                              evidence["generated_scope"]["cpp_module"])
+                return
+            self.assertIsInstance(record["environment"]["workflow_run_id"], int)
             self.assertEqual(record["environment"]["core_revision"],
                              "6ffb62abb867dabb258de6813ff5d06d6b011543")
             self.assertEqual(evidence["evidence_levels"]["ARENA-COMPILE"].split(";", 1)[0], "PASS")

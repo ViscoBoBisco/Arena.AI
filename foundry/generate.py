@@ -199,6 +199,21 @@ def _cpp_module_identifier(name: str) -> str:
     return "_" + identifier if identifier[0].isdigit() else identifier
 
 
+def characters_claim_upsert_sql(spec: dict) -> str:
+    """Atomic per-character daily claim increment, capped at the declared target."""
+    protocol = spec["addon_protocol"]
+    table = protocol["claims_table"]
+    target = protocol["target"]
+    return (f"INSERT INTO `{table}` (guid, total_claims, last_claim_day) "
+            "VALUES ({}, 1, CURRENT_DATE()) "
+            "ON DUPLICATE KEY UPDATE "
+            f"total_claims = IF((last_claim_day IS NULL OR last_claim_day <> CURRENT_DATE()) "
+            f"AND total_claims < {target}, total_claims + 1, total_claims), "
+            f"last_claim_day = IF((last_claim_day IS NULL OR last_claim_day <> CURRENT_DATE()) "
+            f"AND total_claims <= {target}, "
+            "CURRENT_DATE(), last_claim_day)")
+
+
 def _counter_terminal_module_cpp(spec: dict) -> Dict[str, str]:
     """Emit a generic, server-authoritative daily-counter terminal module."""
     name = spec["name"]
@@ -212,6 +227,7 @@ def _counter_terminal_module_cpp(spec: dict) -> Dict[str, str]:
     header_guard = f"ARENA_{dirname.replace('-', '_').upper()}_LOADER_H"
     conf_key = module["conf_key"]
     table = protocol["claims_table"]
+    claim_upsert = characters_claim_upsert_sql(spec)
     prefix = protocol["prefix"]
     version = protocol["version"]
     max_bytes = protocol["max_bytes"]
@@ -346,7 +362,8 @@ namespace
     bool LoadState(Player* player, CounterState& state)
     {{
         QueryResult result = CharacterDatabase.Query(
-            "SELECT COUNT(*), COALESCE(SUM(claim_day = CURRENT_DATE()), 0) "
+            "SELECT COALESCE(MAX(total_claims), 0), "
+            "COALESCE(MAX(last_claim_day = CURRENT_DATE()), 0) "
             "FROM `" + std::string(CLAIM_TABLE) + "` WHERE guid = {{}}",
             player->GetGUID().GetCounter());
         if (!result)
@@ -397,17 +414,26 @@ namespace
             return;
         }}
 
-        // The composite primary key (guid, claim_day) makes this write idempotent.
-        // Concurrent CLAIMs may both be acknowledged, but can create only one row/reward.
+        // One InnoDB row per character serializes daily increments across sessions
+        // and worldserver processes; the SQL predicate also enforces the total target.
         CharacterDatabase.DirectExecute(
-            "INSERT IGNORE INTO `" + std::string(CLAIM_TABLE)
-                + "` (guid, claim_day) VALUES ({{}}, CURRENT_DATE())",
+            "{claim_upsert}",
             player->GetGUID().GetCounter());
 
         CounterState after;
-        if (!LoadState(player, after) || after.claimsToday == 0)
+        if (!LoadState(player, after))
         {{
             SendError(player, "INTERNAL", "claim could not be confirmed");
+            return;
+        }}
+        if (after.totalClaims == before.totalClaims)
+        {{
+            if (after.totalClaims >= TARGET)
+                SendError(player, "DENIED", "claim target reached");
+            else if (after.claimsToday >= CLAIMS_PER_DAY)
+                SendError(player, "COOLDOWN", "already claimed today");
+            else
+                SendError(player, "INTERNAL", "claim could not be confirmed");
             return;
         }}
         Send(player, std::string(PREFIX) + "OK\\tclaim recorded");
@@ -515,17 +541,19 @@ void {loader_fn}() {{ {inner_fn}(); }}
 
 
 def characters_sql_files(spec: dict) -> Dict[str, str]:
-    """Emit the v1 daily-claim persistence schema and non-destructive rollback note."""
+    """Emit the atomic daily-counter row schema and non-destructive rollback note."""
     protocol = spec.get("addon_protocol")
     if not isinstance(protocol, dict):
         return {}
     table = protocol["claims_table"]
     migration = f'''-- {spec.get('title', spec['name'])}: characters database migration.
--- The table is the authoritative daily-claim ledger; its primary key guarantees one claim/day.
+-- One InnoDB row per character serializes increments atomically across sessions/processes.
+-- The server uses a conditional upsert to enforce one claim/day and the configured total target.
 CREATE TABLE IF NOT EXISTS `{table}` (
   `guid` int unsigned NOT NULL COMMENT 'AzerothCore character low GUID',
-  `claim_day` date NOT NULL COMMENT 'database-server day of the claim',
-  PRIMARY KEY (`guid`, `claim_day`)
+  `total_claims` int unsigned NOT NULL DEFAULT 0 COMMENT 'server-authoritative total',
+  `last_claim_day` date DEFAULT NULL COMMENT 'database-server day of the last claim',
+  PRIMARY KEY (`guid`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 '''
     rollback = f'''-- Non-destructive rollback for {spec['name']}.

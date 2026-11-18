@@ -39,7 +39,7 @@
   "dependencies": ["AzerothCore addon channel enabled (AddonChannel = 1)"],
   "acceptance": [
     {"check": "Open /vt and request the server snapshot.", "expected": "Panel renders seals, target, available claims, and server-derived rank."},
-    {"check": "Claim twice through separate sessions on the same server day.", "expected": "At most one durable row for this character/day; later sequential claims receive COOLDOWN."},
+    {"check": "Claim twice through separate sessions on the same server day.", "expected": "At most one atomic counter increment per character/database day, including concurrent requests; later sequential claims receive COOLDOWN."},
     {"check": "Restart the worldserver and query the panel again.", "expected": "Claim count and rank remain derived from the characters database."},
     {"check": "Disable VaultTerminal.Enable and send HELLO.", "expected": "Server answers BYE; addon stops polling and offers manual retry."},
     {"check": "Send malformed, oversized, wrong-version, and unknown-opcode frames.", "expected": "Malformed/oversized and unknown frames do not mutate state; version mismatch is refused."}

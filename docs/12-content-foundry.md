@@ -77,14 +77,14 @@ Pass the same baseline to `plan`, `validate`, and `build`. Packages include `id-
 
 `build` writes the exact normalized spec, SQL migration and rollback, optional Item.dbc delta, module and addon outputs, configuration, README, manifest, evidence and fake-host compatibility receipt. Content files are deterministic; timestamps are opt-in. `verify` hashes listed files and reports drift. The bundle never creates or overwrites an MPQ, and never presumes ownership of `Data/patch-4.MPQ`.
 
-Generated artifacts remain a mixed-maturity preview, not complete gameplay. SQL and schema support cover a narrow subset; the successful seven-table CI evidence establishes migration identity/idempotence/rollback, not all row semantics or a full world schema. Crafting entries are explanatory comments, the generated C++ module is still a registration skeleton, addon Lua is still a presentation placeholder, spells are server-overlay name rows rather than effect-complete spells, and DBC output is narrow Item.dbc delta JSON without MPQ assembly. The structured maturity report exposes these gaps as per-artifact behaviors; compilation or polished prose cannot promote them to gameplay complete. Do not install or describe them as a completed gameplay feature.
+Generated artifacts remain mixed-maturity and do not establish complete gameplay. Legacy non-protocol specs still use a registration-skeleton module and presentation-only addon; crafting entries are explanatory comments, spells are server-overlay name rows rather than effect-complete spells, and DBC output is narrow Item.dbc delta JSON without MPQ assembly. Vault Terminal is the first generated `arena-counter-terminal/1` path: it now emits a Characters ledger migration, a server-authoritative daily-counter handler, Interface 30300 addon UI, protocol manifest, and install/rollback notes. Its module passed the targeted pinned-core translation-unit/linkage gate, but the Characters schema has not been applied to a disposable DB and no worldserver, addon, client, Playerbots, or Campaign Party runtime has been qualified. Its acceptance items remain NOT_ASSESSED. The structured maturity report keeps these per-artifact gaps visible; compilation or package integrity cannot promote gameplay to complete. Do not install or describe unqualified output as a completed gameplay feature.
 
 ## Evidence ladder
 
 | Level | What earns it | Frost Armory status on this branch |
 |---|---|---|
 | `ARENA-STATIC` | schema, structural and repository checks | Spec structure checks run; stock asset verification remains `NOT_ASSESSED` |
-| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | `make check` passed 266 tests in the current working tree; generated bundles do not attest test execution |
+| `ARENA-SYNTHETIC` | generator contracts, fixtures, negative tests, fake-host behavior | `make check` passed 292 tests in the current working tree; this does not execute the generated addon or worldserver feature |
 | `ARENA-DB` | apply/rollback plus generated column-value checks on disposable schemas | **v1 identity-only PASS** in run 44219922132 for seven pinned world tables; **v2 semantic proof not yet run** on the updated harness. Characters DB, full world/server and gameplay remain NOT_ASSESSED |
 | `ARENA-COMPILE` | module compile/API check against pinned compatible AzerothCore | **PASS** for exact Frost Armory source hashes and AzerothCore `6ffb62abb867dabb258de6813ff5d06d6b011543`; [CI run](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44201459186/job/134456328585). This is a targeted object/linkage check, not a full server build or gameplay qualification. |
 | `ARENA-PACK` | reproducible package and independent integrity verification | `foundry verify packages/frost-armory` passes in this workspace; package evidence marks verification as an external required step, not a self-claim |
@@ -92,6 +92,8 @@ Generated artifacts remain a mixed-maturity preview, not complete gameplay. SQL 
 | `CAMPAIGN-LIVE` | real 3.3.5a client and Playerbots execute feature | Pending; no downstream runtime |
 
 `ARENA-PACK` does not imply DB migration safety, module compilation, valid stock asset IDs, or live functionality. The nine asset references in `specs/frost-armory.json` are explicitly unverified. A package with `allow_unverified: true` is a preview/handoff draft and is not release-qualified.
+
+`foundry export-candidate <package> --out <candidate.zip>` creates a deterministic, integrity-checked review/integration archive with a `CANDIDATE.json` envelope. It explicitly says `candidate_only`, `non_authorizing`, `installable: false`, and `release_authorized: false`, and leaves package qualification unchanged. This is not the `release` command and does not synthesize Campaign admission/live evidence.
 
 ## Pinned AzerothCore source contract and compile gate
 
@@ -112,7 +114,7 @@ python3 tools/compile_generated_module.py \
   --registration AddFrostArmoryScripts
 ```
 
-The helper refuses a different core revision, compiles the generated feature TU, module-local loader and CMake-generated static loader using that build's exact compiler commands, then checks the registration symbols connect with `nm`. The gate passed in [GitHub Actions run 44201459186](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44201459186/job/134456328585) for qualified source commit `7514750d0a2103ee0318b382bfad0e4ad4368fbc`. The machine-readable record is `foundry/qualifications/azerothcore-module.json`; package generation and qualification both require the pinned core revision, canonical checked-in record, and every packaged module `.cpp`/`.h` hash to match. It is a targeted object/linkage smoke gate—not a complete AzerothCore build, final server/module link, DB check or gameplay qualification. `ARENA-COMPILE` does not certify the generated gameplay skeleton as feature-complete.
+The helper refuses a different core revision, compiles the generated feature TU, module-local loader and CMake-generated static loader using that build's exact compiler commands, then checks the registration symbols connect with `nm`. Frost Armory's record remains `foundry/qualifications/azerothcore-module.json`. An earlier Vault Terminal source revision passed in [GitHub Actions run 44303986703](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44303986703/job/134800652875) and a subsequent PR-head run 44304476807; those exact earlier hashes are recorded in `foundry/qualifications/vault-terminal-azerothcore-module.json`. The current generator now uses a single-row atomic upsert to serialize per-character daily increments and enforce the target, so its source hashes differ from that historical record and remain unqualified until the new pinned-core run passes. Package generation and qualification require the pinned core revision, canonical checked-in feature record, and every packaged module `.cpp`/`.h` hash to match. This is a targeted object/linkage smoke gate—not a complete AzerothCore build, final module link, DB check or gameplay qualification. It does not certify the feature's runtime behavior.
 
 ## Traceable task ledger
 
@@ -129,7 +131,7 @@ Acceptance conditions are deliberately explicit; `done` means the contract is im
 | G | Profession graph, Material Exchange interface and AHBot simulator | **Not done** — recipes are currently descriptive only; downstream economy remains authoritative |
 | H | Versioned party/Playerbot contracts and test doubles | **Partial** — package admission fake host only; no party state/command contract or bot behavior simulation |
 | I | Static/synthetic qualification and negative tests | **Partial** — synthetic suite and pinned-core translation-unit compile/linkage gate done; disposable DB, addon runtime, installer fault/rollback tests remain |
-| J | CLI create/inspect/plan/build/verify/compare/explain | **Partial** — validate/plan/build/verify/assets/explain and imported baseline snapshots available; compare, GUI and live baseline discovery remain |
+| J | CLI create/inspect/plan/build/verify/compare/explain/candidate export | **Partial** — validate/plan/build/verify/qualify/release/assets/explain and deterministic `export-candidate` available; compare, GUI, live baseline discovery and production integration remain |
 | K | Nine cohesive production showcases | **Not done** — Frost Armory is a compiler exercise, not a production-ready showcase; eight others not built |
 | L | Campaign Party contract, fake host and handoff | **Partial** — adapter v1.1 fake host exercises structured delivery requirements, DBC hash-parity and idempotency gates; actual downstream baseline admission and complete handoff checker remain |
 
@@ -139,7 +141,7 @@ Acceptance conditions are deliberately explicit; `done` means the contract is im
 - A DBC row requires parity between client and server copies. Current package generation does not prove that parity.
 - Unknown stock IDs may render incorrectly or fail lookup. This spec marks these unknown; do not treat the placeholder numbers as stock-verified.
 - The seven-table Frost Armory world-SQL migration passed pinned-schema apply/idempotence/rollback in run 44219922132. This does not prove every generated column value, references outside those tables, characters-schema migrations, or a full populated world; use a disposable matching database for further qualification.
-- The generated C++ registration skeleton has a targeted pinned-core translation-unit/linkage check only; it is not feature-complete, and generated addon behavior is not client-runtime tested. The Vault Terminal example is also compile-checked, but is not yet generated from a spec or accepted in a running server/client.
+- Non-protocol generated C++ remains a registration skeleton. Vault Terminal is now generated from `specs/vault-terminal.json` and has a targeted pinned-core translation-unit/linkage check, but its Characters migration, server runtime, client addon, installed client behavior, Playerbots, and Campaign admission/live behavior remain unqualified.
 - The existing patch archive is outside Foundry's write path; any future patch merger must use a new path, detect collisions and refuse to overwrite unknown archives.
 
 See [13 — Campaign Party adapter](13-campaign-party-adapter.md) for the external contract and its limits.
