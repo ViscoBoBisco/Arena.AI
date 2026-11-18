@@ -98,6 +98,7 @@ def _check_package(package: Path) -> tuple[dict, dict, bytes, bytes, str]:
 
 def qualify(package: Path, database: str, defaults_file: Path) -> dict:
     from foundry.generate import characters_claim_upsert_sql
+    from foundry.qualification import integrity_check
 
     if not DB_RE.fullmatch(database):
         raise ValueError("database name must be an arena_foundry_disposable_characters_* name")
