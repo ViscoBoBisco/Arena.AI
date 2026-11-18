@@ -41,17 +41,29 @@ def _verify_recovery_evidence(evidence: dict, source: dict, schema: dict) -> Non
     schema_body = {key: evidence.get(key) for key in schema_fields}
     evidence_body = dict(evidence)
     evidence_hash = evidence_body.pop("evidence_sha256", None)
-    if (not isinstance(evidence_hash, str) or _canonical_hash(evidence_body) != evidence_hash
-            or not isinstance(evidence.get("runtime_schema_sha256"), str)
-            or _canonical_hash(schema_body) != evidence.get("runtime_schema_sha256")
-            or evidence.get("schema") != "arena-world-schema-source/1"
-            or evidence.get("trust") != "SYNTHETIC_DISPOSABLE_MYSQL_PINNED_SCHEMA"
-            or evidence.get("database") != schema.get("database")
-            or evidence.get("source") != source
-            or evidence.get("runtime_tables") != schema.get("runtime_tables")
-            or evidence.get("created_tables") != schema.get("created_tables")
-            or evidence.get("base_data_imported") is not False):
-        raise ValueError("crash-recovery evidence is not bound to the current pinned schema")
+    binding_errors = []
+    if not isinstance(evidence_hash, str) or _canonical_hash(evidence_body) != evidence_hash:
+        binding_errors.append("evidence digest")
+    if (not isinstance(evidence.get("runtime_schema_sha256"), str)
+            or _canonical_hash(schema_body) != evidence.get("runtime_schema_sha256")):
+        binding_errors.append("runtime schema digest")
+    if evidence.get("schema") != "arena-world-schema-source/1":
+        binding_errors.append("proof schema")
+    if evidence.get("trust") != "SYNTHETIC_DISPOSABLE_MYSQL_PINNED_SCHEMA":
+        binding_errors.append("trust scope")
+    if evidence.get("database") != schema.get("database"):
+        binding_errors.append("database name")
+    if evidence.get("source") != source:
+        binding_errors.append("pinned source hashes")
+    if evidence.get("runtime_tables") != schema.get("runtime_tables"):
+        binding_errors.append("runtime table metadata")
+    if evidence.get("created_tables") != schema.get("created_tables"):
+        binding_errors.append("created DDL hashes")
+    if evidence.get("base_data_imported") is not False:
+        binding_errors.append("base data scope")
+    if binding_errors:
+        raise ValueError("crash-recovery evidence is not bound to the current pinned schema: "
+                         + ", ".join(binding_errors))
     tables = evidence.get("world_row_checks")
     if (not isinstance(tables, dict) or tables.get("status") != "PASS"
             or set(tables.get("tables", {})) != set(_DB_SCHEMA_TABLES)
