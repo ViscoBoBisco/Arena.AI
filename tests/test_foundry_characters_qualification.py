@@ -295,7 +295,7 @@ class CharactersQualification(unittest.TestCase):
     def test_ci_workflow_asserts_the_current_request_receipt_proof_contract(self):
         workflow = (REPO / ".github" / "workflows" / "azerothcore-db-qualification.yml").read_text()
         for token in (
-            "World DB qualification is intentionally blocked",
+            "Unsupported Frost Armory content remains fail-closed",
             "emitter-coverage",
             "arena-characters-db-qualification/3",
             "legacy_daily_claims_migrated_and_retained",

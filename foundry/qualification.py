@@ -93,6 +93,179 @@ def _passed_record(record: Any) -> bool:
             and bool(record["evidence"].strip()))
 
 
+def _valid_owned_world_attestation(attestations: dict, manifest_sha256: str,
+                                   package: Path, record: dict, proof: dict) -> bool:
+    """Validate v3 source/schema/receipt evidence from the transactional service."""
+    try:
+        pins = _read_json(Path(__file__).resolve().parent / "core-pins.json")
+        pin = pins["azerothcore_wotlk"]
+        source = proof["schema_source"]
+        pinned = proof["pinned_schema"]
+        recovery = proof["recovery_evidence"]
+        required_hashes = pin["world_schema_sha256"]
+        expected_source = {"schema": "arena-db-schema-source/1",
+                           "repository": pin["repository"],
+                           "revision": pin["revision"], "tables": required_hashes}
+        if (source != expected_source or pinned.get("source") != expected_source
+                or pinned.get("schema") != "arena-world-schema-source/1"
+                or pinned.get("trust") != "SYNTHETIC_DISPOSABLE_MYSQL_PINNED_SCHEMA"
+                or pinned.get("base_data_imported") is not False
+                or pinned.get("database") != proof.get("database")):
+            return False
+        schema_hash = pinned.get("runtime_schema_sha256")
+        schema_fields = ("schema", "database", "trust", "source", "created_tables",
+                         "runtime_tables", "base_data_imported")
+        schema_body = {key: pinned.get(key) for key in schema_fields}
+        if (not isinstance(schema_hash, str)
+                or _sha256(json.dumps(schema_body, sort_keys=True, separators=(",", ":"),
+                            default=str).encode("utf-8")) != schema_hash
+                or proof.get("runtime_schema_sha256") != schema_hash):
+            return False
+        expected_tables = {
+            "creature_template": ["entry"],
+            "creature_template_model": ["creatureid", "idx"],
+            "game_event": ["evententry"],
+            "item_template": ["entry"],
+            "npc_vendor": ["entry", "item", "extendedcost"],
+            "quest_template": ["id"],
+            "spell_dbc": ["id"],
+        }
+        if (set(pinned.get("created_tables", {})) != set(expected_tables)
+                or set(pinned.get("runtime_tables", {})) != set(expected_tables)):
+            return False
+        for table, expected_key in expected_tables.items():
+            created = pinned["created_tables"][table]
+            runtime = pinned["runtime_tables"][table]
+            rel = f"data/sql/base/db_world/{table}.sql"
+            if (created.get("source_path") != rel
+                    or created.get("source_sha256") != required_hashes.get(rel)
+                    or not re.fullmatch(r"[0-9a-f]{64}", str(created.get("ddl_sha256", "")))
+                    or runtime.get("engine") != "innodb"
+                    or runtime.get("primary_key") != expected_key
+                    or not isinstance(runtime.get("columns"), list)
+                    or not runtime["columns"]):
+                return False
+        recovery_body = dict(recovery)
+        recovery_hash = _sha256(json.dumps(
+            recovery_body, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8"))
+        recovery_evidence_body = dict(recovery)
+        recovery_evidence_hash = recovery_evidence_body.pop("evidence_sha256", None)
+        recovery_schema_body = {key: recovery.get(key) for key in schema_fields}
+        recovery_tables = recovery.get("world_row_checks", {}).get("tables", {})
+        crash = recovery.get("process_recovery", {})
+        operation_checks = proof.get("operation_checks", {})
+        if (proof.get("recovery_evidence_sha256") != recovery_hash
+                or not isinstance(recovery_evidence_hash, str)
+                or _sha256(json.dumps(recovery_evidence_body, sort_keys=True,
+                                      separators=(",", ":"), default=str).encode("utf-8"))
+                   != recovery_evidence_hash
+                or _sha256(json.dumps(recovery_schema_body, sort_keys=True,
+                                      separators=(",", ":"), default=str).encode("utf-8"))
+                   != schema_hash
+                or recovery.get("source") != expected_source
+                or recovery.get("runtime_schema_sha256") != schema_hash
+                or set(recovery_tables) != set(expected_tables)
+                or any(checks != {"apply": "PASS", "rollback": "PASS"}
+                       for checks in recovery_tables.values())
+                or recovery.get("world_row_checks", {}).get("status") != "PASS"
+                or crash.get("status") != "PASS"
+                or crash.get("child_exit_code") != 73
+                or crash.get("crash_after_npc_vendor_insert_before_commit") != "PASS"
+                or crash.get("uncommitted_rows_and_journal_state_changes_absent") != "PASS"
+                or crash.get("same_request_restart_reapplied_seven_rows") != "PASS"
+                or crash.get("same_request_receipt_replayed") != "PASS"
+                or crash.get("owned_rollback_removed_all_seven_rows") != "PASS"
+                or set(operation_checks) != {
+                    "transactional_apply_all_rows", "same_request_receipt_replay",
+                    "independent_idempotent_apply", "owned_rollback_all_rows",
+                    "reapply_after_rollback", "final_rollback_all_rows",
+                    "durable_receipts_and_rolled_back_journal"}
+                or any(status != "PASS" for status in operation_checks.values())):
+            return False
+
+        integrity = integrity_check(package)
+        if not integrity["ok"] or integrity["manifest_sha256"] != manifest_sha256:
+            return False
+        migration_path = package / "sql" / "01_world.sql"
+        rollback_path = package / "sql" / "99_rollback.sql"
+        if (proof.get("migration_sha256") != _sha256(migration_path.read_bytes())
+                or proof.get("rollback_sha256") != _sha256(rollback_path.read_bytes())):
+            return False
+        from .db_qualification import (expected_world_rows, inspect_generated_sql,
+                                       semantic_insert_rows, validate_generated_sql)
+        from .generate import world_sql
+        spec = _read_json(package / "spec.json")
+        allocation = _read_json(package / "id-allocation.json")
+        baseline = _read_json(package / "id-baseline.json")
+        statements = validate_generated_sql(migration_path.read_text(encoding="utf-8"), rollback=False)
+        semantics = semantic_insert_rows(statements)
+        canonical = semantic_insert_rows(validate_generated_sql(
+            world_sql(spec, reserved=baseline.get("reserved_ids", {})), rollback=False))
+        rows = expected_world_rows(spec, allocation)
+        rollback_statements = validate_generated_sql(
+            rollback_path.read_text(encoding="utf-8"), rollback=True)
+        inspect_generated_sql(statements, rollback_statements, rows, spec, allocation)
+        if not rows or semantics != canonical or len(semantics) != len(rows):
+            return False
+        semantic_value = {"rows": [[table, [[column, value] for column, value in keys], values]
+                                  for (table, keys), values in sorted(semantics.items())]}
+        semantic_hash = _sha256(json.dumps(
+            semantic_value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8"))
+        expected_by_table = {table: sum(1 for row_table, _ in rows if row_table == table)
+                             for table in expected_tables}
+        if (proof.get("semantic_sha256") != semantic_hash
+                or proof.get("row_count") != len(rows)
+                or proof.get("row_tables") != expected_by_table
+                or proof.get("journal_rolled_back_rows") != len(rows)):
+            return False
+        expected_sequence = ["apply", "same-request-replay", "independent-idempotent-apply",
+                             "rollback", "verify-empty", "reapply", "rollback", "verify-empty"]
+        if proof.get("sequence") != expected_sequence:
+            return False
+        expected_receipts = [("apply", len(rows)), ("apply", 0), ("rollback", len(rows)),
+                             ("apply", len(rows)), ("rollback", len(rows))]
+        receipts = proof.get("receipts")
+        if not isinstance(receipts, list) or len(receipts) != len(expected_receipts):
+            return False
+        seen = set()
+        for receipt, (expected_action, expected_changed) in zip(receipts, expected_receipts):
+            if not isinstance(receipt, dict):
+                return False
+            request_id = receipt.get("request_id")
+            if (not isinstance(request_id, str) or request_id in seen
+                    or receipt.get("action") != expected_action
+                    or receipt.get("package_name") != spec.get("name")
+                    or receipt.get("package_version") != spec.get("version")
+                    or receipt.get("manifest_sha256") != manifest_sha256
+                    or not re.fullmatch(r"[0-9a-f]{64}", str(receipt.get("fingerprint_sha256", "")))
+                    or hashlib.sha256(receipt.get("result_json", "").encode("utf-8")).hexdigest()
+                    != receipt.get("result_json_sha256")):
+                return False
+            result = json.loads(receipt["result_json"])
+            if (result.get("request_id") != request_id or result.get("action") != receipt["action"]
+                    or result.get("manifest_sha256") != manifest_sha256
+                    or result.get("changed_rows") != expected_changed):
+                return False
+            seen.add(request_id)
+        if proof.get("receipt_set_sha256") != _sha256(json.dumps(
+                receipts, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")):
+            return False
+        source_files = proof.get("qualification_sources")
+        expected_sources = ("foundry/world_ownership.py", "foundry/world_schema.py",
+                            "foundry/db_qualification.py", "foundry/world_qualification.py",
+                            "foundry/qualification.py")
+        if (not isinstance(source_files, dict) or set(source_files) != set(expected_sources)
+                or any(source_files[name] != _sha256((Path(__file__).resolve().parent.parent / name).read_bytes())
+                       for name in expected_sources)):
+            return False
+        if not re.fullmatch(r"[0-9a-f]{40}", str(proof.get("source_commit", ""))):
+            return False
+        proof_hash = _sha256((json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n").encode())
+        return record.get("evidence") == "sha256:" + proof_hash
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
 def _valid_database_attestation(attestations: Any, manifest_sha256: str,
                                 package: Path) -> bool:
     """Semantically bind DB proof, migrations and schema source to this package/pin."""
@@ -104,8 +277,12 @@ def _valid_database_attestation(attestations: Any, manifest_sha256: str,
     record = levels.get("ARENA-DB") if isinstance(levels, dict) else None
     proof = attestations.get("database_qualification")
     if (not _passed_record(record) or not isinstance(proof, dict)
-            or proof.get("schema") != "arena-db-qualification/2"
             or proof.get("manifest_sha256") != manifest_sha256):
+        return False
+    if proof.get("schema") == "arena-db-qualification/3":
+        return _valid_owned_world_attestation(attestations, manifest_sha256,
+                                              package, record, proof)
+    if proof.get("schema") != "arena-db-qualification/2":
         return False
     database = proof.get("database")
     if (not isinstance(database, str) or len(database) > 64

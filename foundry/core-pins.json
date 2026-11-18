@@ -4,6 +4,15 @@
     "repository": "https://github.com/azerothcore/azerothcore-wotlk.git",
     "revision": "6ffb62abb867dabb258de6813ff5d06d6b011543",
     "branch_observed": "master",
-    "qualification": "Pinned source contract for generated module compilation; not a Campaign Party runtime pin."
+    "world_schema_sha256": {
+      "data/sql/base/db_world/creature_template.sql": "0066e4fd35b809986dd325487515087f5a95f4ffe50ea03846c8d8bf5196870a",
+      "data/sql/base/db_world/creature_template_model.sql": "acef683affa08ccd91adda3e74ec8307c9c2af5804bb21a88981cb0b583e936a",
+      "data/sql/base/db_world/game_event.sql": "8758276915fd2a1dbdb6d688ca03c9b7ddb79b2c2387ca2fb03c01cb63c09cd0",
+      "data/sql/base/db_world/item_template.sql": "bd4859be01946ca1521f7896f558f665e1e1d98890757a3df30e717b62768cc6",
+      "data/sql/base/db_world/npc_vendor.sql": "75299694cb741ebc7b76f8f84c418236cc9d11b968ed028f9c6f49c9be0ebc80",
+      "data/sql/base/db_world/quest_template.sql": "5dc7e6c92ea6875a5fc68cf5d3e33150e86cda5819a11af0c59217b24c63a37f",
+      "data/sql/base/db_world/spell_dbc.sql": "4244b73996af464366d3ad857008b202f188e9c2247aea0931b25ba3109ef5f8"
+    },
+    "qualification": "Pinned source contract for generated module compilation and selected World DDL; not a Campaign Party runtime pin."
   }
 }
