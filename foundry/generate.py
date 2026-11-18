@@ -199,19 +199,48 @@ def _cpp_module_identifier(name: str) -> str:
     return "_" + identifier if identifier[0].isdigit() else identifier
 
 
-def characters_claim_upsert_sql(spec: dict) -> str:
-    """Atomic per-character daily claim increment, capped at the declared target."""
+def characters_claim_transaction_sql(spec: dict) -> list[tuple[str, tuple[str, ...]]]:
+    """SQL templates for one idempotent, transactionally attributed claim request.
+
+    The request receipt, counter update and final receipt are committed together.
+    A unique receipt key makes same-ID retries replay the stored outcome; the
+    row marker attributes an increment to its request without relying on a
+    pooled connection's ROW_COUNT().
+    """
     protocol = spec["addon_protocol"]
     table = protocol["claims_table"]
     target = protocol["target"]
-    return (f"INSERT INTO `{table}` (guid, total_claims, last_claim_day) "
-            "VALUES ({}, 1, CURRENT_DATE()) "
-            "ON DUPLICATE KEY UPDATE "
-            f"total_claims = IF((last_claim_day IS NULL OR last_claim_day <> CURRENT_DATE()) "
-            f"AND total_claims < {target}, total_claims + 1, total_claims), "
-            f"last_claim_day = IF((last_claim_day IS NULL OR last_claim_day <> CURRENT_DATE()) "
-            f"AND total_claims <= {target}, "
-            "CURRENT_DATE(), last_claim_day)")
+    receipt_table = f"{table}_requests"
+    return [
+        # Lock/create the per-character serialization row before touching a request-keyed receipt.
+        # This gives every claim the same lock order and avoids cross-request receipt/state deadlocks.
+        (f"INSERT INTO `{table}` "
+         "(guid, total_claims, last_claim_day, last_request_id) "
+         "VALUES ({}, 0, NULL, NULL) ON DUPLICATE KEY UPDATE guid = VALUES(guid)",
+         ("guid",)),
+        (f"INSERT IGNORE INTO `{receipt_table}` "
+         "(guid, request_id, status, total_claims, claim_day) "
+         "VALUES ({}, '{}', 'PENDING', 0, CURRENT_DATE())",
+         ("guid", "request_id")),
+        (f"UPDATE `{table}` SET "
+         "last_request_id = IF((last_claim_day IS NULL OR last_claim_day <> CURRENT_DATE()) "
+         f"AND total_claims < {target}, '{{}}', last_request_id), "
+         "total_claims = IF(last_request_id = '{}', total_claims + 1, total_claims), "
+         "last_claim_day = IF(last_request_id = '{}', CURRENT_DATE(), last_claim_day) "
+         "WHERE guid = {} AND EXISTS (SELECT 1 FROM `" + receipt_table + "` "
+         "WHERE guid = {} AND request_id = '{}' AND status = 'PENDING')",
+         ("request_id", "request_id", "request_id", "guid", "guid", "request_id")),
+        (f"UPDATE `{receipt_table}` AS receipt JOIN `{table}` AS claims "
+         "ON claims.guid = receipt.guid "
+         "SET receipt.status = CASE "
+         "WHEN claims.last_request_id = '{}' THEN 'GRANTED' "
+         f"WHEN claims.total_claims >= {target} THEN 'DENIED_TARGET' "
+         "WHEN claims.last_claim_day = CURRENT_DATE() THEN 'DENIED_COOLDOWN' "
+         "ELSE 'DENIED_INTERNAL' END, "
+         "receipt.total_claims = claims.total_claims, receipt.claim_day = CURRENT_DATE() "
+         "WHERE receipt.guid = {} AND receipt.request_id = '{}' AND receipt.status = 'PENDING'",
+         ("request_id", "guid", "request_id")),
+    ]
 
 
 def _counter_terminal_module_cpp(spec: dict) -> Dict[str, str]:
@@ -227,7 +256,11 @@ def _counter_terminal_module_cpp(spec: dict) -> Dict[str, str]:
     header_guard = f"ARENA_{dirname.replace('-', '_').upper()}_LOADER_H"
     conf_key = module["conf_key"]
     table = protocol["claims_table"]
-    claim_upsert = characters_claim_upsert_sql(spec)
+    claim_transaction = characters_claim_transaction_sql(spec)
+    claim_transaction_code = "\n".join(
+        "        transaction->Append(Acore::StringFormat(\n            " + json.dumps(sql) + ", "
+        + ", ".join("guid" if arg == "guid" else "requestId" for arg in args) + "));"
+        for sql, args in claim_transaction)
     prefix = protocol["prefix"]
     version = protocol["version"]
     max_bytes = protocol["max_bytes"]
@@ -246,6 +279,7 @@ def _counter_terminal_module_cpp(spec: dict) -> Dict[str, str]:
 #include "Config.h"
 #include "DatabaseEnv.h"
 #include "Log.h"
+#include "StringFormat.h"
 
 #include "{dirname}.h"
 
@@ -268,6 +302,7 @@ namespace
     constexpr uint32 CLAIMS_PER_DAY = {claims_per_day};
     constexpr uint32 MIN_REQUEST_INTERVAL_MS = {min_interval};
     constexpr char const* CLAIM_TABLE = "{table}";
+    constexpr char const* REQUEST_TABLE = "{table}_requests";
 
     struct RankStep {{ uint64 threshold; char const* name; }};
     constexpr RankStep RANKS[] = {{
@@ -359,6 +394,23 @@ namespace
         Send(player, std::string(PREFIX) + "ERR\\t" + code + "\\t" + text);
     }}
 
+    bool IsValidRequestId(std::string const& requestId)
+    {{
+        return !requestId.empty() && requestId.size() <= 64
+            && std::all_of(requestId.begin(), requestId.end(), [](unsigned char c)
+            {{
+                return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z')
+                    || (c >= 'A' && c <= 'Z') || c == '-' || c == '_';
+            }});
+    }}
+
+    void SendReceipt(Player* player, std::string const& requestId,
+                     std::string const& status, uint64 totalClaims)
+    {{
+        Send(player, std::string(PREFIX) + "RCPT\\t" + requestId + "\\t" + status + "\\t"
+            + std::to_string(totalClaims));
+    }}
+
     bool LoadState(Player* player, CounterState& state)
     {{
         QueryResult result = CharacterDatabase.Query(
@@ -395,49 +447,38 @@ namespace
         SendState(player, state);
     }}
 
-    void HandleClaim(Player* player)
+    void HandleClaim(Player* player, std::string const& requestId)
     {{
-        CounterState before;
-        if (!LoadState(player, before))
+        uint32 const guid = player->GetGUID().GetCounter();
+        auto transaction = CharacterDatabase.BeginTransaction();
+{claim_transaction_code}
+        CharacterDatabase.DirectCommitTransaction(transaction);
+
+        // Read the durable request receipt by its unique request key. This is
+        // intentionally not inferred from a post-write character-state query.
+        QueryResult receipt = CharacterDatabase.Query(
+            "SELECT request_id, status, total_claims FROM `" + std::string(REQUEST_TABLE)
+                + "` WHERE guid = {{}} AND request_id = '{{}}'", guid, requestId);
+        if (!receipt)
         {{
-            SendError(player, "INTERNAL", "state is temporarily unavailable");
+            SendReceipt(player, requestId, "RETRY", 0);
             return;
         }}
-        if (before.totalClaims >= TARGET)
+        Field* fields = receipt->Fetch();
+        std::string const storedRequestId = fields[0].Get<std::string>();
+        std::string const status = fields[1].Get<std::string>();
+        uint64 const totalClaims = fields[2].Get<uint64>();
+        if (storedRequestId != requestId || (status != "GRANTED" && status != "DENIED_COOLDOWN"
+            && status != "DENIED_TARGET" && status != "DENIED_INTERNAL"))
         {{
-            SendError(player, "DENIED", "claim target reached");
-            return;
-        }}
-        if (before.claimsToday >= CLAIMS_PER_DAY)
-        {{
-            SendError(player, "COOLDOWN", "already claimed today");
+            SendReceipt(player, requestId, "RETRY", 0);
             return;
         }}
 
-        // One InnoDB row per character serializes daily increments across sessions
-        // and worldserver processes; the SQL predicate also enforces the total target.
-        CharacterDatabase.DirectExecute(
-            "{claim_upsert}",
-            player->GetGUID().GetCounter());
-
-        CounterState after;
-        if (!LoadState(player, after))
-        {{
-            SendError(player, "INTERNAL", "claim could not be confirmed");
-            return;
-        }}
-        if (after.totalClaims == before.totalClaims)
-        {{
-            if (after.totalClaims >= TARGET)
-                SendError(player, "DENIED", "claim target reached");
-            else if (after.claimsToday >= CLAIMS_PER_DAY)
-                SendError(player, "COOLDOWN", "already claimed today");
-            else
-                SendError(player, "INTERNAL", "claim could not be confirmed");
-            return;
-        }}
-        Send(player, std::string(PREFIX) + "OK\\tclaim recorded");
-        SendState(player, after);
+        SendReceipt(player, requestId, status, totalClaims);
+        CounterState state;
+        if (LoadState(player, state))
+            SendState(player, state);
     }}
 
 
@@ -480,7 +521,10 @@ public:
         }}
         if (!AllowRequest(player))
         {{
-            SendError(player, "BUSY", "please wait before sending another request");
+            if (opcode == "CLAIM" && fields.size() == 3 && IsValidRequestId(fields[2]))
+                SendReceipt(player, fields[2], "RETRY", 0);
+            else
+                SendError(player, "BUSY", "please wait before sending another request");
             return;
         }}
         if (opcode == "HELLO")
@@ -490,12 +534,16 @@ public:
             else
                 HandleState(player);
         }}
+        else if (opcode == "CLAIM")
+        {{
+            if (fields.size() != 3 || !IsValidRequestId(fields[2]))
+                return; // Malformed action frames never reach persistence.
+            HandleClaim(player, fields[2]);
+        }}
         else if (fields.size() != 2)
-            return; // Malformed action frames never reach persistence.
+            return;
         else if (opcode == "STATE")
             HandleState(player);
-        else if (opcode == "CLAIM")
-            HandleClaim(player);
         else if (opcode == "PING")
             Send(player, std::string(PREFIX) + "OK");
     }}
@@ -541,24 +589,74 @@ void {loader_fn}() {{ {inner_fn}(); }}
 
 
 def characters_sql_files(spec: dict) -> Dict[str, str]:
-    """Emit the atomic daily-counter row schema and non-destructive rollback note."""
+    """Emit persistent claim state, request receipts, and a safe additive upgrade."""
     protocol = spec.get("addon_protocol")
     if not isinstance(protocol, dict):
         return {}
     table = protocol["claims_table"]
-    migration = f'''-- {spec.get('title', spec['name'])}: characters database migration.
--- One InnoDB row per character serializes increments atomically across sessions/processes.
--- The server uses a conditional upsert to enforce one claim/day and the configured total target.
+    receipt_table = f"{table}_requests"
+    migration = f'''-- {spec.get('title', spec['name'])}: Characters database migration.
+-- One transaction records each request outcome and applies at most one increment.
 CREATE TABLE IF NOT EXISTS `{table}` (
   `guid` int unsigned NOT NULL COMMENT 'AzerothCore character low GUID',
   `total_claims` int unsigned NOT NULL DEFAULT 0 COMMENT 'server-authoritative total',
   `last_claim_day` date DEFAULT NULL COMMENT 'database-server day of the last claim',
+  `last_request_id` varchar(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
   PRIMARY KEY (`guid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Preserve an installation using the previous one-row-per-day schema. Migrate its full
+-- claim count and latest day to the new one-row-per-character counter, retaining the old
+-- daily rows in a backup table. Each prepared statement is a single DDL/DML operation.
+SET @arena_counter_legacy_shape = (
+  (SELECT COUNT(*) FROM information_schema.columns
+   WHERE table_schema = DATABASE() AND table_name = '{table}' AND column_name = 'claim_day') > 0
+  AND (SELECT COUNT(*) FROM information_schema.columns
+   WHERE table_schema = DATABASE() AND table_name = '{table}' AND column_name = 'total_claims') = 0
+  AND (SELECT COUNT(*) FROM information_schema.tables
+   WHERE table_schema = DATABASE() AND table_name = '{table}_legacy_v1') = 0
+);
+SET @arena_counter_stage_sql = IF(@arena_counter_legacy_shape,
+  'CREATE TABLE IF NOT EXISTS `{table}_stage_v2` (
+     `guid` int unsigned NOT NULL,
+     `total_claims` int unsigned NOT NULL DEFAULT 0,
+     `last_claim_day` date DEFAULT NULL,
+     `last_request_id` varchar(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+     PRIMARY KEY (`guid`)
+   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4', 'SELECT 1');
+PREPARE arena_counter_stage_stmt FROM @arena_counter_stage_sql;
+EXECUTE arena_counter_stage_stmt;
+DEALLOCATE PREPARE arena_counter_stage_stmt;
+
+SET @arena_counter_copy_sql = IF(@arena_counter_legacy_shape,
+  'INSERT INTO `{table}_stage_v2` (guid, total_claims, last_claim_day, last_request_id)
+   SELECT guid, COUNT(*), MAX(claim_day), NULL FROM `{table}` GROUP BY guid
+   ON DUPLICATE KEY UPDATE total_claims = VALUES(total_claims),
+     last_claim_day = VALUES(last_claim_day), last_request_id = NULL', 'SELECT 1');
+PREPARE arena_counter_copy_stmt FROM @arena_counter_copy_sql;
+EXECUTE arena_counter_copy_stmt;
+DEALLOCATE PREPARE arena_counter_copy_stmt;
+
+SET @arena_counter_rename_sql = IF(@arena_counter_legacy_shape,
+  'RENAME TABLE `{table}` TO `{table}_legacy_v1`, `{table}_stage_v2` TO `{table}`', 'SELECT 1');
+PREPARE arena_counter_rename_stmt FROM @arena_counter_rename_sql;
+EXECUTE arena_counter_rename_stmt;
+DEALLOCATE PREPARE arena_counter_rename_stmt;
+
+CREATE TABLE IF NOT EXISTS `{receipt_table}` (
+  `guid` int unsigned NOT NULL,
+  `request_id` varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `status` varchar(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `total_claims` int unsigned NOT NULL DEFAULT 0,
+  `claim_day` date NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`guid`, `request_id`),
+  KEY `idx_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 '''
     rollback = f'''-- Non-destructive rollback for {spec['name']}.
--- Disable the module and remove the addon. Keep `{table}` to preserve character progress.
--- Purging this table is intentionally a separate, operator-reviewed action after backup.
+-- Disable the module and remove the addon. Keep `{table}` and `{receipt_table}` to preserve
+-- character progress and idempotent request receipts. Purging is a separate reviewed action.
 '''
     return {
         f"sql/characters/{table}.sql": migration,
@@ -674,9 +772,10 @@ def _counter_terminal_addon_files(spec: dict) -> Dict[str, str]:
     slash_commands = addon["slash_commands"]
     toc = (f"## Interface: 30300\n## Title: {title}\n## Version: {spec['version']}\n"
            "## Notes: Server-authoritative state; client submits intent only.\n"
+           "## SavedVariables: VaultTerminalDB\n"
            f"## X-Protocol-Version: {version}\n\n{slug}.lua\n")
     ranks = ", ".join(f'[{row["name"]!r}] = true' for row in protocol["rank_ladder"])
-    lua = f'''-- {title}: generated from arena-counter-terminal/1.
+    lua = f'''-- {title}: generated from arena-counter-terminal/2.
 -- WotLK 3.3.5a Interface 30300. This addon renders server state only.
 local PREFIX = "{prefix}"
 local VERSION = "{version}"
@@ -689,10 +788,40 @@ local VALID_RANKS = {{{ranks}}}
 local frame
 local fields = {{}}
 local pending = false
+local pendingOpcode = nil
+local retryQueued = false
 local stopped = false
 local requestAt = 0
 local lastSend = -MIN_REQUEST_INTERVAL
 local lastState = nil
+
+local function characterData()
+    if type(VaultTerminalDB) ~= "table" then VaultTerminalDB = {{}} end
+    if type(VaultTerminalDB.characters) ~= "table" then VaultTerminalDB.characters = {{}} end
+    local key = UnitGUID("player") or UnitName("player") or "unknown"
+    if type(VaultTerminalDB.characters[key]) ~= "table" then
+        VaultTerminalDB.characters[key] = {{ requestSequence = 0 }}
+    end
+    return VaultTerminalDB.characters[key]
+end
+
+local function currentPendingRequestId()
+    local data = characterData()
+    if type(data.pendingRequestId) ~= "string" then return nil end
+    return data.pendingRequestId
+end
+
+local function newRequestId()
+    local data = characterData()
+    data.requestSequence = (tonumber(data.requestSequence) or 0) + 1
+    data.pendingRequestId = tostring(time()) .. "-" .. tostring(data.requestSequence)
+        .. "-" .. tostring(math.floor(GetTime() * 1000))
+    return data.pendingRequestId
+end
+
+local function clearPendingRequestId()
+    characterData().pendingRequestId = nil
+end
 
 local function setStatus(text)
     if fields.status then fields.status:SetText(text or "") end
@@ -748,6 +877,7 @@ local function send(opcode, ...)
     lastSend = now
     requestAt = now
     pending = true
+    pendingOpcode = opcode
     SendAddonMessage(PREFIX, payload, "WHISPER", UnitName("player"))
     return true
 end
@@ -756,7 +886,12 @@ local function setStale(message)
     fields.seals:SetText("—")
     fields.rank:SetText("—")
     fields.claim:SetText("No current server state.")
-    fields.claimButton:Disable()
+    if currentPendingRequestId() then
+        fields.claimButton:SetText("Retry Claim")
+        fields.claimButton:Enable()
+    else
+        fields.claimButton:Disable()
+    end
     setStatus(message or "No server response. Use Refresh to retry.")
 end
 
@@ -764,11 +899,17 @@ local function renderState(values)
     lastState = values
     fields.seals:SetText(tostring(values.seals) .. " / " .. tostring(values.target))
     fields.rank:SetText(values.rank)
-    if values.flag == "1" and values.claimsLeft > 0 then
+    if currentPendingRequestId() then
+        fields.claim:SetText("A claim request is awaiting confirmation.")
+        fields.claimButton:SetText("Retry Claim")
+        fields.claimButton:Enable()
+    elseif values.flag == "1" and values.claimsLeft > 0 then
         fields.claim:SetText("A claim is available today.")
+        fields.claimButton:SetText("Claim")
         fields.claimButton:Enable()
     else
         fields.claim:SetText("No claim available today.")
+        fields.claimButton:SetText("Claim")
         fields.claimButton:Disable()
     end
     setStatus("Connected to server.")
@@ -780,7 +921,6 @@ local function dispatch(prefix, message, distribution, sender)
     local parts = splitTabs(message)
     if parts[1] ~= PREFIX or not parts[2] then return end
     local opcode = parts[2]
-    pending = false
 
     if opcode == "S" then
         if #parts ~= 7 then setStale("Malformed state response."); return end
@@ -794,16 +934,62 @@ local function dispatch(prefix, message, distribution, sender)
             setStale("Invalid state response.")
             return
         end
+        pending = false
+        local previousOpcode = pendingOpcode
+        pendingOpcode = nil
         renderState({{seals = seals, target = target, claimsLeft = claimsLeft, rank = rank, flag = flag}})
+        if previousOpcode == "HELLO" and currentPendingRequestId() then
+            retryQueued = true
+        end
+    elseif opcode == "RCPT" then
+        if #parts ~= 5 or parts[3] ~= currentPendingRequestId() then return end
+        local totalClaims = parseUInt(parts[5])
+        local status = parts[4]
+        if totalClaims == nil or (status ~= "GRANTED" and status ~= "DENIED_COOLDOWN"
+            and status ~= "DENIED_TARGET" and status ~= "DENIED_INTERNAL" and status ~= "RETRY") then
+            setStatus("Malformed claim receipt.")
+            return
+        end
+        pending = false
+        pendingOpcode = nil
+        retryQueued = false
+        if status == "RETRY" then
+            fields.claimButton:SetText("Retry Claim")
+            fields.claimButton:Enable()
+            setStatus("Claim outcome is not confirmed. Retry safely.")
+            return
+        end
+        clearPendingRequestId()
+        fields.claimButton:Disable()
+        if status == "GRANTED" then
+            setStatus("Claim confirmed by server.")
+        elseif status == "DENIED_COOLDOWN" then
+            setStatus("COOLDOWN: already claimed today.")
+        elseif status == "DENIED_TARGET" then
+            setStatus("Target already reached.")
+        else
+            setStatus("Claim was refused; refresh server state.")
+        end
     elseif opcode == "OK" then
         if #parts > 3 then setStatus("Malformed success response."); return end
+        pending = false
+        pendingOpcode = nil
         setStatus(parts[3] or "Request accepted.")
-        if lastState and fields.claimButton then fields.claimButton:Disable() end
     elseif opcode == "ERR" then
         if #parts ~= 4 then setStatus("Malformed error response."); return end
+        if pendingOpcode ~= "CLAIM" then
+            pending = false
+            pendingOpcode = nil
+        else
+            pending = false
+            pendingOpcode = nil
+            fields.claimButton:SetText("Retry Claim")
+            fields.claimButton:Enable()
+        end
         setStatus(parts[3] .. ": " .. parts[4])
-        if fields.claimButton then fields.claimButton:Disable() end
     elseif opcode == "BYE" then
+        pending = false
+        pendingOpcode = nil
         stopped = true
         setStale(parts[3] or "Server disabled this feature.")
     end
@@ -856,9 +1042,13 @@ local function build()
     claim:SetText("Claim")
     claim:Disable()
     claim:SetScript("OnClick", function()
+        local requestId = currentPendingRequestId() or newRequestId()
         claim:Disable()
         setStatus("Sending claim request…")
-        if not send("CLAIM") and lastState and lastState.flag == "1" then claim:Enable() end
+        if not send("CLAIM", requestId) then
+            claim:SetText("Retry Claim")
+            claim:Enable()
+        end
     end)
     fields.claimButton = claim
 
@@ -882,7 +1072,12 @@ local function build()
     frame:SetScript("OnUpdate", function()
         if pending and GetTime() - requestAt >= RESPONSE_TIMEOUT then
             pending = false
-            setStale("No server response. Use Refresh to retry.")
+            pendingOpcode = nil
+            setStale("No server response. Retry uses the same request ID.")
+        elseif retryQueued and not pending and GetTime() - lastSend >= MIN_REQUEST_INTERVAL then
+            retryQueued = false
+            local requestId = currentPendingRequestId()
+            if requestId then send("CLAIM", requestId) end
         end
     end)
 end
@@ -905,6 +1100,7 @@ end
 '''
     toc = (f"## Interface: 30300\n## Title: {title}\n## Version: {spec['version']}\n"
            "## Notes: Server-authoritative state; client submits intent only.\n"
+           "## SavedVariables: VaultTerminalDB\n"
            f"## X-Protocol-Version: {version}\n\n{slug}.lua\n")
     return {f"addon/{slug}/{slug}.toc": toc, f"addon/{slug}/{slug}.lua": lua}
 

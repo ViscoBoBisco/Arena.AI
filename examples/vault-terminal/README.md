@@ -11,7 +11,7 @@ addon is a folder.
 | Piece | Where it lives | Needs a client patch? |
 |---|---|---|
 | The panel (Lua, XML-free) | `Interface/AddOns/VaultTerminal/` | no — a folder |
-| The truth (seals, cooldown, rank) | server module + `vault_terminal_claims` | no |
+| The truth (seals, cooldown, rank, receipts) | server module + Characters tables `vault_terminal_claims` and `vault_terminal_claims_requests` | no |
 | The channel | `AddonChannel = 1` in `worldserver.conf` | no |
 
 | | |
@@ -28,7 +28,7 @@ harness/vt_model.py                  the same protocol as executable Python: rep
 addon/VaultTerminal/VaultTerminal.toc
 addon/VaultTerminal/VaultTerminal.lua   the panel: request, render, degrade
 server/mod-vault-terminal/            reference module: hook, parse, reply, storage
-sql/01_module_table.sql               characters DB: one row per claim
+sql/01_module_table.sql               characters DB: counter + durable request receipt tables
 sql/02_terminal_npc.sql               world DB: the NPC that explains /vt (and a keypad option)
 sql/99_rollback.sql                   removes the world objects and names the drop
 ```
@@ -42,9 +42,9 @@ sql/99_rollback.sql                   removes the world objects and names the dr
 3. **Database** — run `sql/01_module_table.sql` against the **characters** DB, `sql/02_terminal_npc.sql`
    against the **world** DB. Replace the `TODO(verify)` display ID with one that exists in your
    `CreatureDisplayInfo.dbc`.
-4. **Module** — drop `server/mod-vault-terminal/` into `modules/`, enable modules in CMake, rebuild.
-   The reference code is not compiled here; see `server/mod-vault-terminal/README.md` for the two core
-   APIs it depends on and where each was verified.
+4. **Module** — install `server/mod-vault-terminal/` into `modules/`, enable modules in CMake, and rebuild.
+   Its request transaction uses the pinned AzerothCore synchronous Characters-database APIs; generated-source
+   compile and disposable-MySQL transaction qualification are separate release gates.
 5. **Restart** the worldserver (config and module load) and log in.
 
 ## What the player sees
@@ -57,9 +57,11 @@ sql/99_rollback.sql                   removes the world objects and names the dr
   [ Claim seal ]
 ```
 
-Clicking **Claim seal** sends one action message; the server validates the day, writes a row, and
-answers `OK` plus a fresh snapshot. Clicking twice gets `ERR COOLDOWN  already claimed today`, which the
-panel shows in red without breaking.
+Clicking **Claim seal** sends a claim intent with a persisted request ID. The server serializes the
+counter update and immutable receipt in one transaction, then answers `RCPT` for that request plus a
+fresh snapshot. A repeated request ID replays its original receipt; a timeout or addon reopen retries
+the same ID rather than risking a duplicate claim. A distinct same-day request receives a
+`DENIED_COOLDOWN` receipt.
 
 If the server never answers (module missing, channel off, restart in progress), the panel goes to
 `—` and says **"no server response"** after ten seconds. That honesty is a protocol rule, not a
@@ -73,11 +75,13 @@ politeness: a panel showing stale or invented numbers is worse than a panel that
 | The panel opens | `/vt` — window appears, can be dragged, closes on `/vt` |
 | The handshake happened | server log shows no unknown-command noise; panel fills within a second |
 | State is server truth | change the row count in `vault_terminal_claims`, `/vt` again — the number moves |
-| The action works | click Claim → status line reads `seal claimed`, seals increments by one |
-| The action is guarded | click again → red `COOLDOWN`, seals unchanged |
+| The action works | click Claim → matching `GRANTED` receipt and snapshot; seals increments by one |
+| The action is guarded | submit a new same-day request → `DENIED_COOLDOWN`, seals unchanged |
+| Request retries are safe | replay the same request ID, including after timeout/reopen → original receipt; no second increment |
+| Concurrent requests are serialized | race distinct request IDs → at most one daily grant and each request gets its own durable outcome |
 | Degradation works | stop the worldserver, click Claim → panel shows `—` and "no server response" |
 | Version refusal works | set `PROTOCOL_VERSION` to `9` in the Lua → server answers `ERR VERSION`, panel says so |
-| Nobody can spoof it | `SendAddonMessage` with a hand-written `VT1\tCLAIM` from a macro → still one claim per day |
+| Nobody can spoof it | `SendAddonMessage` with a hand-written `VT1\tCLAIM\\tforged-id` from a macro → still one claim per day |
 | No client files changed | `git status` in your patch repo is empty; `Interface/AddOns` is not in the MPQ |
 | The protocol is well-formed offline | `python3 harness/vt_model.py` prints the conversation in `PROTOCOL.md`; `make test-master` fuzzes it |
 
@@ -93,8 +97,8 @@ icon drawn from art that does not exist. Everything else in the table above is f
 
 ## Security notes
 
-- Treat every field from the client as hostile. `CLAIM` carries no data for exactly this reason: the
-  server decides what a claim means, so a forged message can do nothing except what the button does.
+- Treat every field from the client as hostile. `CLAIM` carries only an opaque, validated request ID;
+  the server decides what a claim means and persists a receipt bound to the character and that ID.
 - Never let the addon compute a reward, a price, or a cooldown; render what you are told.
 - The prefix is namespaced (`VT1`) so the core's own `AzerothCore\t` command channel is untouched —
   driving that channel from an addon executes commands with the player's security, which is a very
@@ -104,7 +108,9 @@ icon drawn from art that does not exist. Everything else in the table above is f
 
 ## Rollback
 
-`sql/99_rollback.sql` removes the world objects by pinned ID (`900300`, spawn `9003001`); drop
-`vault_terminal_claims` from the characters DB; delete the addon folder; remove the module. Nothing
-else in the game references any of it, which is the practical benefit of a reserved ID range
+`sql/99_rollback.sql` removes the world objects by pinned ID (`900300`, spawn `9003001`). Disable the
+module and remove the addon; retain the counter and receipt tables to preserve progress and request
+replay protection. If migrated from the earlier daily-row schema, retain its `_legacy_v1` backup too.
+Purging any of these requires a separate reviewed action after backup. Nothing else in the game
+references these assets, which is the practical benefit of a reserved ID range
 ([docs/04 §4](../../docs/04-patching-toolchain-and-release.md)).

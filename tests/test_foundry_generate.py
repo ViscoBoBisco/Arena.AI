@@ -93,12 +93,24 @@ class ModuleAndAddon(unittest.TestCase):
             "protocol/vault-terminal.json"])
 
         self.assertIn('constexpr char const* CLAIM_TABLE = "vault_terminal_claims";', source)
-        self.assertIn("ON DUPLICATE KEY UPDATE", source)
+        self.assertIn("DirectCommitTransaction(transaction)", source)
+        self.assertIn("SELECT request_id, status, total_claims", source)
+        self.assertNotIn("ROW_COUNT()", source)
         self.assertIn("PRIMARY KEY (`guid`)", sql)
-        upsert = generate.characters_claim_upsert_sql(spec)
-        self.assertIn("ON DUPLICATE KEY UPDATE", upsert)
-        self.assertIn("total_claims < 50", upsert)
-        self.assertIn("total_claims <= 50", upsert)
+        self.assertIn("PRIMARY KEY (`guid`, `request_id`)", sql)
+        self.assertIn("last_request_id", sql)
+        self.assertIn("MAX(claim_day)", sql)
+        self.assertIn("vault_terminal_claims_legacy_v1", sql)
+        self.assertIn("RENAME TABLE", sql)
+        self.assertNotIn("DROP TABLE", sql)
+        templates = generate.characters_claim_transaction_sql(spec)
+        self.assertEqual(len(templates), 4)
+        self.assertIn("INSERT INTO `vault_terminal_claims`", templates[0][0])
+        self.assertIn("ON DUPLICATE KEY UPDATE guid = VALUES(guid)", templates[0][0])
+        self.assertNotIn("INSERT IGNORE INTO `vault_terminal_claims`", templates[0][0])
+        self.assertIn("INSERT IGNORE INTO `vault_terminal_claims_requests`", templates[1][0])
+        self.assertIn("total_claims < 50", templates[2][0])
+        self.assertIn("status = 'PENDING'", templates[3][0])
         self.assertIn("OnPlayerBeforeSendChatMessage", source)
         self.assertNotIn("TODO", source)
         self.assertIn('"VT1\\t"', source)
@@ -106,7 +118,9 @@ class ModuleAndAddon(unittest.TestCase):
         self.assertIn('SLASH_VAULTTERMINAL1 = "/vt"', lua)
         self.assertIn('SLASH_VAULTTERMINAL2 = "/vaultterminal"', lua)
         self.assertIn("## Interface: 30300", toc.splitlines())
-        self.assertIn("arena-counter-terminal/1", lua)
+        self.assertIn("arena-counter-terminal/2", lua)
+        self.assertIn("RCPT", lua)
+        self.assertIn("## SavedVariables: VaultTerminalDB", toc)
         self.assertIn('distribution ~= "WHISPER"', lua)
         self.assertIn('sender ~= UnitName("player")', lua)
         self.assertIn("MAX_BYTES = 255", lua)
@@ -222,6 +236,9 @@ class ModuleAndAddon(unittest.TestCase):
             UIParent = widget()
             SlashCmdList = {}
             function UnitName(unit) return "TestCharacter" end
+            function UnitGUID(unit) return "Player-0-TEST" end
+            function time() return 1700000000 end
+            VaultTerminalDB = {}
             function GetTime() return now end
             function SendAddonMessage(prefix, message, distribution, target)
                 table.insert(sent, {prefix, message, distribution, target})
@@ -231,7 +248,7 @@ class ModuleAndAddon(unittest.TestCase):
         lua.execute('SlashCmdList["VAULTTERMINAL"]()')
         self.assertEqual(lua.eval("#sent"), 1)
         self.assertEqual(lua.eval("sent[1][1]"), "VT1")
-        self.assertEqual(lua.eval("sent[1][2]"), "VT1\tHELLO\t1\t1.0.0")
+        self.assertEqual(lua.eval("sent[1][2]"), "VT1\tHELLO\t2\t1.0.0")
         self.assertEqual(lua.eval("sent[1][3]"), "WHISPER")
         self.assertEqual(lua.eval("sent[1][4]"), "TestCharacter")
 
@@ -252,15 +269,41 @@ class ModuleAndAddon(unittest.TestCase):
             assert(#sent == 1)
             now = now + 0.3
             buttons[1].scripts.OnClick(buttons[1])
-            assert(sent[#sent][2] == "VT1\tCLAIM")
+            local firstRequest = sent[#sent][2]:match("^VT1\tCLAIM\t([A-Za-z0-9_-]+)$")
+            assert(firstRequest and #firstRequest > 0)
             assert(#sent[#sent][2] <= 255)
-            -- The successful claim acknowledgement does not authoritatively mutate the view;
-            -- only the following server snapshot changes the displayed state.
-            event(panel, "CHAT_MSG_ADDON", "VT1", "VT1\tOK\tclaim recorded", "WHISPER", "TestCharacter")
+            -- A receipt for another request must not clear this request's pending state.
+            event(panel, "CHAT_MSG_ADDON", "VT1", "VT1\tRCPT\tother-id\tGRANTED\t1", "WHISPER", "TestCharacter")
             assert(panel.children[3].text == "0 / 50")
+            assert(VaultTerminalDB.characters["Player-0-TEST"].pendingRequestId == firstRequest)
+            event(panel, "CHAT_MSG_ADDON", "VT1", "VT1\tRCPT\t" .. firstRequest .. "\tGRANTED\t1", "WHISPER", "TestCharacter")
+            assert(panel.children[3].text == "0 / 50")
+            assert(VaultTerminalDB.characters["Player-0-TEST"].pendingRequestId == nil)
             event(panel, "CHAT_MSG_ADDON", "VT1", "VT1\tS\t1\t50\t0\tInitiate\t0", "WHISPER", "TestCharacter")
             assert(panel.children[3].text == "1 / 50")
             assert(buttons[1].enabled == false)
+
+            -- Timeout and addon reopen retain the request ID until its matching receipt.
+            event(panel, "CHAT_MSG_ADDON", "VT1", "VT1\tS\t1\t50\t1\tInitiate\t1", "WHISPER", "TestCharacter")
+            now = now + 0.3
+            buttons[1].scripts.OnClick(buttons[1])
+            local secondRequest = sent[#sent][2]:match("^VT1\tCLAIM\t([A-Za-z0-9_-]+)$")
+            assert(secondRequest and secondRequest ~= firstRequest)
+            now = now + 10.1
+            panel.scripts.OnUpdate(panel)
+            assert(panel.children[8].text == "No server response. Retry uses the same request ID.")
+            assert(VaultTerminalDB.characters["Player-0-TEST"].pendingRequestId == secondRequest)
+            SlashCmdList["VAULTTERMINAL"]() -- close without discarding the intent
+            now = now + 0.3
+            SlashCmdList["VAULTTERMINAL"]() -- reopen and handshake
+            event(panel, "CHAT_MSG_ADDON", "VT1", "VT1\tS\t1\t50\t1\tInitiate\t1", "WHISPER", "TestCharacter")
+            now = now + 0.3
+            panel.scripts.OnUpdate(panel)
+            assert(sent[#sent][2] == "VT1\tCLAIM\t" .. secondRequest)
+            event(panel, "CHAT_MSG_ADDON", "VT1", "VT1\tRCPT\t" .. secondRequest .. "\tGRANTED\t2", "WHISPER", "TestCharacter")
+            event(panel, "CHAT_MSG_ADDON", "VT1", "VT1\tS\t2\t50\t0\tInitiate\t0", "WHISPER", "TestCharacter")
+            assert(panel.children[3].text == "2 / 50")
+
             -- The 255-byte boundary is accepted; unknown/malformed input is inert.
             local maximum = "VT1\tNOPE\t" .. string.rep("x", 246)
             assert(#maximum == 255)
@@ -275,7 +318,7 @@ class ModuleAndAddon(unittest.TestCase):
             assert(sent[#sent][2]:find("HELLO", 1, true))
             now = now + 10.1
             panel.scripts.OnUpdate(panel)
-            assert(panel.children[8].text == "No server response. Use Refresh to retry.")
+            assert(panel.children[8].text == "No server response. Retry uses the same request ID.")
             event(panel, "CHAT_MSG_ADDON", "VT1", "VT1\tBYE\tmaintenance", "WHISPER", "TestCharacter")
             assert(panel.children[3].text == "—")
             now = now + 0.3

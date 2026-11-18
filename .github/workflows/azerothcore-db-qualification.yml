@@ -168,7 +168,7 @@ jobs:
           import os
           from pathlib import Path
           proof = json.loads(Path('/tmp/vault-terminal-characters-db-proof.json').read_text())
-          assert proof['schema'] == 'arena-characters-db-qualification/2'
+          assert proof['schema'] == 'arena-characters-db-qualification/3'
           assert proof['qualification'] == 'ARENA-DB-CHARACTERS'
           assert proof['status'] == 'PASS'
           assert proof['trust'] == 'SYNTHETIC_DISPOSABLE_MYSQL'
@@ -176,8 +176,13 @@ jobs:
           assert proof['table_schema']['engine'] == 'InnoDB'
           assert proof['table_schema']['primary_key'] == 'guid'
           assert proof['checks']['migration_applied_twice'] == 'PASS'
-          assert proof['checks']['concurrent_daily_increment_serialized'] == 'PASS'
+          assert proof['checks']['legacy_daily_claims_migrated_and_retained'] == 'PASS'
+          assert proof['checks']['same_request_concurrent_retry_replayed'] == 'PASS'
+          assert proof['checks']['lost_response_retry_replayed'] == 'PASS'
+          assert proof['checks']['concurrent_distinct_requests_attributed'] == 'PASS'
           assert proof['checks']['concurrent_target_cap_enforced'] == 'PASS'
+          assert proof['checks']['transaction_failure_rolled_back'] == 'PASS'
+          assert proof['checks']['retry_after_transaction_failure'] == 'PASS'
           assert proof['checks']['module_state_query'] == 'PASS'
           assert proof['environment']['source_commit'] == os.environ['GITHUB_SHA']
           print('ARENA-DB-CHARACTERS PASS: isolated synthetic schema/table checks only.')

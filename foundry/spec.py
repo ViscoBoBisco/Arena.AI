@@ -182,30 +182,30 @@ def _addon_protocol_problems(spec: dict) -> List[Problem]:
     unknown = sorted(set(protocol) - allowed)
     if unknown:
         fail("addon_protocol has unknown fields: " + ", ".join(unknown))
-    if protocol.get("schema") != "arena-counter-terminal/1":
-        fail("addon_protocol.schema must be arena-counter-terminal/1")
+    if protocol.get("schema") != "arena-counter-terminal/2":
+        fail("addon_protocol.schema must be arena-counter-terminal/2")
     prefix = protocol.get("prefix")
     if not isinstance(prefix, str) or not re.fullmatch(r"[A-Z][A-Z0-9]{0,7}", prefix):
         fail("addon_protocol.prefix must be 1-8 uppercase ASCII letters/digits")
-    if not _is_int(protocol.get("version")) or protocol["version"] < 1:
-        fail("addon_protocol.version must be a positive integer")
+    if protocol.get("version") != 2 or isinstance(protocol.get("version"), bool):
+        fail("request-attributed daily-counter protocol version must be 2")
     if protocol.get("max_bytes") != 255 or isinstance(protocol.get("max_bytes"), bool):
         fail("addon_protocol.max_bytes must be the 3.3.5a addon-message cap of 255")
     interval = protocol.get("minimum_request_interval_ms")
     if not _is_int(interval) or not 100 <= interval <= 60000:
         fail("addon_protocol.minimum_request_interval_ms must be 100-60000")
     table = protocol.get("claims_table")
-    if not isinstance(table, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", table):
-        fail("addon_protocol.claims_table must be a lowercase SQL identifier")
+    if (not isinstance(table, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,53}", table)):
+        fail("addon_protocol.claims_table must be a lowercase SQL identifier of at most 54 characters")
     if (not _is_int(protocol.get("target"))
             or not 1 <= protocol["target"] <= 2147483647):
         fail("addon_protocol.target must be an integer in [1, 2147483647]")
     if protocol.get("claims_per_day") != 1 or isinstance(protocol.get("claims_per_day"), bool):
-        fail("daily-counter v1 requires claims_per_day = 1")
+        fail("request-attributed daily-counter v2 requires claims_per_day = 1")
     if protocol.get("client_opcodes") != ["HELLO", "STATE", "CLAIM", "PING"]:
-        fail("daily-counter v1 client_opcodes must be HELLO, STATE, CLAIM, PING in that order")
-    if protocol.get("server_opcodes") != ["S", "OK", "ERR", "BYE"]:
-        fail("daily-counter v1 server_opcodes must be S, OK, ERR, BYE in that order")
+        fail("daily-counter client_opcodes must be HELLO, STATE, CLAIM, PING in that order")
+    if protocol.get("server_opcodes") != ["S", "OK", "ERR", "BYE", "RCPT"]:
+        fail("request-attributed server_opcodes must include RCPT after S, OK, ERR, BYE")
 
     ranks = protocol.get("rank_ladder")
     if not isinstance(ranks, list) or not ranks:
