@@ -91,7 +91,22 @@ jobs:
           chmod 600 /tmp/arena-foundry-mysql.cnf
           mysql --defaults-extra-file=/tmp/arena-foundry-mysql.cnf \
             --execute='CREATE DATABASE arena_foundry_disposable_pinned_ci CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'
-          python3 -m unittest tests.test_foundry_world_schema -v 2>&1 | tee /tmp/arena-world-schema-test.log
+          set +e
+          python3 -m unittest tests.test_foundry_world_schema -v \
+            > /tmp/arena-world-schema-test.log 2>&1
+          schema_test_status=$?
+          set -e
+          cat /tmp/arena-world-schema-test.log
+          if [ "$schema_test_status" -ne 0 ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+          lines = Path('/tmp/arena-world-schema-test.log').read_text(errors='replace').strip().splitlines()
+          detail = '\\n'.join(lines[-45:]) if lines else 'pinned World schema integration failed without diagnostics'
+          detail = detail.replace('%', '%25').replace('\\r', '%0D').replace('\\n', '%0A')
+          print(f'::error title=Pinned World schema integration::{detail}')
+          PY
+            exit "$schema_test_status"
+          fi
           python3 - <<'PY'
           import hashlib
           import json
