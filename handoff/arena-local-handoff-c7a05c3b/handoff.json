@@ -39,7 +39,7 @@
       "exit": 0,
       "expected_exit": 0,
       "log": "logs/make-check.txt",
-      "log_sha256": "3a16165da7ae7e958d8c5f5f3244d2226bef61e2f2d0e9bb5cf2edf727773a08",
+      "log_sha256": "009707feecaad98632d208ce7cf33e31278c4e560ca1565fcc64752e8ec9a93f",
       "name": "make-check",
       "status": "PASS"
     },
@@ -84,7 +84,7 @@
     "PLAYERBOT": "NOT_ASSESSED",
     "SERVER-BOOT": "NOT_ASSESSED"
   },
-  "generated_utc": "2026-11-18T20:31:15Z",
+  "generated_utc": "2026-11-18T20:34:19Z",
   "ownership_ledger": {
     "automatic_rollback": "REFUSED",
     "production_writes": "NONE",
@@ -103,13 +103,14 @@
   "source": {
     "branch": "arena/c7a05c3b-arena-ai",
     "changed_source_sha256": {
-      "tests/test_foundry_characters_qualification.py": "dfb637680ad14b2bf89479858163b780be3c14eaabf946ac6c31aaf2163909cc"
+      ".github/workflows/azerothcore-db-qualification.yml": "9b1ad4e45a7ff9a61325efc90a430191f7c7e4efcff47480505f9931494e34a3"
     },
-    "git_diff_head_sha256": "8e09dcf00a73927ed1d321a3e43b7286b898d9852602aa576fd46c2c04950f38",
-    "head": "170f5d88253fc9d9f4ce95ac83d3377c4b2000b9",
+    "git_diff_head_sha256": "fd182f97cf9f0b77279ff5a090f7ddbb7eaf89d681a1412945db368985a9a108",
+    "head": "dea02757e5d8452200131f26fca650f6cc55da4d",
     "repository": "ViscoBoBisco/Arena.AI",
     "status_porcelain": [
-      "M .github/workflows/azerothcore-db-qualification.yml",
+      "M .github/workflows/azerothcore-compile.yml",
+      " M .github/workflows/azerothcore-db-qualification.yml",
       " D handoff/arena-local-handoff-c7a05c3b/CHECKLIST-client.md",
       " D handoff/arena-local-handoff-c7a05c3b/CHECKLIST-local-runtime.md",
       " D handoff/arena-local-handoff-c7a05c3b/argent-foundation.json",
@@ -117,8 +118,7 @@
       " D handoff/arena-local-handoff-c7a05c3b/logs/foundry-verify.txt",
       " D handoff/arena-local-handoff-c7a05c3b/logs/frost-fail-closed.txt",
       " D handoff/arena-local-handoff-c7a05c3b/logs/make-check.txt",
-      " D handoff/arena-local-handoff-c7a05c3b/manifest.json",
-      " M tests/test_foundry_characters_qualification.py"
+      " D handoff/arena-local-handoff-c7a05c3b/manifest.json"
     ],
     "worktree_status": "DIRTY"
   }
