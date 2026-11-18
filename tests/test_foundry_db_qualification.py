@@ -22,6 +22,7 @@ from foundry.db_qualification import (  # noqa: E402
     write_attestations,
 )
 from foundry.qualification import _valid_database_attestation, integrity_check  # noqa: E402
+from foundry.generate import world_sql  # noqa: E402
 
 PACKAGE = helpers.REPO / "packages" / "frost-armory"
 
@@ -60,6 +61,12 @@ class MemoryDatabase:
 
 
 class DatabaseQualification(unittest.TestCase):
+    def test_spell_overlay_uses_the_pinned_schema_localized_name_column(self):
+        spec = json.loads((PACKAGE / "spec.json").read_text(encoding="utf-8"))
+        sql = world_sql(spec)
+        self.assertIn("spell_dbc (Id, Name_Lang_enUS)", sql)
+        self.assertNotIn("spell_dbc (Id, Name)", sql)
+
     def test_apply_idempotence_rollback_and_reapply_produce_bound_attestation(self):
         database = MemoryDatabase()
         attestations = qualify_database(PACKAGE, "arena_foundry_disposable_test", database)

@@ -18,9 +18,9 @@ INSERT INTO item_template (entry, name, description, VerifiedBuild) VALUES (9010
 
 -- spells (spell_dbc overlay; visual/icon must already exist client-side)
 DELETE FROM spell_dbc WHERE Id = 901000;
-INSERT INTO spell_dbc (Id, Name) VALUES (901000, 'Frostbrand Proc');
+INSERT INTO spell_dbc (Id, Name_Lang_enUS) VALUES (901000, 'Frostbrand Proc');
 DELETE FROM spell_dbc WHERE Id = 901001;
-INSERT INTO spell_dbc (Id, Name) VALUES (901001, 'Rimeward Aura');
+INSERT INTO spell_dbc (Id, Name_Lang_enUS) VALUES (901001, 'Rimeward Aura');
 
 -- quests (quest_template)
 DELETE FROM quest_template WHERE Id = 901000;
