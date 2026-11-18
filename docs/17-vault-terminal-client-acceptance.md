@@ -18,7 +18,7 @@ This is a manual handoff for an operator with a legal WoW 3.3.5a / build-12340 c
 
 For each check, record the client build, character GUID (in private test notes only), server log excerpt, and before/after SQL state. Redact account names and credentials.
 
-- [ ] Run `/vt`; the panel opens, sends `VT1<TAB>HELLO<TAB>2` over a self-WHISPER, and shows server-derived count, rank, and daily availability.
+- [ ] Run `/vt`; the panel opens, sends `VT1<TAB>HELLO<TAB>2<TAB>1.0.0` (protocol version plus addon version) over a self-WHISPER, and shows server-derived count, rank, and daily availability.
 - [ ] Close and reopen with `/vt`; repeat with `/vaultterminal`. The existing panel is reused, one event handler remains registered, and each opening requests a fresh snapshot. If a claim ID is still pending locally, the addon resubmits that same ID after HELLO to recover its durable receipt; it must not mint a new ID merely because the snapshot now shows no claim available.
 - [ ] Click Claim once. Record the sent request ID, one `vault_terminal_claims` increment, and the matching `vault_terminal_claims_requests` receipt (`GRANTED`, request ID, resulting total), followed by the refreshed `S` snapshot. The addon never grants an item or currency.
 - [ ] Replay the same request ID using the approved test harness: it must return the original receipt without another increment. A distinct same-day request ID must receive a truthful `DENIED_COOLDOWN` receipt. The normal UI may disable Claim after its authoritative snapshot reports no claim available.

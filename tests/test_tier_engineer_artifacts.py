@@ -371,10 +371,12 @@ class RepoHasNoRetailOnlyApi(unittest.TestCase):
 class DocsPointHere(unittest.TestCase):
     def test_client_acceptance_handoff_matches_generated_package_and_config(self):
         import json
-        from foundry.generate import config_files
+        from foundry.generate import addon_files, config_files, module_cpp
 
         spec = json.loads((helpers.REPO / "specs" / "vault-terminal.json").read_text())
         config = config_files(spec)["conf/vault-terminal.conf"]
+        addon = addon_files(spec)["addon/VaultTerminal/VaultTerminal.lua"]
+        module = module_cpp(spec)["server/mod-vault-terminal/src/VaultTerminal.cpp"]
         handoff = (helpers.REPO / "docs" / "17-vault-terminal-client-acceptance.md").read_text()
         self.assertIn("/tmp/vault-terminal/conf/vault-terminal.conf", handoff)
         self.assertIn("VaultTerminal.Enable = 1", config)
@@ -382,7 +384,10 @@ class DocsPointHere(unittest.TestCase):
         self.assertIn("Do not use `vault_terminal.Enable`", handoff)
         self.assertIn("/tmp/vault-terminal/sql/characters/vault_terminal_claims.sql", handoff)
         self.assertIn("vault_terminal_claims_requests", handoff)
-        self.assertIn("HELLO<TAB>2", handoff)
+        self.assertIn("VT1<TAB>HELLO<TAB>2<TAB>1.0.0", handoff)
+        self.assertIn('send("HELLO", VERSION, ADDON_VERSION)', addon)
+        self.assertIn('local ADDON_VERSION = "1.0.0"', addon)
+        self.assertIn("fields.size() != 4", module)
         self.assertIn("DENIED_COOLDOWN", handoff)
         self.assertIn("must not mint a new ID", handoff)
         self.assertIn("NOT_ASSESSED", handoff)
