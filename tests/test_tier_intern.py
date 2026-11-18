@@ -19,7 +19,8 @@ import helpers  # noqa: E402
 
 class ToolsStart(unittest.TestCase):
     def test_every_tool_prints_help(self):
-        for tool in (helpers.DBC_TOOL, helpers.CATALOG_TOOL, helpers.MANIFEST):
+        for tool in (helpers.DBC_TOOL, helpers.CATALOG_TOOL, helpers.MANIFEST,
+                     helpers.REPO / "tools" / "foundry_db_qualify.py"):
             result = helpers.run_tool(tool, "--help")
             self.assertEqual(result.returncode, 0, f"{tool.name}: {result.stderr}")
             self.assertIn("usage", result.stdout.lower(), tool.name)

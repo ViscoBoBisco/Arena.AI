@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -13,7 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import helpers  # noqa: E402
 
 sys.path.insert(0, str(helpers.REPO))
-from foundry.qualification import integrity_check  # noqa: E402
+from foundry.qualification import (  # noqa: E402
+    _compile_qualification_matches,
+    _valid_delivery_contract,
+    integrity_check,
+)
 
 FOUNDRY = helpers.REPO / "tools" / "foundry.py"
 FROST_SPEC = helpers.REPO / "specs" / "frost-armory.json"
@@ -50,6 +55,7 @@ def _minimal_qualified_fixture(root: Path):
         "delivery_requirements": {
             "schema": "arena-delivery-requirements/1",
             "artifacts": [],
+            "capabilities": [],
         },
     }
     manifest_bytes = (json.dumps(manifest, sort_keys=True) + "\n").encode()
@@ -160,6 +166,8 @@ class LifecyclePhases(unittest.TestCase):
             _set_delivery_requirements(package, attestations, [
                 {"kind": "world_sql"},
                 {"kind": "server_module"},
+                {"kind": "client_dbc", "table": "Item.dbc"},
+                {"kind": "server_dbc", "table": "Item.dbc"},
                 {"kind": "mpq", "table": "Item.dbc"},
             ])
             report_path = root / "qualification.json"
@@ -170,8 +178,42 @@ class LifecyclePhases(unittest.TestCase):
             report = json.loads(report_path.read_text(encoding="utf-8"))
             blocked = {gate["name"] for gate in report["gates"]
                        if gate["status"] == "BLOCKED"}
-            self.assertTrue({"database_migrations", "server_module", "mpq_delivery"}
-                            <= blocked)
+            self.assertTrue({"database_migrations", "server_module", "mpq_delivery",
+                             "dbc_parity:Item.dbc"} <= blocked)
+
+    def test_delivery_contract_rejects_ambiguous_mpq_surfaces(self):
+        base = {
+            "schema": "arena-delivery-requirements/1",
+            "capabilities": [],
+            "artifacts": [
+                {"kind": "client_dbc", "table": "Item.dbc",
+                 "version": "1", "activation": "merge"},
+                {"kind": "server_dbc", "table": "Item.dbc",
+                 "version": "1", "activation": "install"},
+                {"kind": "mpq", "version": "1", "activation": "merge"},
+            ],
+        }
+        self.assertFalse(_valid_delivery_contract(base))
+        malformed_kind = json.loads(json.dumps(base))
+        malformed_kind["artifacts"][0]["kind"] = ["client_dbc"]
+        self.assertFalse(_valid_delivery_contract(malformed_kind))
+
+    def test_compile_evidence_must_match_canonical_record_and_packaged_sources(self):
+        package = helpers.REPO / "packages" / "frost-armory"
+        evidence = json.loads((package / "evidence.json").read_text(encoding="utf-8"))
+        self.assertTrue(_compile_qualification_matches(package, evidence))
+
+        forged = json.loads(json.dumps(evidence))
+        forged["compile_qualification"]["environment"]["qualified_commit"] = "0" * 40
+        self.assertFalse(_compile_qualification_matches(package, forged))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            changed_package = Path(tmp) / "package"
+            shutil.copytree(package, changed_package)
+            source = changed_package / "server/mod-frost-armory/src/FrostArmory.cpp"
+            source.write_text(source.read_text(encoding="utf-8") + "// drift\n",
+                              encoding="utf-8")
+            self.assertFalse(_compile_qualification_matches(changed_package, evidence))
 
     def test_release_rejects_manifest_drift_and_existing_destination(self):
         with tempfile.TemporaryDirectory() as tmp:

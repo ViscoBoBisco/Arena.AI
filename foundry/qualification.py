@@ -90,6 +90,92 @@ def _passed_record(record: Any) -> bool:
             and bool(record["evidence"].strip()))
 
 
+_ARTIFACT_KINDS = {
+    "world_sql", "data_migration", "characters_sql", "server_module", "addon_files",
+    "client_dbc", "server_dbc", "mpq", "config",
+}
+_TABLE_SCOPED_ARTIFACTS = {"characters_sql", "client_dbc", "server_dbc", "mpq"}
+
+
+def _valid_delivery_contract(delivery: Any) -> bool:
+    if (not isinstance(delivery, dict)
+            or delivery.get("schema") != "arena-delivery-requirements/1"
+            or not isinstance(delivery.get("artifacts"), list)
+            or not isinstance(delivery.get("capabilities"), list)):
+        return False
+    if not all(isinstance(item, dict)
+               and isinstance(item.get("name"), str) and bool(item["name"].strip())
+               and isinstance(item.get("required"), bool)
+               and isinstance(item.get("version"), str)
+               and isinstance(item.get("activation"), str)
+               for item in delivery["capabilities"]):
+        return False
+    artifacts = delivery["artifacts"]
+    if not all(isinstance(item, dict)
+               and isinstance(item.get("kind"), str)
+               and item["kind"] in _ARTIFACT_KINDS
+               and isinstance(item.get("version"), str)
+               and isinstance(item.get("activation"), str)
+               and ("table" not in item
+                    or isinstance(item.get("table"), str) and bool(item["table"].strip()))
+               and (item["kind"] not in _TABLE_SCOPED_ARTIFACTS
+                    or isinstance(item.get("table"), str) and bool(item["table"].strip()))
+               for item in artifacts):
+        return False
+    identities = [(item["kind"], item.get("table")) for item in artifacts]
+    if len(identities) != len(set(identities)):
+        return False
+    client_tables = {item["table"] for item in artifacts if item["kind"] == "client_dbc"}
+    server_tables = {item["table"] for item in artifacts if item["kind"] == "server_dbc"}
+    if client_tables != server_tables:
+        return False
+    if any(item["kind"] == "mpq" for item in artifacts) and not client_tables:
+        return False
+    return True
+
+
+def _compile_qualification_matches(package: Path, evidence: dict) -> bool:
+    """Require an exact checked-in compile record and matching packaged source hashes."""
+    record = evidence.get("compile_qualification")
+    if not isinstance(record, dict):
+        return False
+    foundry_root = Path(__file__).resolve().parent
+    try:
+        pins = _read_json(foundry_root / "core-pins.json")
+        core_pin = pins.get("azerothcore_wotlk")
+        if not isinstance(core_pin, dict) or not isinstance(evidence.get("spec"), str):
+            return False
+        pinned_revision = core_pin.get("revision")
+        subject = record.get("subject", {})
+        spec_name = evidence["spec"]
+        module_name = f"mod-{spec_name}"
+        source_dir = package / "server" / module_name / "src"
+        source_hashes = {
+            path.relative_to(package).as_posix(): _sha256(path.read_bytes())
+            for path in source_dir.rglob("*")
+            if path.is_file() and path.suffix in (".cpp", ".h")
+        }
+        records_dir = foundry_root / "qualifications"
+        canonical_records = [_read_json(path) for path in sorted(records_dir.glob("*.json"))]
+    except (OSError, ValueError, AttributeError, TypeError):
+        return False
+    if not source_hashes:
+        return False
+    return any(
+        record == canonical
+        and record.get("schema") == "arena-qualification/1"
+        and record.get("qualification") == "ARENA-COMPILE"
+        and record.get("status") == "PASS"
+        and isinstance(subject, dict)
+        and subject.get("spec") == spec_name
+        and subject.get("module") == module_name
+        and subject.get("source_sha256") == source_hashes
+        and isinstance(record.get("environment"), dict)
+        and record["environment"].get("core_revision") == pinned_revision
+        for canonical in canonical_records
+    )
+
+
 def qualify_package(package: Path, attestations_path: Optional[Path] = None) -> dict:
     """Produce a manifest-bound report; records cannot override package defects."""
     integrity = integrity_check(package)
@@ -163,13 +249,7 @@ def qualify_package(package: Path, attestations_path: Optional[Path] = None) -> 
 
     delivery = manifest.get("delivery_requirements", {})
     artifact_list = delivery.get("artifacts", []) if isinstance(delivery, dict) else []
-    delivery_ok = (
-        isinstance(delivery, dict)
-        and delivery.get("schema") == "arena-delivery-requirements/1"
-        and isinstance(artifact_list, list)
-        and all(isinstance(item, dict) and isinstance(item.get("kind"), str)
-                for item in artifact_list)
-    )
+    delivery_ok = _valid_delivery_contract(delivery)
     gate("delivery_contract", delivery_ok,
          "well-formed mandatory artifact requirements are present" if delivery_ok
          else "delivery requirements are missing or malformed")
@@ -180,6 +260,23 @@ def qualify_package(package: Path, attestations_path: Optional[Path] = None) -> 
     external_levels = attestations.get("levels", {}) if attested else {}
     if not isinstance(external_levels, dict):
         external_levels = {}
+    external_artifacts = attestations.get("artifacts", []) if attested else []
+    if not isinstance(external_artifacts, list):
+        external_artifacts = []
+
+    dbc_tables = sorted({item["table"] for item in artifact_list
+                         if isinstance(item, dict) and item.get("kind") == "client_dbc"
+                         and isinstance(item.get("table"), str)})
+    for table in dbc_tables:
+        parity_records = [record for record in external_artifacts
+                          if isinstance(record, dict)
+                          and record.get("kind") == "dbc_parity"
+                          and record.get("table") == table]
+        parity_pass = bool(parity_records) and all(_passed_record(record)
+                                                    for record in parity_records)
+        gate(f"dbc_parity:{table}", parity_pass,
+             f"client/server DBC hash-parity evidence required for {table}" if not parity_pass
+             else f"client/server DBC hashes match for {table}")
 
     if artifact_kinds & {"world_sql", "data_migration", "characters_sql"}:
         db_pass = _passed_record(external_levels.get("ARENA-DB"))
@@ -187,13 +284,11 @@ def qualify_package(package: Path, attestations_path: Optional[Path] = None) -> 
              "disposable-schema/apply/rollback evidence required" if not db_pass
              else "database qualification record supplied")
     if "server_module" in artifact_kinds:
-        compile_record = evidence.get("compile_qualification")
-        compile_pass = (isinstance(compile_record, dict)
-                        and compile_record.get("qualification") == "ARENA-COMPILE"
-                        and compile_record.get("status") == "PASS")
+        compile_pass = _compile_qualification_matches(package, evidence)
         gate("server_module", compile_pass,
-             "matching pinned-core compile record required" if not compile_pass
-             else "pinned-core translation units qualified")
+             "matching pinned-core record and exact packaged source hashes required"
+             if not compile_pass else
+             "checked-in pinned-core record matches the packaged source hashes")
 
     raw_scope = evidence.get("generated_scope")
     scope_ok = isinstance(raw_scope, dict) and bool(raw_scope)
@@ -207,14 +302,11 @@ def qualify_package(package: Path, attestations_path: Optional[Path] = None) -> 
             gate(f"implementation:{key}", False,
                  f"generated scope is still a placeholder: {value}")
     if "mpq" in artifact_kinds:
-        artifact_records = attestations.get("artifacts", []) if attested else []
-        if not isinstance(artifact_records, list):
-            artifact_records = []
         required_mpq = [item for item in artifact_list
                         if isinstance(item, dict) and item.get("kind") == "mpq"]
         mpq_checks = []
         for required in required_mpq:
-            matching = [record for record in artifact_records
+            matching = [record for record in external_artifacts
                         if isinstance(record, dict)
                         and record.get("kind") == "mpq"
                         and record.get("table") == required.get("table")]
@@ -265,6 +357,10 @@ def _required_gate_names(evidence: dict, manifest: dict) -> set:
         required.add("server_module")
     if "mpq" in kinds:
         required.add("mpq_delivery")
+    for item in artifacts:
+        if (isinstance(item, dict) and item.get("kind") == "client_dbc"
+                and isinstance(item.get("table"), str)):
+            required.add(f"dbc_parity:{item['table']}")
     scope = evidence.get("generated_scope", {})
     if isinstance(scope, dict):
         for key, value in scope.items():
@@ -306,6 +402,7 @@ def release_package(package: Path, qualification_path: Path, out_dir: Path) -> d
                    for gate in gates)
             or len(gate_names) != len(set(gate_names))
             or set(gate_names) != required_gates
+            or not _valid_delivery_contract(integrity["manifest"].get("delivery_requirements"))
             or report.get("manifest_sha256") != integrity["manifest_sha256"]):
         raise ValueError("qualification report is blocked, incomplete, or does not bind to this package manifest")
 
