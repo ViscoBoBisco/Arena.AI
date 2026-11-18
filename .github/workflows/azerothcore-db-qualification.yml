@@ -41,7 +41,23 @@ jobs:
           ARENA_MYSQL_DATABASE: arena_foundry_disposable_ci
           ARENA_MYSQL_USER: root
           ARENA_MYSQL_PASSWORD: arena-foundry-ci-only
-        run: python3 -m unittest tests.test_foundry_world_ownership -v
+        run: |
+          set +e
+          python3 -m unittest tests.test_foundry_world_ownership -v \
+            > /tmp/arena-world-ownership-test.log 2>&1
+          test_status=$?
+          set -e
+          cat /tmp/arena-world-ownership-test.log
+          if [ "$test_status" -ne 0 ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+          lines = Path('/tmp/arena-world-ownership-test.log').read_text(errors='replace').strip().splitlines()
+          detail = '\\n'.join(lines[-24:]) if lines else 'World ownership MySQL integration failed without diagnostics'
+          detail = detail.replace('%', '%25').replace('\\r', '%0D').replace('\\n', '%0A')
+          print(f'::error title=World ownership disposable MySQL integration::{detail}')
+          PY
+            exit "$test_status"
+          fi
 
       - name: Create protected client option file
         run: |
