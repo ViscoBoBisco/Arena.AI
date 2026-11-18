@@ -775,7 +775,8 @@ local function renderState(values)
 end
 
 local function dispatch(prefix, message, distribution, sender)
-    if prefix ~= PREFIX or sender ~= UnitName("player") or not validFrame(message) then return end
+    if prefix ~= PREFIX or distribution ~= "WHISPER" or sender ~= UnitName("player")
+        or not validFrame(message) then return end
     local parts = splitTabs(message)
     if parts[1] ~= PREFIX or not parts[2] then return end
     local opcode = parts[2]
@@ -870,7 +871,8 @@ local function build()
         send("HELLO", VERSION, ADDON_VERSION)
     end)
 
-    RegisterAddonMessagePrefix(PREFIX)
+    -- Required addon-prefix registration was added after WotLK; 3.3.5a
+    -- routes messages directly through SendAddonMessage/CHAT_MSG_ADDON.
     frame:RegisterEvent("CHAT_MSG_ADDON")
     frame:SetScript("OnEvent", function(_, event, responsePrefix, message, distribution, sender)
         if event == "CHAT_MSG_ADDON" then
