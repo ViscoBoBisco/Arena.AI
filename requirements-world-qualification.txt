@@ -1,0 +1,2 @@
+# Optional DB-API connector for disposable World-row ownership qualification only.
+PyMySQL==1.1.1

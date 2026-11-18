@@ -77,7 +77,7 @@ explicit `--allow-unverified`; it is not release approval.
 
 ```
 README.md                     this page
-docs/                         knowledge base, catalog, Foundry/adapter contracts, handoffs, and project inventory (01–21)
+docs/                         knowledge base, catalog, Foundry/adapter contracts, handoffs, and project inventory (01–22)
 foundry/                      spec validation, ID policy, assets, generators, adapter, bundler, CLI
 specs/                        versioned declarative feature specifications
 designs/                      creative campaign and feature contracts; explicitly not Foundry input
@@ -90,6 +90,7 @@ tools/
   preflight.sh                release gate: structure + parity + referential integrity
   manifest.py                 build/verify a manifest (sha256 per table, patch hash, version)
   foundry.py                  validate/plan/build/verify/search/explain feature packages
+  foundry_world_operate.py    manifest-bound World-row apply/rollback on disposable InnoDB only
   selftest.py                 synthetic fixtures for dbc_tool.py
 specs/frost-armory.json       Foundry v1 pipeline exercise; asset IDs explicitly unverified
 packages/frost-armory/        generated preview bundle; see evidence.json before any use
@@ -130,6 +131,7 @@ Makefile                      `make check`, `make preflight CLIENT=… SERVER=�
 | [19 — Engineering handoff bundle](docs/19-engineering-handoff.md) | Reproducible, source-bound, non-installing handoff manifest, evidence matrix, and local-only acceptance checklist |
 | [20 — Project stocktake](docs/20-project-stocktake.md) | Repository-wide area/leaf inventory, current local evidence, gaps, and external qualification boundaries |
 | [21 — Systematic completion plan](docs/21-systematic-completion-plan.md) | Prioritized project-wide audit sequence, workstream exit criteria, evidence ledger, and progress log |
+| [22 — Expanded gameplay program](docs/22-expanded-gameplay-program.md) | Domain ownership, source-bound system register, current maturity and sequenced implementation PRs |
 
 ## Glossary
 

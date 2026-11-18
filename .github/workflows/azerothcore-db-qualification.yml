@@ -28,10 +28,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install MySQL client
+      - name: Install disposable DB test dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y default-mysql-client
+          python3 -m pip install --disable-pip-version-check -r requirements-world-qualification.txt
+
+      - name: Exercise World-row ownership on synthetic InnoDB tables
+        env:
+          ARENA_MYSQL_HOST: 127.0.0.1
+          ARENA_MYSQL_PORT: 3306
+          ARENA_MYSQL_DATABASE: arena_foundry_disposable_ci
+          ARENA_MYSQL_USER: root
+          ARENA_MYSQL_PASSWORD: arena-foundry-ci-only
+        run: python3 -m unittest tests.test_foundry_world_ownership -v
 
       - name: Create protected client option file
         run: |

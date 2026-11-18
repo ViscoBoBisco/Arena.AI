@@ -1,0 +1,761 @@
+{
+  "schema": "arena-gameplay-systems-register/1",
+  "baseline": {
+    "repository": "ViscoBoBisco/Arena.AI",
+    "main_sha": "186dcdf73b0063db26177654982a7642c7786b29",
+    "pr_32_head": "f75d3b086c18c5f3694660ba65552bc32fcb1365",
+    "scope_note": "The baseline is recorded for audit; feature states below are derived from this checkout and are not claims of runtime integration."
+  },
+  "state_vocabulary": [
+    "DESIGN_ONLY",
+    "SYNTHETIC",
+    "GENERATED",
+    "DB_QUALIFIED",
+    "COMPILE_QUALIFIED",
+    "BOOTED",
+    "CLIENT_EXERCISED",
+    "CAMPAIGN_ADMITTED",
+    "LIVE_QUALIFIED"
+  ],
+  "systems": [
+    {
+      "id": "foundry-world-ownership",
+      "owner": "Arena Foundry qualification and World-operation tool",
+      "dependencies": [
+        "pinned AzerothCore World schema",
+        "InnoDB target tables",
+        "MySQL advisory lock"
+      ],
+      "player_loop": "Not directly player-facing; safely apply, retry, audit, and roll back a generated World-content package.",
+      "source_evidence": [
+        "foundry/world_ownership.py",
+        "foundry/db_qualification.py",
+        "foundry/core-pins.json",
+        "tests/test_foundry_world_ownership.py"
+      ],
+      "manifest_id_needs": [
+        "package manifest SHA-256",
+        "package name/version",
+        "pinned-table primary-key identity",
+        "full inserted-row snapshot digest",
+        "stable operation request ID"
+      ],
+      "implementation_state": "SYNTHETIC",
+      "outstanding_tests": [
+        "Run MySQL 8.4 disposable CI integration",
+        "Exercise package migration against exact pinned AzerothCore World schema and all supported table engines",
+        "Prove crash/reconnect behavior with an interrupted real client connection",
+        "Bind DB qualification attestation to journal receipt and exact source/schema hashes"
+      ],
+      "risks": [
+        "Legacy World SQL qualification remains fail-closed",
+        "Only InnoDB is supported; MySQL DDL bootstrap is separate from transactional DML",
+        "Changed manifests/versions are refused rather than upgraded",
+        "Never use against production or populated shared DBs"
+      ],
+      "next_milestone": "Pass disposable MySQL integration, then add exact pinned-schema disposable World qualification without enabling raw SQL rollback."
+    },
+    {
+      "id": "foundry-dbc-materialization",
+      "owner": "Arena Foundry DBC tooling and packaging",
+      "dependencies": [
+        "source-verified local DBC files",
+        "implemented table writer/reader",
+        "separate staging output"
+      ],
+      "player_loop": "Materialize paired client/server DBCs for a feature that requires new client-recognized rows.",
+      "source_evidence": [
+        "foundry/dbc_writer.py",
+        "foundry/spec.py",
+        "foundry/qualification.py",
+        "docs/12-content-foundry.md"
+      ],
+      "manifest_id_needs": [
+        "source file hashes and build/table schema",
+        "delta hash",
+        "output hashes",
+        "table-specific reference checks",
+        "paired client/server parity proof",
+        "separate MPQ staging manifest"
+      ],
+      "implementation_state": "DESIGN_ONLY",
+      "outstanding_tests": [
+        "Copy complete source tables to new paths",
+        "Preserve unrelated rows/fields",
+        "Read/write round-trip every supported table",
+        "Reject unknown output paths and pre-existing files",
+        "Keep Spell.dbc explicitly unsupported until complete"
+      ],
+      "risks": [
+        "A DBC delta is not an installable table",
+        "No proprietary client data belongs in Git",
+        "Do not overwrite or mutate unknown MPQ archives"
+      ],
+      "next_milestone": "Implement one Item.dbc-only source-bound materialization vertical with byte-parity and referential fixture tests."
+    },
+    {
+      "id": "foundry-artifact-contract",
+      "owner": "Arena Foundry package and offline adapter",
+      "dependencies": [
+        "verified package bytes",
+        "artifact lifecycle policy",
+        "trusted qualification provenance"
+      ],
+      "player_loop": "Operators review package artifacts, their lifecycle, and delivery requirements before integration.",
+      "source_evidence": [
+        "foundry/adapter.py",
+        "foundry/maturity.py",
+        "foundry/package.py",
+        "tests/test_foundry_adapter.py"
+      ],
+      "manifest_id_needs": [
+        "manifest-bound artifact inventory",
+        "independently authenticated qualification evidence",
+        "source and adapter contract revisions"
+      ],
+      "implementation_state": "SYNTHETIC",
+      "outstanding_tests": [
+        "Production admission must derive bytes and evidence from trusted provenance rather than a caller-supplied qualified flag",
+        "Replay/expiry/revocation policy for external attestations"
+      ],
+      "risks": [
+        "FakeHost v1.2 is explicitly synthetic and cannot authenticate caller inventory claims"
+      ],
+      "next_milestone": "Specify a signed or CI-identity-bound evidence envelope and test stale/replayed proof refusal without promoting FakeHost to production."
+    },
+    {
+      "id": "portable-hole-commodity-vault",
+      "owner": "Future Portable Hole runtime module; AzerothCore owns actual item state",
+      "dependencies": [
+        "server-side ACL contract",
+        "InnoDB receipts/reservations",
+        "Characters item lifecycle adapter",
+        "Campaign Party authorization boundary"
+      ],
+      "player_loop": "Search authorized shared holdings, preview an exact material deposit/withdrawal, then receive a durable receipt.",
+      "source_evidence": [
+        "Directive requirements; no implementation in this checkout"
+      ],
+      "manifest_id_needs": [
+        "account-group and vault identities",
+        "permission revision",
+        "item/source provenance",
+        "idempotent request receipt",
+        "reservation/project identity"
+      ],
+      "implementation_state": "DESIGN_ONLY",
+      "outstanding_tests": [
+        "Concurrent final-balance withdrawals",
+        "timeouts/retries/disconnect/crash",
+        "ACL revocation and wrong-account access",
+        "bag capacity/partial stacks/overflow",
+        "reserved resources and duplicate deposits"
+      ],
+      "risks": [
+        "Never trust addon-supplied account identity",
+        "Do not mutate live item tables behind the core object model",
+        "Cross-database atomicity is not assumed"
+      ],
+      "next_milestone": "Build a synthetic transactional state machine and disposable MySQL commodity-balance slice before core item hooks."
+    },
+    {
+      "id": "runic-codex",
+      "owner": "Future Runic Codex server module; AzerothCore owns spells/auras and combat",
+      "dependencies": [
+        "versioned effect registry",
+        "source-verified token/loot ID",
+        "durable entitlement receipt",
+        "server combat hook",
+        "WotLK 3.3.5 addon protocol"
+      ],
+      "player_loop": "Discover a natural-looking token, permanently learn a power, equip it, and observe one changed spell behavior after relog.",
+      "source_evidence": [
+        "Directive requirements; no Runic Codex implementation in this checkout"
+      ],
+      "manifest_id_needs": [
+        "effect schema/version",
+        "verified spell/item/loot IDs",
+        "source provenance",
+        "character/account entitlement",
+        "loadout revision"
+      ],
+      "implementation_state": "DESIGN_ONLY",
+      "outstanding_tests": [
+        "Duplicate learning",
+        "disconnect/relog",
+        "recursion/proc budgets",
+        "cooldown/dispel/death",
+        "target selection and party visibility",
+        "Lua 5.1 packet bounds and malformed frame handling"
+      ],
+      "risks": [
+        "Native glyphs remain independent",
+        "Altbot capability is unproven",
+        "No guessed IDs or unsupported Spell.dbc rows"
+      ],
+      "next_milestone": "After source-verified stock-token selection, deliver one server-side loot-to-learn-to-effect vertical with persistence and adversarial tests."
+    },
+    {
+      "id": "equipment-mastery-relics",
+      "owner": "Future AzerothCore item/progression module",
+      "dependencies": [
+        "real item-instance identity",
+        "anti-farm activity hooks",
+        "durable progress ledger",
+        "verified visible model"
+      ],
+      "player_loop": "Use a real item through bounded relevant activity and preserve its identity as its mastery or approved relic tier advances.",
+      "source_evidence": [
+        "Directive requirements; no runtime implementation in this checkout"
+      ],
+      "manifest_id_needs": [
+        "item GUID and owner scope",
+        "source record",
+        "progress receipt",
+        "item-property snapshot/revision"
+      ],
+      "implementation_state": "DESIGN_ONLY",
+      "outstanding_tests": [
+        "AFK/event spam resistance",
+        "transfer/reacquisition exploits",
+        "enchant/socket/durability/charge preservation",
+        "rollback after item mutation"
+      ],
+      "risks": [
+        "Do not reconstruct unique item instances from item_template alone",
+        "No assumption that creature visuals are usable equipment"
+      ],
+      "next_milestone": "Prototype a synthetic mastery progression oracle, then qualify one exact item-instance integration against pinned public core."
+    },
+    {
+      "id": "faction-operations-argent",
+      "owner": "Future Faction Operations module; AzerothCore owns native reputation/hostility",
+      "dependencies": [
+        "source-verified native faction identity",
+        "separate authority and accord entitlements",
+        "server-side benefit hook",
+        "Campaign Party deployment authorization"
+      ],
+      "player_loop": "Earn faction authority, activate one bounded defensive benefit, and access services without globally changing hostility.",
+      "source_evidence": [
+        "foundry/faction_ops.py",
+        "designs/argent-faction-operations-foundation.json",
+        "tests/test_faction_ops_foundation.py"
+      ],
+      "manifest_id_needs": [
+        "native faction identity evidence",
+        "authority revision",
+        "personal accord scope",
+        "operation receipt"
+      ],
+      "implementation_state": "SYNTHETIC",
+      "outstanding_tests": [
+        "Verify faction identity against pinned source/client data",
+        "Implement persistent authority",
+        "Exercise tangible benefit in server runtime",
+        "Prove access does not alter FactionTemplate hostility or party membership"
+      ],
+      "risks": [
+        "Foundation has unresolved stock IDs and no playable/runtime claim",
+        "FactionTemplate and native reputation remain distinct"
+      ],
+      "next_milestone": "Verify Argent identity and deliver a server-only, persistent, non-hostile access benefit in a disposable runtime."
+    },
+    {
+      "id": "frontier-operations",
+      "owner": "Arena content spec plus future AzerothCore mission module",
+      "dependencies": [
+        "persistent mission stage",
+        "credit/permission policy",
+        "source-grounded location/reward assets",
+        "party adapter contract"
+      ],
+      "player_loop": "Complete three order-independent surveys, a rescue, two beacons, then claim the exact mission reward once.",
+      "source_evidence": [
+        "designs/frontier-operations.json",
+        "prototypes/frontier-operations/model.py",
+        "tests/test_frontier_operations_model.py"
+      ],
+      "manifest_id_needs": [
+        "mission version",
+        "character/party credit receipt",
+        "source clue provenance",
+        "reward idempotency key"
+      ],
+      "implementation_state": "SYNTHETIC",
+      "outstanding_tests": [
+        "World script registration",
+        "persistent runtime transition and replay",
+        "party/Altbot credit/admission",
+        "real reward IDs and source tables"
+      ],
+      "risks": [
+        "Current reference model is not installable or runtime gameplay"
+      ],
+      "next_milestone": "Generate an executable public-core module mission slice after runtime boot qualification is available."
+    },
+    {
+      "id": "catalytic-crafting-material-exchange",
+      "owner": "Future profession module; AzerothCore owns recipe learning, skill and item creation",
+      "dependencies": [
+        "real recipe/specialization checks",
+        "transactional material debit",
+        "idempotent output receipt",
+        "Portable Hole resource contract"
+      ],
+      "player_loop": "Use a learned recipe with an authorized bounded catalyst, consume exact materials, and receive exact output once.",
+      "source_evidence": [
+        "designs/catalytic-crafting.json",
+        "tests/test_catalytic_crafting_design.py",
+        "docs/15-catalytic-crafting.md"
+      ],
+      "manifest_id_needs": [
+        "recipe/source IDs",
+        "character skill revision",
+        "request receipt",
+        "input/output provenance"
+      ],
+      "implementation_state": "DESIGN_ONLY",
+      "outstanding_tests": [
+        "Actual craft hook",
+        "duplicate request and rollback",
+        "multiple-character production planning",
+        "normal craft preservation"
+      ],
+      "risks": [
+        "Current artifact remains design-only; no recipe emitter or runtime claim"
+      ],
+      "next_milestone": "Implement one exact recipe operation on a public-core fixture with failure-injection and no-duplication tests."
+    },
+    {
+      "id": "party-build-architect",
+      "owner": "Campaign Party owns roster selection/orchestration; Arena defines package contracts only",
+      "dependencies": [
+        "versioned Campaign Party adapter contract",
+        "independent subsystem permissions",
+        "staged apply/rollback APIs"
+      ],
+      "player_loop": "Review missing prerequisites, choose an unambiguous member set, then apply an authorized saved composite preset.",
+      "source_evidence": [
+        "docs/13-campaign-party-adapter.md",
+        "foundry/adapter.py"
+      ],
+      "manifest_id_needs": [
+        "member identity and selection revision",
+        "loadout schema/version",
+        "per-domain authorization",
+        "per-operation receipts"
+      ],
+      "implementation_state": "DESIGN_ONLY",
+      "outstanding_tests": [
+        "Private fork source/API contract",
+        "ambiguous-member refusal",
+        "partial failure/recovery",
+        "migration of saved presets"
+      ],
+      "risks": [
+        "Private Campaign Party source/revision is unavailable; do not invent integration methods"
+      ],
+      "next_milestone": "Define a transport-neutral adapter contract and fake contract tests, then require the actual fork owner/API before implementation claims."
+    },
+    {
+      "id": "public-core-runtime-qualification",
+      "owner": "Arena CI against exact public AzerothCore pin",
+      "dependencies": [
+        "pinned source revision",
+        "generated module",
+        "bounded disposable DB and runtime resources"
+      ],
+      "player_loop": "Not player-facing; demonstrate the public module compiles, loads and can exercise a bounded request in isolation.",
+      "source_evidence": [
+        ".github/workflows/azerothcore-compile.yml",
+        "foundry/core-pins.json",
+        "foundry/qualifications/vault-terminal-azerothcore-module.json"
+      ],
+      "manifest_id_needs": [
+        "core commit",
+        "generated source hashes",
+        "build artifact hash",
+        "boot log and bounded exercise result"
+      ],
+      "implementation_state": "COMPILE_QUALIFIED",
+      "outstanding_tests": [
+        "Full-core boot with a reproducible resource/data setup",
+        "Module-load and bounded runtime request",
+        "Keep public core separate from private Campaign Party/client gates"
+      ],
+      "risks": [
+        "Existing compile proof is not boot, client, Playerbot or Campaign Party qualification"
+      ],
+      "next_milestone": "Run an opt-in isolated full-core build/boot attempt and classify missing resources explicitly."
+    },
+    {
+      "id": "portable-hole-unique-instance-custody",
+      "owner": "Future Portable Hole runtime module; AzerothCore item lifecycle",
+      "dependencies": [
+        "commodity ACL and receipt core",
+        "supported Item and Characters persistence hooks",
+        "bag/custody transfer contract"
+      ],
+      "player_loop": "Archive a specific eligible equipment instance, lend or restore that same instance, and see its provenance.",
+      "source_evidence": [
+        "Directive requirements; no unique-item archive implementation in this checkout"
+      ],
+      "manifest_id_needs": [
+        "item GUID",
+        "complete item state snapshot",
+        "custody owner and permission revision",
+        "transfer receipt"
+      ],
+      "implementation_state": "DESIGN_ONLY",
+      "outstanding_tests": [
+        "duplicate GUID and competing deposits",
+        "enchant/socket/durability/charge/random-property preservation",
+        "binding and owner-transfer policy",
+        "restore already-lent item and owner deletion"
+      ],
+      "risks": [
+        "Never reconstruct an arbitrary item from item_template ID",
+        "No direct SQL edits to live core inventory state"
+      ],
+      "next_milestone": "After commodity custody, prototype exact-instance custody through supported core hooks with synthetic lifecycle tests."
+    },
+    {
+      "id": "profession-overlay-and-pins",
+      "owner": "Portable Hole addon surface; AzerothCore owns recipes and bag state",
+      "dependencies": [
+        "read-only bag inventory API",
+        "Portable Hole authorized listing",
+        "source-provenance catalog",
+        "WotLK 3.3.5 Lua UI"
+      ],
+      "player_loop": "Pin a reagent or recipe, compare bags/shared holdings, see exact shortage and grounded nearest source.",
+      "source_evidence": [
+        "Directive requirements; no shared reagent overlay implementation in this checkout"
+      ],
+      "manifest_id_needs": [
+        "item and recipe identity",
+        "per-character inventory snapshot revision",
+        "vault ACL revision",
+        "source confidence/provenance"
+      ],
+      "implementation_state": "DESIGN_ONLY",
+      "outstanding_tests": [
+        "bag versus virtual quantity distinction",
+        "pagination and stale inventory",
+        "withdraw authorization and partial native stack capacity",
+        "no invented vendor/AH/gathering source"
+      ],
+      "risks": [
+        "Virtual counts are not craftable bag quantities",
+        "Never claim native TradeSkill UI consumes virtual warehouse stock"
+      ],
+      "next_milestone": "Deliver read-only count overlay and saved pins before enabling Withdraw Missing."
+    },
+    {
+      "id": "expedition-quartermaster",
+      "owner": "Campaign Party authorizes roster; Portable Hole owns storage; AzerothCore owns items",
+      "dependencies": [
+        "member selection revision",
+        "vault permissions and reservations",
+        "equipment/consumable policy",
+        "operation receipts"
+      ],
+      "player_loop": "Compare selected members, review exact transfers and shortages, authorize a supply plan, then reconcile returns.",
+      "source_evidence": [
+        "Directive requirements; no expedition quartermaster implementation in this checkout"
+      ],
+      "manifest_id_needs": [
+        "roster snapshot",
+        "member/item custody identities",
+        "per-transfer request receipts",
+        "project reservation"
+      ],
+      "implementation_state": "DESIGN_ONLY",
+      "outstanding_tests": [
+        "ambiguous member set",
+        "equipped/quest/trade-locked exclusion",
+        "full bags and partial transfer",
+        "loaned item return and disconnect recovery"
+      ],
+      "risks": [
+        "No automatic movement or sale of protected items",
+        "Campaign Party is the roster/authorization authority"
+      ],
+      "next_milestone": "Specify a read-only party supply comparison after Portable Hole listing and Party adapter contract exist."
+    },
+    {
+      "id": "strike-squads-and-faction-deployments",
+      "owner": "Future Faction Operations module; Campaign Party authorizes deployment; AzerothCore executes NPC combat",
+      "dependencies": [
+        "persistent squad identity/progression",
+        "role scripts and performance caps",
+        "hostility and territory policy",
+        "instance lifecycle adapter"
+      ],
+      "player_loop": "Earn authority, select a bounded squad doctrine, issue an authorized deployment order and recover the roster after the mission.",
+      "source_evidence": [
+        "Directive requirements; no strike-squad runtime implementation in this checkout"
+      ],
+      "manifest_id_needs": [
+        "squad revision",
+        "deployment scope/duration",
+        "member roster",
+        "order and recovery receipt"
+      ],
+      "implementation_state": "DESIGN_ONLY",
+      "outstanding_tests": [
+        "follow/hold/defend/focus/retreat/recover",
+        "logout/instance/wipe recovery",
+        "anti-grief and target checks",
+        "encounter mechanics requiring real players"
+      ],
+      "risks": [
+        "NPC reinforcements are not Playerbots or actual party players",
+        "No raid compatibility claim"
+      ],
+      "next_milestone": "After Argent benefit slice, qualify a three-NPC public-core deployment in a controlled instance."
+    },
+    {
+      "id": "discovery-atlas-and-source-coherent-loot",
+      "owner": "Arena source catalog plus future AzerothCore loot/discovery module",
+      "dependencies": [
+        "verified spawn/loot/quest sources",
+        "durable discovery receipt",
+        "waypoint and permission contract"
+      ],
+      "player_loop": "Record a confirmed discovery, consult a grounded clue or route, and revisit rare/resource/technique provenance.",
+      "source_evidence": [
+        "Directive requirements",
+        "catalog/alterations.json"
+      ],
+      "manifest_id_needs": [
+        "source revision and confidence",
+        "character/party discovery receipt",
+        "location or loot table provenance"
+      ],
+      "implementation_state": "DESIGN_ONLY",
+      "outstanding_tests": [
+        "no invented node/listing/rare data",
+        "duplicate discovery and account scope",
+        "map data/client availability",
+        "source table and loot probability checks"
+      ],
+      "risks": [
+        "Catalog descriptions do not prove live spawn or loot behavior"
+      ],
+      "next_milestone": "Add source-provenance records for one public-core discovery rather than building an ungrounded atlas."
+    },
+    {
+      "id": "party-combination-techniques",
+      "owner": "AzerothCore executes combat; Playerbots execute qualified strategy; Campaign Party chooses members",
+      "dependencies": [
+        "effect/proc safety registry",
+        "explicit Playerbot tactic contract",
+        "party member authorization and timing source"
+      ],
+      "player_loop": "Coordinate a bounded tank/healer/caster/pet/faction action window and observe one deterministic combined outcome.",
+      "source_evidence": [
+        "Directive requirements; no combination-technique implementation in this checkout"
+      ],
+      "manifest_id_needs": [
+        "technique schema/version",
+        "participant identities",
+        "timing window receipt",
+        "proc-chain budget"
+      ],
+      "implementation_state": "DESIGN_ONLY",
+      "outstanding_tests": [
+        "wrong participant/role",
+        "overlapping windows",
+        "proc recursion budget",
+        "bot disconnect and ineligible target"
+      ],
+      "risks": [
+        "Do not assume bots execute custom tactics automatically",
+        "Do not equate NPC squad with player group membership"
+      ],
+      "next_milestone": "Only begin after one individual Codex effect and a Playerbot strategy API are independently qualified."
+    },
+    {
+      "id": "challenge-dungeon-variants",
+      "owner": "AzerothCore encounter scripts; Arena defines opt-in content and evidence",
+      "dependencies": [
+        "pinned encounter source",
+        "scoped difficulty/affix rules",
+        "NPC/bot mechanic compatibility"
+      ],
+      "player_loop": "Choose Original or an explicitly opted-in challenge variant with mechanics and rewards that are not merely health multipliers.",
+      "source_evidence": [
+        "Directive requirements; no challenge dungeon runtime implementation in this checkout"
+      ],
+      "manifest_id_needs": [
+        "instance/difficulty revision",
+        "variant seed or deterministic ruleset",
+        "boss reward receipt"
+      ],
+      "implementation_state": "DESIGN_ONLY",
+      "outstanding_tests": [
+        "Original mode unchanged",
+        "mechanic and bot compatibility",
+        "wipe/reset and reward idempotency",
+        "performance bounds"
+      ],
+      "risks": [
+        "Some raid mechanics require real players; no solo compatibility assumed"
+      ],
+      "next_milestone": "Choose one public-core encounter only after runtime boot and Playerbot test environment are available."
+    },
+    {
+      "id": "economy-ahbot-and-material-exchange",
+      "owner": "AzerothCore/AHBot owns listings; future economy module owns bounded policy; Arena owns data/proofs",
+      "dependencies": [
+        "verified AHBot adapter",
+        "Portable Hole reservations",
+        "source-grounded prices/listings",
+        "explicit transaction policy"
+      ],
+      "player_loop": "Review observed supply and policy-bounded procurement or deterministic exchange with provenance and per-operation approval.",
+      "source_evidence": [
+        "Directive requirements; no AHBot integration in this checkout"
+      ],
+      "manifest_id_needs": [
+        "listing/source observation time",
+        "item source/ownership",
+        "price rule version",
+        "authorized transaction receipt"
+      ],
+      "implementation_state": "DESIGN_ONLY",
+      "outstanding_tests": [
+        "stale price/listing",
+        "protected item exclusion",
+        "ownership and stock cap",
+        "duplicate procurement and rollback"
+      ],
+      "risks": [
+        "No market prices or AHBot ownership assumptions",
+        "No auto-sale of protected gear"
+      ],
+      "next_milestone": "Implement deterministic Material Exchange only after a real recipe operation and custody contract exist."
+    }
+  ],
+  "prioritized_prs": [
+    {
+      "id": "P0-01a",
+      "title": "Transactional World ownership journal",
+      "status": "in progress",
+      "acceptance": [
+        "InnoDB-only atomic DML plus journal",
+        "full-row snapshot protection",
+        "per-database migration lock",
+        "stable request replay",
+        "collision, owner, manifest, user-change and concurrent tests"
+      ]
+    },
+    {
+      "id": "P0-01b",
+      "title": "Pinned-schema World qualification and recovery proof",
+      "status": "blocked on P0-01a CI and exact schema execution",
+      "acceptance": [
+        "disposable MySQL against exact pinned schema",
+        "crash/reconnect and fresh receipt",
+        "manifest/source-bound attestation",
+        "production World gate remains refused until pass"
+      ]
+    },
+    {
+      "id": "P0-02",
+      "title": "Source-bound Item.dbc client/server materialization",
+      "status": "not started",
+      "acceptance": [
+        "new output paths",
+        "round-trip/ref checks",
+        "preserve unrelated rows",
+        "parity",
+        "MPQ staged separately"
+      ]
+    },
+    {
+      "id": "P0-03",
+      "title": "Trusted artifact/proof admission envelope",
+      "status": "not started",
+      "acceptance": [
+        "derive artifact presence from verified bytes",
+        "authenticated provenance",
+        "stale/replayed attestation rejection"
+      ]
+    },
+    {
+      "id": "P0-04",
+      "title": "Public-core boot qualification",
+      "status": "not started",
+      "acceptance": [
+        "opt-in pinned build/boot",
+        "bounded request",
+        "public/private/client boundaries explicit"
+      ]
+    },
+    {
+      "id": "P1-01",
+      "title": "Shared entitlement, permission and receipt substrate",
+      "status": "not started",
+      "acceptance": [
+        "versioned identity and receipt",
+        "authority boundaries preserved",
+        "isolated executable path"
+      ]
+    },
+    {
+      "id": "P1-02",
+      "title": "Runic Codex loot-to-learn-to-effect vertical",
+      "status": "blocked on verified stock token/effect source",
+      "acceptance": [
+        "one token/source",
+        "durable unlock",
+        "one changed spell behavior",
+        "addon list/equip",
+        "relog/duplicate/recursion tests"
+      ]
+    },
+    {
+      "id": "P1-03",
+      "title": "Portable Hole commodity transaction slice",
+      "status": "not started",
+      "acceptance": [
+        "ACL",
+        "virtual 64-bit balance",
+        "exactly-once receipts",
+        "concurrent/crash MySQL tests"
+      ]
+    },
+    {
+      "id": "P1-04",
+      "title": "Profession reagent overlay and pins",
+      "status": "not started",
+      "acceptance": [
+        "read-only bag/shared counts",
+        "shortage/closest owned source",
+        "authorized withdraw only"
+      ]
+    },
+    {
+      "id": "P1-05",
+      "title": "Argent authority and tangible benefit",
+      "status": "blocked on source-verified identity",
+      "acceptance": [
+        "native identity verified",
+        "persistent authority",
+        "one benefit",
+        "no hostility/party mutation"
+      ]
+    },
+    {
+      "id": "P2",
+      "title": "Deepen mastery, squads, frontier, crafting, build architect and expedition logistics",
+      "status": "backlog",
+      "acceptance": [
+        "each feature has its own source-bound playable slice and rollback/disable contract"
+      ]
+    }
+  ]
+}
