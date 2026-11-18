@@ -67,7 +67,10 @@ def _matching_compile_qualification(spec: dict, files: dict) -> Optional[dict]:
     if not spec.get("module"):
         return None
     repo = Path(__file__).resolve().parents[1]
-    record_path = repo / "foundry" / "qualifications" / "azerothcore-module.json"
+    qualifications = repo / "foundry" / "qualifications"
+    record_path = qualifications / f"{spec['name']}-azerothcore-module.json"
+    if not record_path.is_file():
+        record_path = qualifications / "azerothcore-module.json"
     pin_path = repo / "foundry" / "core-pins.json"
     try:
         record = json.loads(record_path.read_text(encoding="utf-8"))

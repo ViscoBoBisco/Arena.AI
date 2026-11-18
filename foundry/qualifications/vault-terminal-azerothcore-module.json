@@ -1,0 +1,36 @@
+{
+  "schema": "arena-qualification/1",
+  "qualification": "ARENA-COMPILE",
+  "status": "PASS",
+  "subject": {
+    "spec": "vault-terminal",
+    "module": "mod-vault-terminal",
+    "source_sha256": {
+      "server/mod-vault-terminal/src/VaultTerminal.cpp": "bd51bce3b2223eeb770056b8745006dd547e146bff91ec65c6b5d775cb3ab1a1",
+      "server/mod-vault-terminal/src/mod-vault-terminal.h": "861c79591b0c08e62a80e9acf5eedafeb9bcc883be4a2931c367561176d57a80",
+      "server/mod-vault-terminal/src/mod-vault-terminal_loader.cpp": "a96f94f46161ef7fb16ccdc49763901383b4c1eacfb3271ef911a3eb48689345"
+    }
+  },
+  "environment": {
+    "core_repository": "https://github.com/azerothcore/azerothcore-wotlk.git",
+    "core_revision": "6ffb62abb867dabb258de6813ff5d06d6b011543",
+    "workflow": ".github/workflows/azerothcore-compile.yml",
+    "workflow_run_id": 44303986703,
+    "workflow_job_id": 134800652875,
+    "run_url": "https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44303986703/job/134800652875",
+    "qualified_commit": "aa3a5009570d373f4d1cd0a4bdf0f7f34d71d05f"
+  },
+  "checks": {
+    "compiled_translation_units": [
+      "server/mod-vault-terminal/src/VaultTerminal.cpp",
+      "server/mod-vault-terminal/src/mod-vault-terminal_loader.cpp",
+      "CMake-generated static ModulesLoader.cpp"
+    ],
+    "registration_linkage": "feature registration -> module-local loader -> AzerothCore static loader",
+    "method": "CMake compile_commands.json plus nm -C object-symbol checks"
+  },
+  "limitations": [
+    "Targeted translation-unit compilation and registration-object linkage only; not a complete AzerothCore server build or final module link.",
+    "Does not qualify database schemas, assets, installability, client behavior, or gameplay."
+  ]
+}
