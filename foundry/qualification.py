@@ -102,7 +102,7 @@ def _valid_database_attestation(attestations: Any, manifest_sha256: str,
     record = levels.get("ARENA-DB") if isinstance(levels, dict) else None
     proof = attestations.get("database_qualification")
     if (not _passed_record(record) or not isinstance(proof, dict)
-            or proof.get("schema") != "arena-db-qualification/1"
+            or proof.get("schema") != "arena-db-qualification/2"
             or proof.get("manifest_sha256") != manifest_sha256):
         return False
     database = proof.get("database")
@@ -112,7 +112,10 @@ def _valid_database_attestation(attestations: Any, manifest_sha256: str,
     if not isinstance(proof.get("server_version"), str) or not proof["server_version"].strip():
         return False
     checked_rows = proof.get("checked_rows")
-    if not isinstance(checked_rows, int) or isinstance(checked_rows, bool) or checked_rows < 1:
+    checked_values = proof.get("checked_values")
+    if (not isinstance(checked_rows, int) or isinstance(checked_rows, bool) or checked_rows < 1
+            or not isinstance(checked_values, int) or isinstance(checked_values, bool)
+            or checked_values < checked_rows):
         return False
     expected_sequence = [
         "apply", "verify", "apply-idempotently", "verify", "rollback", "verify-empty",
@@ -127,9 +130,12 @@ def _valid_database_attestation(attestations: Any, manifest_sha256: str,
         rollback_hash = _sha256(rollback_path.read_bytes())
         pins = _read_json(Path(__file__).resolve().parent / "core-pins.json")
         from .db_qualification import (expected_world_rows, inspect_generated_sql,
+                                       semantic_insert_rows, _semantic_digest,
                                        validate_generated_sql)
+        from .generate import world_sql
         spec = _read_json(package / "spec.json")
         allocation = _read_json(package / "id-allocation.json")
+        baseline = _read_json(package / "id-baseline.json")
         migration_statements = validate_generated_sql(
             migration_path.read_text(encoding="utf-8"), rollback=False)
         rollback_statements = validate_generated_sql(
@@ -137,11 +143,19 @@ def _valid_database_attestation(attestations: Any, manifest_sha256: str,
         expected_rows = expected_world_rows(spec, allocation)
         migration_deletes, _ = inspect_generated_sql(
             migration_statements, rollback_statements, expected_rows, spec, allocation)
+        semantic_rows = semantic_insert_rows(migration_statements)
+        canonical_rows = semantic_insert_rows(validate_generated_sql(
+            world_sql(spec, reserved=baseline.get("reserved_ids", {})), rollback=False))
+        if semantic_rows != canonical_rows:
+            return False
     except (OSError, ValueError, KeyError, TypeError):
         return False
+    expected_values = sum(len(values) for values in semantic_rows.values())
     if (proof.get("migration_sha256") != migration_hash
             or proof.get("rollback_sha256") != rollback_hash
-            or checked_rows != len(migration_deletes)):
+            or checked_rows != len(migration_deletes)
+            or checked_values != expected_values
+            or proof.get("semantic_sha256") != _semantic_digest(semantic_rows)):
         return False
     source = proof.get("schema_source")
     pin = pins.get("azerothcore_wotlk") if isinstance(pins, dict) else None
@@ -339,10 +353,24 @@ def qualify_package(package: Path, attestations_path: Optional[Path] = None,
     gate("delivery_contract", delivery_ok,
          "well-formed mandatory artifact requirements are present" if delivery_ok
          else "delivery requirements are missing or malformed")
+    try:
+        from .spec import delivery_requirements as derive_delivery_requirements
+        package_spec = _read_json(package / "spec.json")
+        derived_delivery = derive_delivery_requirements(package_spec)
+        delivery_binding = (delivery_ok and delivery == derived_delivery
+                            and evidence.get("delivery_requirements") == derived_delivery)
+    except (OSError, ValueError, KeyError, TypeError):
+        delivery_binding = False
+    gate("delivery_contract_binding", delivery_binding,
+         "manifest and evidence inventories match the package spec and emitter contract"
+         if delivery_binding else "delivery inventory does not match package spec/emitter output")
     artifact_kinds = {
         item.get("kind") for item in artifact_list
         if isinstance(item, dict) and isinstance(item.get("kind"), str)
     }
+    from .maturity import evaluate as evaluate_maturity
+    db_pass = False
+    compile_pass = False
     external_levels = attestations.get("levels", {}) if attested else {}
     if not isinstance(external_levels, dict):
         external_levels = {}
@@ -378,17 +406,26 @@ def qualify_package(package: Path, attestations_path: Optional[Path] = None,
              if not compile_pass else
              "checked-in pinned-core record matches the packaged source hashes")
 
-    raw_scope = evidence.get("generated_scope")
-    scope_ok = isinstance(raw_scope, dict) and bool(raw_scope)
-    gate("implementation_scope", scope_ok,
-         "generated implementation surfaces are declared" if scope_ok
-         else "implementation scope is missing or malformed")
-    scope = raw_scope if isinstance(raw_scope, dict) else {}
-    for key, value in sorted(scope.items()):
-        description = str(value).lower()
-        if any(marker in description for marker in ("placeholder", "skeleton", "descriptive")):
-            gate(f"implementation:{key}", False,
-                 f"generated scope is still a placeholder: {value}")
+    try:
+        maturity = evaluate_maturity(
+            package, delivery, evidence, attestations,
+            db_pass=db_pass, compile_pass=compile_pass, assets_pass=assets_ok)
+    except ValueError as exc:
+        maturity = {"schema": "arena-artifact-maturity/1",
+                    "trust": "EXTERNAL_UNTRUSTED", "inventory_issues": [], "artifacts": []}
+        gate("artifact_maturity_inventory", False, str(exc))
+    else:
+        inventory_ok = not maturity.get("inventory_issues")
+        gate("artifact_maturity_inventory", inventory_ok,
+             "artifact behaviors derived from declared emitters" if inventory_ok
+             else "undeclared emitted artifacts: " + ", ".join(maturity["inventory_issues"]))
+    report["artifact_maturity"] = maturity
+    for artifact in maturity["artifacts"]:
+        for behavior, status in sorted(artifact["status"].items()):
+            passed = status == "PASS"
+            gate(f"artifact_maturity:{artifact['identity']}:{behavior}", passed,
+                 "observed from package bytes or qualification evidence" if passed
+                 else f"required behavior is {status}; independent evidence is absent")
     if "mpq" in artifact_kinds:
         required_mpq = [item for item in artifact_list
                         if isinstance(item, dict) and item.get("kind") == "mpq"]
@@ -433,7 +470,7 @@ def _required_gate_names(evidence: dict, manifest: dict) -> set:
     required = {
         "integrity", "attestation_binding", "spec_validation", "build_is_not_release",
         "preview_allowance", "asset_provenance", "delivery_contract",
-        "implementation_scope", "live_gameplay",
+        "delivery_contract_binding", "artifact_maturity_inventory", "live_gameplay",
     }
     delivery = manifest.get("delivery_requirements", {})
     artifacts = delivery.get("artifacts", []) if isinstance(delivery, dict) else []
@@ -449,12 +486,12 @@ def _required_gate_names(evidence: dict, manifest: dict) -> set:
         if (isinstance(item, dict) and item.get("kind") == "client_dbc"
                 and isinstance(item.get("table"), str)):
             required.add(f"dbc_parity:{item['table']}")
-    scope = evidence.get("generated_scope", {})
-    if isinstance(scope, dict):
-        for key, value in scope.items():
-            description = str(value).lower()
-            if any(marker in description for marker in ("placeholder", "skeleton", "descriptive")):
-                required.add(f"implementation:{key}")
+    try:
+        from .maturity import gate_names as maturity_gate_names
+        required.update(maturity_gate_names(delivery))
+    except ValueError:
+        # The inventory gate itself blocks malformed or unknown artifact kinds.
+        pass
     acceptance = evidence.get("acceptance", [])
     if isinstance(acceptance, list) and acceptance:
         for item in acceptance:

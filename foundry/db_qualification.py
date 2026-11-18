@@ -12,12 +12,14 @@ import hashlib
 import json
 import os
 import re
+from decimal import Decimal, InvalidOperation
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .qualification import integrity_check
+from .generate import world_sql
 
 RowIdentity = Tuple[str, Tuple[Tuple[str, int], ...]]
 QueryRunner = Callable[[str], str]
@@ -217,6 +219,105 @@ def _parse_insert(line: str) -> RowIdentity:
     return _identity(table, **keys)
 
 
+def _parse_sql_value(value: str):
+    """Parse the generator's scalar SQL literal subset into a Python value."""
+    value = value.strip()
+    if value.upper() == "NULL":
+        return None
+    if value.startswith("'") and value.endswith("'") and len(value) >= 2:
+        raw = value[1:-1]
+        # MySQL string escapes emitted by generate._sql_str.
+        return re.sub(r"\\([\\'0bnrtZ])", lambda match: {
+            "\\": "\\", "'": "'", "0": "\0", "b": "\b",
+            "n": "\n", "r": "\r", "t": "\t", "Z": "\x1a",
+        }[match.group(1)], raw)
+    if re.fullmatch(r"[+-]?\d+", value):
+        return int(value)
+    if re.fullmatch(r"[+-]?(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?", value):
+        try:
+            return Decimal(value)
+        except InvalidOperation as exc:
+            raise ValueError(f"invalid numeric SQL literal: {value!r}") from exc
+    raise ValueError(f"unsupported generated SQL value: {value!r}")
+
+
+def semantic_insert_rows(statements: List[str]) -> dict[RowIdentity, dict[str, Any]]:
+    """Return normalized column values for every generated INSERT row."""
+    result = {}
+    for line in statements:
+        if not line.upper().startswith("INSERT INTO"):
+            continue
+        match = _INSERT_RE.fullmatch(line)
+        if not match:
+            raise ValueError("unsupported generated INSERT statement")
+        table, column_text, value_text = match.groups()
+        columns = [column.strip().strip("`").lower() for column in column_text.split(",")]
+        values = [_parse_sql_value(value) for value in _split_values(value_text)]
+        if len(columns) != len(values) or len(columns) != len(set(columns)):
+            raise ValueError(f"generated INSERT column/value mismatch for {table}")
+        identity = _parse_insert(line)
+        if identity in result:
+            raise ValueError(f"duplicate generated INSERT identity: {identity}")
+        result[identity] = dict(zip(columns, values))
+    return result
+
+
+def _semantic_digest(rows: dict[RowIdentity, dict[str, Any]]) -> str:
+    normalized = {
+        f"{table}|" + ",".join(f"{column}={value}" for column, value in where):
+            values
+        for (table, where), values in sorted(rows.items())
+    }
+    data = json.dumps(normalized, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, default=str).encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+
+def _value_query(identity: RowIdentity, columns: List[str]) -> str:
+    table, where = identity
+    if not columns or any(not _IDENT.fullmatch(column) for column in columns):
+        raise ValueError("invalid semantic query columns")
+    projection = ", ".join(f"`{column}`" for column in columns)
+    predicate = " AND ".join(f"`{column}` = {value}" for column, value in where)
+    return f"SELECT {projection} FROM `{table}` WHERE {predicate};"
+
+
+def _decode_mysql_batch_value(value: str, expected: Any):
+    if expected is None:
+        return None if value in (r"\N", "NULL") else value
+    if isinstance(expected, (int, Decimal)) and not isinstance(expected, bool):
+        try:
+            return Decimal(value)
+        except InvalidOperation as exc:
+            raise RuntimeError(f"database returned non-numeric semantic value {value!r}") from exc
+    # mysql --batch escapes control characters unless --raw is enabled.
+    return re.sub(r"\\([0bnrtZ])", lambda match: {
+        "0": "\0", "b": "\b", "n": "\n", "r": "\r",
+        "t": "\t", "Z": "\x1a",
+    }[match.group(1)], value).replace(r"\\", "\\")
+
+
+def _assert_semantic_rows(runner: QueryRunner,
+                          expected_rows: dict[RowIdentity, dict[str, Any]]) -> None:
+    problems = []
+    for identity, expected in sorted(expected_rows.items()):
+        columns = list(expected)
+        raw = runner(_value_query(identity, columns)).rstrip("\r\n")
+        values = raw.split("\t") if raw else []
+        if len(values) != len(columns):
+            problems.append(f"{identity[0]} returned {len(values)} values, expected {len(columns)}")
+            continue
+        for column, actual_raw in zip(columns, values):
+            actual = _decode_mysql_batch_value(actual_raw, expected[column])
+            want = expected[column]
+            if isinstance(want, (int, Decimal)) and not isinstance(want, bool):
+                want = Decimal(want)
+            if actual != want:
+                problems.append(f"{identity[0]}.{column} expected {want!r}, found {actual!r}")
+    if problems:
+        raise RuntimeError("database semantic row mismatch: " + "; ".join(problems))
+
+
 def inspect_generated_sql(migration: List[str], rollback: List[str],
                           expected: Set[RowIdentity], spec: dict,
                           allocations: dict) -> Tuple[Set[RowIdentity], Set[RowIdentity]]:
@@ -360,6 +461,16 @@ def qualify_database(package: Path, database: str, runner: QueryRunner,
     rollback = rollback_path.read_text(encoding="utf-8")
     migration_statements = validate_generated_sql(migration, rollback=False)
     rollback_statements = validate_generated_sql(rollback, rollback=True)
+    baseline = _json_object(package / "id-baseline.json")
+    reserved = baseline.get("reserved_ids", {})
+    if not isinstance(reserved, dict):
+        raise ValueError("ID baseline has no reserved_ids object")
+    canonical_statements = validate_generated_sql(
+        world_sql(spec, reserved=reserved), rollback=False)
+    semantic_rows = semantic_insert_rows(migration_statements)
+    canonical_semantic_rows = semantic_insert_rows(canonical_statements)
+    if semantic_rows != canonical_semantic_rows:
+        raise ValueError("generated migration values do not match the spec-derived SQL")
     rows = expected_world_rows(spec, allocation)
     if not rows:
         raise ValueError("package declares SQL delivery but has no supported generated world rows")
@@ -382,15 +493,18 @@ def qualify_database(package: Path, database: str, runner: QueryRunner,
         runner(migration)
         _assert_rows(runner, inserted_rows, 1)
         _assert_rows(runner, cleanup_only, 0)
+        _assert_semantic_rows(runner, semantic_rows)
         runner(migration)
         _assert_rows(runner, inserted_rows, 1)
         _assert_rows(runner, cleanup_only, 0)
+        _assert_semantic_rows(runner, semantic_rows)
         runner(rollback)
         _assert_rows(runner, migration_deletes, 0)
         mutated = True
         runner(migration)
         _assert_rows(runner, inserted_rows, 1)
         _assert_rows(runner, cleanup_only, 0)
+        _assert_semantic_rows(runner, semantic_rows)
         runner(rollback)
         _assert_rows(runner, migration_deletes, 0)
         mutated = False
@@ -405,13 +519,15 @@ def qualify_database(package: Path, database: str, runner: QueryRunner,
         raise RuntimeError(f"database qualification failed: {exc}{cleanup_note}") from exc
 
     proof = {
-        "schema": "arena-db-qualification/1",
+        "schema": "arena-db-qualification/2",
         "manifest_sha256": integrity["manifest_sha256"],
         "database": database,
         "server_version": server_version,
         "migration_sha256": hashlib.sha256(migration.encode("utf-8")).hexdigest(),
         "rollback_sha256": hashlib.sha256(rollback.encode("utf-8")).hexdigest(),
         "checked_rows": len(migration_deletes),
+        "checked_values": sum(len(values) for values in semantic_rows.values()),
+        "semantic_sha256": _semantic_digest(semantic_rows),
         "sequence": ["apply", "verify", "apply-idempotently", "verify", "rollback",
                      "verify-empty", "reapply-after-rollback", "verify", "rollback",
                      "verify-empty"],
