@@ -214,9 +214,9 @@ def characters_claim_transaction_sql(spec: dict) -> list[tuple[str, tuple[str, .
     return [
         # Lock/create the per-character serialization row before touching a request-keyed receipt.
         # This gives every claim the same lock order and avoids cross-request receipt/state deadlocks.
-        (f"INSERT IGNORE INTO `{table}` "
+        (f"INSERT INTO `{table}` "
          "(guid, total_claims, last_claim_day, last_request_id) "
-         "VALUES ({}, 0, NULL, NULL)",
+         "VALUES ({}, 0, NULL, NULL) ON DUPLICATE KEY UPDATE guid = VALUES(guid)",
          ("guid",)),
         (f"INSERT IGNORE INTO `{receipt_table}` "
          "(guid, request_id, status, total_claims, claim_day) "
