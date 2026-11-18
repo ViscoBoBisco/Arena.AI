@@ -84,7 +84,7 @@ def world_sql(spec: dict, *, reserved=None) -> str:
             qid = ids[obj["key"]]
             lines.append(f"DELETE FROM quest_template WHERE Id = {qid};")
             lines.append(
-                f"INSERT INTO quest_template (Id, Title, Objectives, VerifiedBuild) VALUES "
+                f"INSERT INTO quest_template (Id, LogTitle, ObjectiveText1, VerifiedBuild) VALUES "
                 f"({qid}, {_sql_str(obj.get('title'))}, {_sql_str(obj.get('objectives', ''))}, 12340);")
         lines.append("")
     # creatures

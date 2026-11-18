@@ -24,7 +24,7 @@ INSERT INTO spell_dbc (Id, Name_Lang_enUS) VALUES (901001, 'Rimeward Aura');
 
 -- quests (quest_template)
 DELETE FROM quest_template WHERE Id = 901000;
-INSERT INTO quest_template (Id, Title, Objectives, VerifiedBuild) VALUES (901000, 'Prove the Cold', 'Defeat the Frost Armory keeper and return with proof.', 12340);
+INSERT INTO quest_template (Id, LogTitle, ObjectiveText1, VerifiedBuild) VALUES (901000, 'Prove the Cold', 'Defeat the Frost Armory keeper and return with proof.', 12340);
 
 -- creatures (creature_template + model)
 DELETE FROM creature_template_model WHERE CreatureID = 901000;

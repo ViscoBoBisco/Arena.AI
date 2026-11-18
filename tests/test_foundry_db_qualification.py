@@ -66,6 +66,8 @@ class DatabaseQualification(unittest.TestCase):
         sql = world_sql(spec)
         self.assertIn("spell_dbc (Id, Name_Lang_enUS)", sql)
         self.assertNotIn("spell_dbc (Id, Name)", sql)
+        self.assertIn("quest_template (Id, LogTitle, ObjectiveText1, VerifiedBuild)", sql)
+        self.assertNotIn("quest_template (Id, Title, Objectives", sql)
 
     def test_apply_idempotence_rollback_and_reapply_produce_bound_attestation(self):
         database = MemoryDatabase()
