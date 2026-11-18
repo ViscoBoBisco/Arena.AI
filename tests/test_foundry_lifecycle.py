@@ -40,6 +40,11 @@ def _minimal_qualified_fixture(root: Path):
         "lifecycle": {"installable": False, "release": "BLOCKED"},
         "validation": {"ok": True, "verdicts": {"asset-verification": "PASS"}},
         "generated_scope": {"synthetic": "complete fixture implementation"},
+        "delivery_requirements": {
+            "schema": "arena-delivery-requirements/1",
+            "artifacts": [],
+            "capabilities": [],
+        },
         "acceptance": [{"statement": "synthetic acceptance fixture", "status": "NOT_ASSESSED"}],
     }
     evidence_bytes = (json.dumps(evidence, sort_keys=True) + "\n").encode()
@@ -120,14 +125,52 @@ class LifecyclePhases(unittest.TestCase):
                                 for reason in report["blocked_reasons"]))
             self.assertTrue(any("attestation_binding" in reason
                                 for reason in report["blocked_reasons"]))
-            self.assertTrue(any("implementation:cpp_module" in reason
+            self.assertTrue(any("artifact_maturity:server_module:runtime_exercised" in reason
                                 for reason in report["blocked_reasons"]))
+            self.assertIn("artifact_maturity", report)
+            self.assertEqual(report["artifact_maturity"]["schema"], "arena-artifact-maturity/1")
 
             release_dir = root / "release"
             released = helpers.run_tool(FOUNDRY, "release", package,
                                        "--qualification", report_path, "--out", release_dir)
             self.assertEqual(released.returncode, 1)
             self.assertFalse(release_dir.exists())
+
+    def test_free_text_maturity_labels_cannot_change_structured_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "preview"
+            built = helpers.run_tool(FOUNDRY, "build", FROST_SPEC,
+                                     "--out", package, "--allow-unverified")
+            self.assertEqual(built.returncode, 0, built.stderr)
+            first_path = root / "first.json"
+            first = helpers.run_tool(FOUNDRY, "qualify", package, "--out", first_path)
+            self.assertEqual(first.returncode, 1)
+            first_report = json.loads(first_path.read_text(encoding="utf-8"))
+
+            # Rewrite all legacy prose maturity claims, and correctly re-hash
+            # the local package metadata. The policy result must be identical.
+            evidence_path = package / "evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["generated_scope"] = {key: "complete and production ready"
+                                           for key in evidence["generated_scope"]}
+            evidence_path.write_text(json.dumps(evidence, sort_keys=True, indent=2) + "\n",
+                                     encoding="utf-8")
+            manifest_path = package / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            evidence_bytes = evidence_path.read_bytes()
+            manifest["metadata_files"]["evidence.json"] = {
+                "sha256": _hash(evidence_bytes), "size": len(evidence_bytes)}
+            manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n",
+                                     encoding="utf-8")
+            second_path = root / "second.json"
+            second = helpers.run_tool(FOUNDRY, "qualify", package, "--out", second_path)
+            self.assertEqual(second.returncode, 1)
+            second_report = json.loads(second_path.read_text(encoding="utf-8"))
+            self.assertEqual(first_report["artifact_maturity"]["artifacts"],
+                             second_report["artifact_maturity"]["artifacts"])
+            self.assertTrue(any("artifact_maturity:server_module:runtime_exercised" in reason
+                                for reason in second_report["blocked_reasons"]))
 
     def test_forged_all_pass_report_cannot_release_blocked_frost(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -220,7 +263,7 @@ class LifecyclePhases(unittest.TestCase):
                 "status": "PASS", "evidence": "sha256:" + "0" * 64,
             }
             raw_attestations["database_qualification"] = {
-                "schema": "arena-db-qualification/1",
+                "schema": "arena-db-qualification/2",
                 "manifest_sha256": raw_attestations["subject"]["manifest_sha256"],
             }
             attestations.write_text(json.dumps(raw_attestations), encoding="utf-8")

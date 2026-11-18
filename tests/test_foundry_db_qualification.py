@@ -15,6 +15,9 @@ sys.path.insert(0, str(helpers.REPO))
 from foundry.db_qualification import (  # noqa: E402
     _count_query,
     _parse_predicate,
+    _value_query,
+    semantic_insert_rows,
+    validate_generated_sql,
     expected_world_rows,
     inspect_generated_sql,
     qualify_database,
@@ -28,7 +31,8 @@ PACKAGE = helpers.REPO / "packages" / "frost-armory"
 
 
 class MemoryDatabase:
-    def __init__(self, *, initial_rows=None, fail_first_migration=False):
+    def __init__(self, *, initial_rows=None, fail_first_migration=False,
+                 wrong_semantic_column=None):
         spec = json.loads((PACKAGE / "spec.json").read_text(encoding="utf-8"))
         allocation = json.loads((PACKAGE / "id-allocation.json").read_text(encoding="utf-8"))
         self.expected = expected_world_rows(spec, allocation)
@@ -36,6 +40,13 @@ class MemoryDatabase:
         self.rollback = (PACKAGE / "sql/99_rollback.sql").read_text(encoding="utf-8")
         self.rows = set(initial_rows or ())
         self.count_queries = {_count_query(row): row for row in self.expected}
+        statements = validate_generated_sql(self.migration, rollback=False)
+        self.semantic_rows = semantic_insert_rows(statements)
+        self.semantic_queries = {
+            _value_query(identity, list(values)): (identity, values)
+            for identity, values in self.semantic_rows.items()
+        }
+        self.wrong_semantic_column = wrong_semantic_column
         self.migration_count = 0
         self.rollback_count = 0
         self.fail_first_migration = fail_first_migration
@@ -47,6 +58,14 @@ class MemoryDatabase:
             return "MariaDB test double\n"
         if sql in self.count_queries:
             return "1\n" if self.count_queries[sql] in self.rows else "0\n"
+        if sql in self.semantic_queries:
+            _identity, values = self.semantic_queries[sql]
+            output = []
+            for column, value in values.items():
+                if column == self.wrong_semantic_column:
+                    value = "corrupted-value"
+                output.append(r"\N" if value is None else str(value))
+            return "\t".join(output) + "\n"
         if sql == self.migration:
             self.migration_count += 1
             self.rows.update(self.expected)
@@ -78,6 +97,9 @@ class DatabaseQualification(unittest.TestCase):
         proof = attestations["database_qualification"]
         manifest = json.loads((PACKAGE / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(proof["checked_rows"], len(database.expected))
+        self.assertGreater(proof["checked_values"], 0)
+        self.assertEqual(len(proof["semantic_sha256"]), 64)
+        self.assertEqual(proof["schema"], "arena-db-qualification/2")
         self.assertEqual(proof["manifest_sha256"], hashlib.sha256(
             (PACKAGE / "manifest.json").read_bytes()).hexdigest())
         self.assertEqual(attestations["subject"]["manifest_sha256"],
@@ -126,6 +148,37 @@ class DatabaseQualification(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "disposable_ prefix"):
             qualify_database(PACKAGE, "production_world", lambda sql: calls.append(sql) or "")
         self.assertEqual(calls, [])
+
+    def test_rehashed_sql_value_drift_is_rejected_against_the_spec(self):
+        import shutil
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package = Path(tmp) / "modified"
+            shutil.copytree(PACKAGE, package)
+            sql_path = package / "sql/01_world.sql"
+            changed = sql_path.read_text(encoding="utf-8").replace(
+                "Prove the Cold", "Forged quest title")
+            self.assertNotEqual(changed, sql_path.read_text(encoding="utf-8"))
+            sql_path.write_text(changed, encoding="utf-8")
+            manifest_path = package / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            data = sql_path.read_bytes()
+            manifest["files"]["sql/01_world.sql"] = {
+                "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+            manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n",
+                                     encoding="utf-8")
+            database = MemoryDatabase()
+            with self.assertRaisesRegex(ValueError, "do not match the spec-derived SQL"):
+                qualify_database(package, "arena_foundry_disposable_test", database)
+            self.assertEqual(database.migration_count, 0)
+
+    def test_column_value_mismatch_fails_and_rolls_back(self):
+        database = MemoryDatabase(wrong_semantic_column="logtitle")
+        with self.assertRaisesRegex(RuntimeError, "database semantic row mismatch"):
+            qualify_database(PACKAGE, "arena_foundry_disposable_test", database)
+        self.assertEqual(database.rollback_count, 1)
+        self.assertEqual(database.rows, set())
 
     def test_failed_partial_apply_attempts_cleanup_and_emits_no_attestation(self):
         database = MemoryDatabase(fail_first_migration=True)

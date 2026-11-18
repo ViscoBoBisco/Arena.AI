@@ -111,8 +111,11 @@ jobs:
           pin = json.loads(Path('foundry/core-pins.json').read_text())['azerothcore_wotlk']
           gates = {gate['name']: gate['status'] for gate in report['gates']}
           assert proof['levels']['ARENA-DB']['status'] == 'PASS'
+          assert db['schema'] == 'arena-db-qualification/2'
           assert db['schema_source']['revision'] == pin['revision']
           assert db['checked_rows'] > 0
+          assert db['checked_values'] >= db['checked_rows']
+          assert len(db['semantic_sha256']) == 64
           assert gates.get('database_migrations') == 'PASS'
           assert report['qualified'] is False
           print(f"ARENA-DB PASS: {db['checked_rows']} identities; MySQL {db['server_version']}")
