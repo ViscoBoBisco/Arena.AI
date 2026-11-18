@@ -10,7 +10,7 @@ JSON spec v1 -> validate/plan -> build preview -> verify integrity -> qualify ->
 
 The phases are intentionally independent. `build` never marks a bundle installable. `verify` checks package bytes only and does not upgrade evidence. `qualify` writes a separate manifest-bound report with a complete, delivery-derived gate set; `release` refuses blocked, incomplete, stale, or tampered reports and atomically copies only a qualified package, then rechecks the staged copy. A release copy is not an install or gameplay claim.
 
-Qualification fails closed on missing manifest-bound attestations. Applicable surfaces require separate evidence: disposable-database apply/rollback for migrations, pinned-core compile evidence for server modules, per-table merge evidence for MPQ delivery, independent evidence for every acceptance statement, and live client/Playerbots gameplay. Declared generated placeholders/skeletons block release even when a compile check passes. The report and external attestation JSON are evidence records, not cryptographic signatures; downstream release operators remain responsible for validating their provenance.
+Qualification fails closed on missing manifest-bound attestations. Applicable surfaces require separate evidence: disposable-database apply/rollback for migrations, the canonical pinned-core compile record plus exact packaged source hashes for server modules, client/server DBC hash parity and per-table merge evidence for MPQ delivery, independent evidence for every acceptance statement, and live client/Playerbots gameplay. Declared generated placeholders/skeletons block release even when a compile check passes. The report and external attestation JSON are evidence records, not cryptographic signatures; downstream release operators remain responsible for validating their provenance.
 
 Commands (all use exit codes 0 success, 1 validation/integrity failure, 2 usage or input error):
 
@@ -65,7 +65,7 @@ The generated artifacts are **not all production implementations** yet. SQL gene
 | Level | What earns it | Frost Armory status on this branch |
 |---|---|---|
 | `ARENA-STATIC` | schema, structural and repository checks | Spec structure checks run; stock asset verification remains `NOT_ASSESSED` |
-| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | All 251 repository tests pass at the current working tree; generated bundle does not attest test execution |
+| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | All 253 repository tests pass at the current working tree; generated bundle does not attest test execution |
 | `ARENA-DB` | apply and rollback on a disposable compatible DB | Pending; no disposable AzerothCore database was provisioned |
 | `ARENA-COMPILE` | module compile/API check against pinned compatible AzerothCore | **PASS** for exact Frost Armory source hashes and AzerothCore `6ffb62abb867dabb258de6813ff5d06d6b011543`; [CI run](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44201459186/job/134456328585). This is a targeted object/linkage check, not a full server build or gameplay qualification. |
 | `ARENA-PACK` | reproducible package and independent integrity verification | `foundry verify packages/frost-armory` passes in this workspace; package evidence marks verification as an external required step, not a self-claim |
@@ -93,7 +93,7 @@ python3 tools/compile_generated_module.py \
   --registration AddFrostArmoryScripts
 ```
 
-The helper refuses a different core revision, compiles the generated feature TU, module-local loader and CMake-generated static loader using that build's exact compiler commands, then checks the registration symbols connect with `nm`. The gate passed in [GitHub Actions run 44201459186](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44201459186/job/134456328585) for qualified source commit `7514750d0a2103ee0318b382bfad0e4ad4368fbc`. The machine-readable record is `foundry/qualifications/azerothcore-module.json`; package generation carries it forward only when the pinned core revision and every generated module `.cpp`/`.h` hash still match. It is a targeted object/linkage smoke gate—not a complete AzerothCore build, final server/module link, DB check or gameplay qualification. `ARENA-COMPILE` does not certify the generated gameplay skeleton as feature-complete.
+The helper refuses a different core revision, compiles the generated feature TU, module-local loader and CMake-generated static loader using that build's exact compiler commands, then checks the registration symbols connect with `nm`. The gate passed in [GitHub Actions run 44201459186](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44201459186/job/134456328585) for qualified source commit `7514750d0a2103ee0318b382bfad0e4ad4368fbc`. The machine-readable record is `foundry/qualifications/azerothcore-module.json`; package generation and qualification both require the pinned core revision, canonical checked-in record, and every packaged module `.cpp`/`.h` hash to match. It is a targeted object/linkage smoke gate—not a complete AzerothCore build, final server/module link, DB check or gameplay qualification. `ARENA-COMPILE` does not certify the generated gameplay skeleton as feature-complete.
 
 ## Traceable task ledger
 
@@ -120,7 +120,7 @@ Acceptance conditions are deliberately explicit; `done` means the contract is im
 - A DBC row requires parity between client and server copies. Current package generation does not prove that parity.
 - Unknown stock IDs may render incorrectly or fail lookup. This spec marks these unknown; do not treat the placeholder numbers as stock-verified.
 - SQL syntax/column compatibility is not proven by text-level tests. Apply only to a disposable matching database after `ARENA-DB` qualification exists.
-- Generated C++ is uncompiled, and generated addon behavior is not client-runtime tested.
+- The generated C++ registration skeleton has a targeted pinned-core translation-unit/linkage check only; it is not feature-complete, and generated addon behavior is not client-runtime tested.
 - The existing patch archive is outside Foundry's write path; any future patch merger must use a new path, detect collisions and refuse to overwrite unknown archives.
 
 See [13 — Campaign Party adapter](13-campaign-party-adapter.md) for the external contract and its limits.
