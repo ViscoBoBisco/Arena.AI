@@ -1,32 +1,7 @@
 # mod-vault-terminal
 
-Server half of the [VaultTerminal example](../../README.md). Reference code: it shows the wire
-format, the receive hook and the send path, and is not built by this repository.
+Generated AzerothCore server module for the [Vault Terminal example](../../README.md). The module consumes `VT1` addon frames, serializes each claim in a Characters-database transaction, records a request-keyed receipt, and sends the receipt for the submitted request rather than inferring success from a later counter read.
 
-Expected layout in an AzerothCore source tree:
+Install this directory under `modules/`, enable modules in CMake, and rebuild against the pinned AzerothCore revision in `foundry/core-pins.json`. `src/mod-vault-terminal_loader.cpp` exposes the `Addmod_vault_terminalScripts()` loader symbol and `src/mod-vault-terminal.h` declares the module registration entry point. Keep `AddonChannel = 1` in `worldserver.conf`.
 
-```
-modules/mod-vault-terminal/
-├── conf/mod-vault-terminal.conf.dist
-└── src/
-    ├── VaultTerminal.cpp
-    └── mod-vault-terminal_loader.cpp
-```
-
-Configure with CMake so the module is picked up (`-DMODULES=static` or `dynamic`, per your core's
-module docs), rebuild, and the loader registers `Addmod_vault_terminalScripts()`.
-
-## What it depends on, and why that is verified
-
-| Dependency | Where it was checked |
-|---|---|
-| `PlayerScript::OnPlayerBeforeSendChatMessage(Player*, uint32&, uint32&, std::string&)` | `ScriptDefines/PlayerScript.h` (hook `PLAYERHOOK_ON_BEFORE_SEND_CHAT_MESSAGE`) |
-| `ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, LANG_ADDON, player, player, text)` | `Chat.cpp::AddonChannelCommandHandler::Send()` |
-| `AddonChannel = 1` gates the channel | `worldserver.conf.dist`, `Handlers/ChatHandler.cpp` |
-| The core's own prefix/opcodes (`AzerothCore\t`, `p/h/i`, replies `a/o/f/m`) | `Chat.cpp::AddonChannelCommandHandler::ParseCommands()` |
-| The loader symbol must be `Addmod_vault_terminalScripts()` | `modules/CMakeLists.txt` → `ConfigureScriptLoader`: `string(REGEX REPLACE - "_" …)` then `Add${name}Scripts()` |
-| Sources are globbed from `src/`, so no per-module `CMakeLists.txt` is needed | `modules/CMakeLists.txt` → `CollectSourceFiles(${MODULE_SOURCE_PATH} …)` |
-| `-DMODULES=static|dynamic` selects linkage | `modules/CMakeLists.txt`, `GetModuleSourceList` + `MODULES MATCHES` |
-
-If your fork renames the hook, the protocol still works — only the interception point moves. Keep the
-`msg.clear()`: it is what stops the message being relayed to other players after you have claimed it.
+The SQL migration is `../../sql/01_module_table.sql`. It creates the current counter and receipt tables. If it finds the previous per-day claim-table shape, it aggregates the old rows into the new per-character counter and renames the old table to `vault_terminal_claims_legacy_v1`; the old daily rows are retained. The migration is intended to be repeatable. The generated compile gate and disposable-MySQL qualification are separate checks and do not qualify a running server or live gameplay.

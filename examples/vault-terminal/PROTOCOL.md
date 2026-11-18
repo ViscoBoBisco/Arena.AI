@@ -1,65 +1,56 @@
-# VaultTerminal protocol, version 1
+# VaultTerminal protocol, version 2
 
-A request/response protocol between a 3.3.5a addon and the server, carried on the addon chat channel.
-It exists to prove one thing: **a live custom interface needs no client patch, no DBC row and no MPQ.**
+A request/response protocol between a WoW 3.3.5a addon and the server, carried on the addon chat channel. The client submits intent; the Characters database is authoritative for state and request outcomes.
 
-## Transport
+## Transport and framing
 
 | Property | Value |
 |---|---|
-| Channel | addon chat (`LANG_ADDON`, message type `CHAT_MSG_ADDON`) |
-| Client → server | `SendAddonMessage("VT1", payload, "WHISPER", UnitName("player"))` — a self-whisper |
-| Server → client | `SMSG_MESSAGECHAT` built as `CHAT_MSG_WHISPER`, `LANG_ADDON`, sender = receiver = the player |
-| Maximum payload | **255 bytes** hard cap (the core drops longer addon messages) |
-| Encoding | ASCII; `\t` separates fields, no field contains a tab |
-| Framing | one message = one record; no continuation, no binary |
+| Channel | addon chat (`LANG_ADDON`, `CHAT_MSG_ADDON`) |
+| Prefix | `VT1` (AzerothCore's own `AzerothCore\t` prefix is not used) |
+| Client → server | `SendAddonMessage("VT1", payload, "WHISPER", UnitName("player"))` |
+| Maximum payload | **255 bytes** |
+| Encoding | printable ASCII, tab-separated fields |
+| Request ID | 1–64 characters from `[A-Za-z0-9_-]`; generated and saved per character |
 
-The server side of that table is exactly what the core does for its own addon protocol —
-`AddonChannelCommandHandler::Send()` builds `CHAT_MSG_WHISPER`/`LANG_ADDON` with the player as both
-sender and receiver. A module copies the mechanism, not the prefix.
+Each message is one frame. A frame begins `VT1<TAB>opcode`; fields cannot contain tabs, CR, or LF. The addon rate-limits sends and checks the payload size before sending. A persisted pending request ID is reused on retry or addon reopen until its matching receipt is received.
 
-## Prefix collision
-
-AzerothCore already speaks on this channel with the prefix `AzerothCore\t` and opcodes
-`p` (ping), `h` (human-readable command), `i` (command), replying with `a`/`o`/`f`/`m`. Its parser
-**only** claims messages that start with that exact 12-byte prefix — everything else falls through to
-normal chat handling.
-
-Therefore: **pick a prefix the core does not own, and claim it in your own hook.** This example uses
-`VT1`. Never send `AzerothCore\t…` unless you are deliberately driving the core's command channel.
-
-## Grammar
-
-```
-message   := prefix TAB opcode [ TAB field ]*
-prefix    := "VT1"
-opcode    := 1*8 ALPHA
-field     := 1*64 printable ASCII      ; no TAB, no CR, no LF
-```
-
-Client → server:
-
-| Opcode | Fields | Meaning | Server must answer with |
-|---|---|---|---|
-| `HELLO` | protocol version, addon version | handshake; the client announces itself | `S` (current state) |
-| `STATE` | — | poll: "where am I?" | `S` |
-| `CLAIM` | — | action: "take today's seal" | `OK` or `ERR` |
-| `PING` | — | keepalive / RTT probe | `OK` with an empty body |
-
-Server → client:
+## Client → server
 
 | Opcode | Fields | Meaning |
 |---|---|---|
-| `S` | seals, target, claimsLeft, rank, flag | state snapshot; `flag` is `1` when a claim is available |
-| `OK` | text (may be empty) | the action succeeded; `text` is safe to show |
-| `ERR` | code, text | the action was refused; `code` is machine-readable |
-| `BYE` | text | server is closing the session (maintenance, disable switch) |
+| `HELLO` | protocol version, addon version | Handshake; version is `2`. |
+| `STATE` | none | Request current server snapshot. |
+| `CLAIM` | request ID | Submit one claim intent. The ID is the idempotency key. |
+| `PING` | none | Liveness probe. |
 
-Error codes: `BUSY`, `COOLDOWN`, `VERSION`, `DENIED`, `INTERNAL`. Clients must not invent codes; they
-display `text` and log `code`.
+## Server → client
 
-`rank` is derived from `seals` by the server, and the ladder is part of the protocol so both sides can
-check it:
+| Opcode | Fields | Meaning |
+|---|---|---|
+| `S` | total seals, target, claims left today, rank, claim-available flag | Authoritative snapshot. |
+| `RCPT` | request ID, status, resulting total | Durable outcome attributed to exactly that request. |
+| `ERR` | code, text | Protocol/request-level refusal. |
+| `OK` | optional text | Successful non-claim response, such as `PING`. |
+| `BYE` | text | Feature disabled or shutting down. |
+
+Receipt statuses include `GRANTED`, `DENIED_COOLDOWN`, `DENIED_TARGET`, and `DENIED_INTERNAL`; `RETRY` means the transaction did not complete (or was rate-limited) and the same request ID may be retried. The client ignores a receipt whose ID does not match its pending request. A matching receipt clears the pending intent; a subsequent `S` frame updates the rendered state. The outcome is never inferred from a post-write counter read.
+
+Protocol error codes include `BUSY`, `COOLDOWN`, `VERSION`, `DENIED`, `INTERNAL`, and `REQUEST`. `COOLDOWN` is retained for compatible server responses; v2 claim outcomes are normally carried by request-attributed `RCPT` receipts.
+
+## Reliability and concurrency
+
+The server serializes a character's claim transaction in InnoDB. It locks/updates the character counter, checks the target and database-server day, and inserts the immutable request receipt in the same transaction. Therefore:
+
+1. A repeated `(character GUID, request ID)` returns the same stored receipt and cannot increment twice.
+2. Distinct simultaneous requests compete against the same locked counter; the target cap and daily limit cannot be passed by a race.
+3. A failed transaction commits neither the counter change nor a receipt, so retrying with that request ID is safe.
+4. The receipt includes the result attributable to the request, not a later value read after another request may have committed.
+5. The addon persists a pending request ID in `VaultTerminalDB`; timeout, close, or reopen does not silently create a new intent.
+
+The request ledger is in `vault_terminal_claims_requests`; aggregate character state is in `vault_terminal_claims`. Both are Characters-database data and are retained during rollback to preserve progress and replay protection.
+
+## Rank ladder
 
 | Seals | Rank |
 |---|---|
@@ -68,79 +59,24 @@ check it:
 | 25–49 | `Keeper` |
 | 50+ | `Vaultmaster` |
 
-`BYE` is the answer of a server that is *configured off* (`VaultTerminal.Enable = 0`), not of one that
-is unreachable: it means "the feature is disabled, stop asking". The client shows the text and stops
-polling for the session. A message the server cannot parse (`HELLO` without a version, an empty
-opcode) is *not* answered with `INTERNAL` — `VERSION` for a missing version, silence for anything
-else that fails the grammar.
+The server derives rank and available claims. The addon only renders server frames; it never computes rewards, rank, or cooldown.
 
-## Rules
+## Conformance examples
 
-1. **The server is the only source of truth.** The client never computes `claimsLeft` or `rank`; it
-   renders what `S` said, and says so when it has heard nothing.
-2. **Unknown opcodes are ignored, silently.** Both sides must survive a peer that is one version ahead.
-   This is what makes the protocol upgradable without a client reinstall.
-3. **Version mismatch is refused, not guessed.** If `HELLO` carries a version the server does not
-   implement, it answers `ERR VERSION` and stops. The client shows "client out of date".
-4. **Actions are idempotent or explicitly refused.** `CLAIM` twice in one day yields `ERR COOLDOWN`;
-   the client must not treat that as a failure state.
-5. **Never request more than you need.** `STATE` is cheap; polling it every frame is abuse. The
-   reference client polls once on login and then on demand, never faster than every 5 seconds.
-6. **Degrade visibly.** No answer within 10 seconds → the panel shows `—` and "no server response",
-   and keeps working as a plain window. A blank panel looks like a bug; an honest `—` looks like a
-   server that is down, which is what it is.
+A snapshot (the response to `HELLO` or `STATE`) is 21 bytes in this example:
 
-## Conformance vectors
-
-Requesting:
-
-```
-VT1\tHELLO\t1\tdemo-1.0.0        (22 bytes)
-VT1\tSTATE                       (9 bytes)
-VT1\tCLAIM                       (9 bytes)
+```text
+VT1\tS\t12\t50\t1\tAdept\t1 (21 bytes)
 ```
 
-Answering:
+Full exchange, with `<TAB>` shown for readability:
 
-```
-VT1\tS\t12\t50\t1\tAdept\t1    (21 bytes)
-VT1\tOK\tseal claimed            (19 bytes)
-VT1\tERR\tCOOLDOWN\talready claimed today   (38 bytes)
-```
-
-The worst case is a full `S` line: `VT1\tS\t` + 3 × 10 digits + rank (≤16) + flag, comfortably under
-the 255-byte cap. Batching is unnecessary at this size; if your records grow, send several `S` messages
-with a sequence number rather than one long line.
-
-## Reference implementation
-
-`harness/vt_model.py` is the specification in executable form — one class, no dependencies:
-
-```python
-from vt_model import Session
-from datetime import date
-
-s = Session(today=date(2026, 11, 17), seals=12)
-s.handle("VT1\tHELLO\t1\tdemo-1.0.0")   # ['VT1\tS\t12\t50\t1\tAdept\t1']
-s.handle("VT1\tCLAIM")                    # ['VT1\tOK\tseal claimed', 'VT1\tS\t13\t50\t0\tAdept\t0']
-s.handle("VT1\tCLAIM")                    # ['VT1\tERR\tCOOLDOWN\talready claimed today']
-s.advance_to(date(2026, 11, 18))
-s.handle("VT1\tCLAIM")                    # allowed again
+```text
+client  VT1<TAB>HELLO<TAB>2<TAB>demo-1.0.0
+server  VT1<TAB>S<TAB>12<TAB>50<TAB>1<TAB>Adept<TAB>1
+client  VT1<TAB>CLAIM<TAB>20261117-1-1000
+server  VT1<TAB>RCPT<TAB>20261117-1-1000<TAB>GRANTED<TAB>13
+server  VT1<TAB>S<TAB>13<TAB>50<TAB>0<TAB>Adept<TAB>0
 ```
 
-It is not shipped to servers; the C++ module is. Its job is to make disagreement *testable*: the test
-suite replays this file's answers against the vectors above, fuzzes it with malformed input, moves its
-clock across midnight, and compares its constants (prefix, version, cap, rank ladder) with the addon's
-Lua, the module's C++ and this document. When the four disagree, the tests say which one is lying.
-
-## What this costs
-
-| Piece | Where it lives | Client patch |
-|---|---|---|
-| Panel, keybinds, formatting | addon folder (`Interface/AddOns/VaultTerminal`) | none — a folder, not an MPQ |
-| Truth (seals, cooldown, rank) | server module + character DB | none |
-| Channel availability | `AddonChannel = 1` in `worldserver.conf` | none |
-
-That is the entire cost: one folder, one module, one config line. The panel looks and behaves like part
-of the interface because, from the client's point of view, it is — addons are how the interface is
-built in the first place.
+The executable vectors and hostile-input/race/retry checks are in `harness/vt_model.py` and `tests/test_tier_master.py`. Run `python3 harness/vt_model.py` from the repository root to print the deterministic transcript.

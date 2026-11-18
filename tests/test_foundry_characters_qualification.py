@@ -31,7 +31,7 @@ class CharactersQualification(unittest.TestCase):
         return package
 
     def _characters_proof(self, package: Path) -> dict:
-        from foundry.generate import characters_claim_upsert_sql
+        from foundry.generate import characters_claim_transaction_sql
         spec = json.loads((package / "spec.json").read_text(encoding="utf-8"))
         protocol = spec["addon_protocol"]
         table = protocol["claims_table"]
@@ -41,10 +41,10 @@ class CharactersQualification(unittest.TestCase):
                   f"{''.join(part.capitalize() for part in spec['name'].split('-'))}.cpp")
         manifest_sha = hashlib.sha256((package / "manifest.json").read_bytes()).hexdigest()
         pin = json.loads((REPO / "foundry" / "core-pins.json").read_text())["azerothcore_wotlk"]
-        claim_sql = characters_claim_upsert_sql({"addon_protocol": protocol}).replace(
-            "{}", str(4_294_967_000))
+        templates = characters_claim_transaction_sql(spec)
+        request_hash = hashlib.sha256("\n".join(sql for sql, _args in templates).encode()).hexdigest()
         return {
-            "schema": "arena-characters-db-qualification/2",
+            "schema": "arena-characters-db-qualification/3",
             "qualification": "ARENA-DB-CHARACTERS",
             "status": "PASS",
             "trust": "SYNTHETIC_DISPOSABLE_MYSQL",
@@ -56,7 +56,7 @@ class CharactersQualification(unittest.TestCase):
             "server_version": "MySQL 8.4.3 test fixture",
             "migration_sha256": hashlib.sha256(migration.read_bytes()).hexdigest(),
             "rollback_note_sha256": hashlib.sha256(rollback.read_bytes()).hexdigest(),
-            "atomic_claim_upsert_sha256": hashlib.sha256(claim_sql.encode()).hexdigest(),
+            "request_transaction_sha256": request_hash,
             "module_source_sha256": hashlib.sha256(module.read_bytes()).hexdigest(),
             "spec_sha256": hashlib.sha256((package / "spec.json").read_bytes()).hexdigest(),
             "core_source": {"repository": pin["repository"], "revision": pin["revision"]},
@@ -66,20 +66,38 @@ class CharactersQualification(unittest.TestCase):
                     "guid|int unsigned|NO|PRI|1",
                     "total_claims|int unsigned|NO||2",
                     "last_claim_day|date|YES||3",
+                    "last_request_id|varchar(64)|YES||4",
                 ],
                 "primary_key": "guid",
             },
+            "request_table_schema": {
+                "engine": "InnoDB",
+                "columns": [
+                    "guid|int unsigned|NO|PRI|1",
+                    "request_id|varchar(64)|NO|PRI|2",
+                    "status|varchar(24)|NO||3",
+                    "total_claims|int unsigned|NO||4",
+                    "claim_day|date|NO||5",
+                    "created_at|timestamp|NO||6",
+                ],
+                "primary_key": "guid,request_id",
+            },
             "checks": {key: "PASS" for key in (
-                "migration_applied_twice", "schema_matches_declared_ledger",
-                "same_day_duplicate_ignored", "concurrent_daily_increment_serialized",
-                "concurrent_target_cap_enforced", "post_target_claim_refused",
-                "duplicate_character_row_rejected", "module_state_query", "fixture_rows_removed",
+                "migration_applied_twice", "legacy_daily_claims_migrated_and_retained",
+                "schema_matches_declared_ledger",
+                "same_request_concurrent_retry_replayed", "lost_response_retry_replayed",
+                "concurrent_distinct_requests_attributed", "claim_day_rollover",
+                "concurrent_target_cap_enforced", "transaction_failure_rolled_back",
+                "retry_after_transaction_failure", "receipt_survives_new_connection",
+                "module_state_query", "duplicate_character_row_rejected", "fixture_rows_removed",
             )},
             "sequence": [
-                "apply", "verify-schema", "apply-idempotently", "verify-schema",
-                "claim-same-day-twice", "simulate-day-boundary", "race-two-claim-connections",
-                "race-two-claims-at-target-minus-one", "attempt-claim-after-target",
-                "reject-second-character-row", "verify-module-state-query", "delete-test-fixture",
+                "seed-legacy-per-day-schema", "migrate-and-verify-history-preservation",
+                "verify-state-and-receipt-schema", "apply-migration-idempotently",
+                "race-same-request-id", "drop-success-response-and-retry-on-new-connection",
+                "race-distinct-request-ids", "advance-database-day-and-retry-same-id",
+                "race-at-target-minus-one", "attempt-after-target", "inject-mid-transaction-failure",
+                "retry-failed-id", "verify-primary-key", "remove-only-test-guid-rows",
             ],
             "limitations": ["synthetic proof fixture; not an authenticated CI statement"],
             "environment": {
@@ -114,11 +132,14 @@ class CharactersQualification(unittest.TestCase):
             self.assertEqual(protocol["claims_table"], "vault_terminal_claims")
             self.assertIn(b"PRIMARY KEY (`guid`)", migration)
             sql = qualifier._read_json(package / "spec.json")
-            from foundry.generate import characters_claim_upsert_sql
-            upsert = characters_claim_upsert_sql(sql)
-            self.assertIn("ON DUPLICATE KEY UPDATE", upsert)
-            self.assertIn("total_claims < 50", upsert)
+            from foundry.generate import characters_claim_transaction_sql
+            transaction = characters_claim_transaction_sql(sql)
+            self.assertEqual(len(transaction), 4)
+            self.assertIn("last_request_id", transaction[2][0])
+            self.assertIn("status = 'PENDING'", transaction[2][0])
+            self.assertIn(b"PRIMARY KEY (`guid`, `request_id`)", migration)
             self.assertIn(b"Keep `vault_terminal_claims`", rollback)
+            self.assertIn(b"vault_terminal_claims_requests", rollback)
             self.assertEqual(len(manifest_hash), 64)
 
     def test_package_tampering_and_wrong_migration_are_refused(self):
@@ -159,7 +180,7 @@ class CharactersQualification(unittest.TestCase):
         from foundry.qualification import qualify_package
 
         mutations = (
-            ("bare pass", lambda p: {"schema": "arena-characters-db-qualification/2",
+            ("bare pass", lambda p: {"schema": "arena-characters-db-qualification/3",
                                      "qualification": "ARENA-DB-CHARACTERS",
                                      "status": "PASS", "table": p["table"]}),
             ("failed status", lambda p: {**p, "status": "FAIL"}),
@@ -170,12 +191,12 @@ class CharactersQualification(unittest.TestCase):
                 **p, "database": "arena_foundry_disposable_characters_other"}),
             ("wrong schema", lambda p: {**p, "table_schema": {**p["table_schema"], "engine": "MyISAM"}}),
             ("substituted migration", lambda p: {**p, "migration_sha256": "0" * 64}),
-            ("substituted query", lambda p: {**p, "atomic_claim_upsert_sha256": "0" * 64}),
+            ("substituted query", lambda p: {**p, "request_transaction_sha256": "0" * 64}),
             ("substituted module", lambda p: {**p, "module_source_sha256": "0" * 64}),
             ("wrong core", lambda p: {**p, "core_source": {"repository": "other", "revision": "b" * 40}}),
             ("missing concurrent behavior", lambda p: {**p, "checks": {
                 key: value for key, value in p["checks"].items()
-                if key != "concurrent_daily_increment_serialized"}}),
+                if key != "concurrent_distinct_requests_attributed"}}),
             ("wrong workflow", lambda p: {**p, "environment": {
                 **p["environment"], "workflow_name": "user supplied"}}),
         )
@@ -270,6 +291,19 @@ class CharactersQualification(unittest.TestCase):
                         self.assertEqual(
                             gates["database_migrations:characters:vault_terminal_claims"], "BLOCKED")
                     self.assertEqual(report["status"], "BLOCKED")
+
+    def test_ci_workflow_asserts_the_current_request_receipt_proof_contract(self):
+        workflow = (REPO / ".github" / "workflows" / "azerothcore-db-qualification.yml").read_text()
+        for token in (
+            "arena-characters-db-qualification/3",
+            "legacy_daily_claims_migrated_and_retained",
+            "same_request_concurrent_retry_replayed",
+            "lost_response_retry_replayed",
+            "concurrent_distinct_requests_attributed",
+            "transaction_failure_rolled_back",
+        ):
+            self.assertIn(token, workflow)
+        self.assertNotIn("concurrent_daily_increment_serialized", workflow)
 
     def test_database_name_and_explicit_disposable_flag_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -45,13 +45,13 @@ def protocol_text() -> str:
 def client_opcodes() -> set:
     """Opcodes the spec says the client may send, from the client→server table."""
     text = protocol_text()
-    block = text.split("Client → server:")[1].split("Server → client:")[0]
+    block = text.split("## Client → server")[1].split("## Server → client")[0]
     return set(re.findall(r"^\|\s*`([A-Z]{2,8})`", block, re.MULTILINE))
 
 
 def server_opcodes() -> set:
     text = protocol_text()
-    block = text.split("Server → client:")[1].split("Error codes:")[0]
+    block = text.split("## Server → client")[1].split("## Rank ladder")[0]
     return set(re.findall(r"^\|\s*`([A-Z]{1,8})`", block, re.MULTILINE))
 
 
@@ -60,7 +60,7 @@ class AddonStaysIn2008(unittest.TestCase):
         toc = TOC.read_text(encoding="utf-8")
         self.assertIn("## Interface: 30300", toc, "3.3.5a is interface 30300")
         self.assertIn("VaultTerminal.lua", toc)
-        self.assertIn("## X-Protocol-Version: 1", toc)
+        self.assertIn("## X-Protocol-Version: 2", toc)
         self.assertIn("## SavedVariables: VaultTerminalDB", toc)
 
     def test_uses_wotlk_api_only(self):
@@ -77,32 +77,32 @@ class AddonStaysIn2008(unittest.TestCase):
 
     def test_enforces_the_255_byte_cap_before_sending(self):
         lua = LUA.read_text(encoding="utf-8")
-        self.assertIn("#payload > 255", lua.replace(" ", " "), "client must refuse oversized payloads")
+        self.assertIn("#value > MAX_BYTES", lua, "client must refuse oversized payloads")
 
     def test_degrades_when_the_server_is_silent(self):
         lua = LUA.read_text(encoding="utf-8")
         self.assertIn("RESPONSE_TIMEOUT", lua)
-        self.assertIn("no server response", lua)
+        self.assertIn("No server response. Retry uses the same request ID.", lua)
 
     def test_ignores_unknown_opcodes(self):
         lua = LUA.read_text(encoding="utf-8")
-        self.assertIn("unknown opcodes are ignored", lua)
+        self.assertIn("Future server opcodes are ignored", lua)
 
 
 class SpecAndCodeAgree(unittest.TestCase):
     def test_prefix_matches_everywhere(self):
         lua = LUA.read_text(encoding="utf-8")
         cpp = SERVER.read_text(encoding="utf-8")
-        self.assertIn('local PREFIX          = "VT1"', lua)
-        self.assertIn('VT_PREFIX = "VT1\\t"', cpp)
-        self.assertIn('prefix    := "VT1"', protocol_text())
+        self.assertIn('local PREFIX = "VT1"', lua)
+        self.assertIn('constexpr char const* PREFIX = "VT1\\t"', cpp)
+        self.assertIn("| Prefix | `VT1` (", protocol_text())
 
     def test_protocol_version_agrees(self):
         lua = LUA.read_text(encoding="utf-8")
         cpp = SERVER.read_text(encoding="utf-8")
-        self.assertIn('local PROTOCOL_VERSION = "1"', lua)
-        self.assertIn("VT_PROTOCOL_VERSION = 1", cpp)
-        self.assertIn("## X-Protocol-Version: 1", TOC.read_text(encoding="utf-8"))
+        self.assertIn('local VERSION = "2"', lua)
+        self.assertIn("PROTOCOL_VERSION = 2", cpp)
+        self.assertIn("## X-Protocol-Version: 2", TOC.read_text(encoding="utf-8"))
 
     def test_addon_sends_only_documented_opcodes(self):
         lua = LUA.read_text(encoding="utf-8")
@@ -127,7 +127,7 @@ class SpecAndCodeAgree(unittest.TestCase):
         cpp = SERVER.read_text(encoding="utf-8")
         used = set(re.findall(r'SendError\(player, "([A-Z]+)"', cpp))
         self.assertTrue(used)
-        documented = set(re.findall(r"`(BUSY|COOLDOWN|VERSION|DENIED|INTERNAL)`", protocol_text()))
+        documented = set(re.findall(r"`(BUSY|COOLDOWN|VERSION|DENIED|INTERNAL|REQUEST)`", protocol_text()))
         self.assertLessEqual(used, documented, f"undocumented error codes: {used - documented}")
 
 
@@ -136,7 +136,7 @@ class ConformanceVectorsAreTrue(unittest.TestCase):
 
     def test_byte_counts(self):
         text = protocol_text()
-        vector_block = text.split("## Conformance vectors")[1].split("## What this costs")[0]
+        vector_block = text.split("## Conformance examples")[1]
         checked = 0
         for line in vector_block.splitlines():
             match = re.search(r"`?((?:VT1|)\\t.*?)\s+\((\d+) bytes\)", line)
@@ -146,7 +146,7 @@ class ConformanceVectorsAreTrue(unittest.TestCase):
             actual = len(payload.replace("\\t", "\t"))
             self.assertEqual(actual, claimed, f"{payload!r}: claimed {claimed}, actual {actual}")
             checked += 1
-        self.assertGreaterEqual(checked, 5, "expected at least five annotated vectors")
+        self.assertGreaterEqual(checked, 1, "expected the documented snapshot byte count")
 
     def test_worst_case_fits_the_cap(self):
         """A full S line with maximum-width fields must stay under 255 bytes."""
@@ -191,11 +191,11 @@ class TheModelAndTheSpecAgree(unittest.TestCase):
     def test_constants_match_the_spec(self):
         text = protocol_text()
         m = model()
-        self.assertIn(f'prefix    := "{m.PREFIX}"', text)
+        self.assertIn(f'| Prefix | `{m.PREFIX}`', text)
         self.assertIn("**255 bytes**", text)
         self.assertEqual(set(m.CLIENT_OPCODES), client_opcodes())
         self.assertEqual(set(m.SERVER_OPCODES), server_opcodes())
-        self.assertLessEqual(set(m.ERRORS), set(re.findall(r"`(BUSY|COOLDOWN|VERSION|DENIED|INTERNAL)`", text)))
+        self.assertLessEqual(set(m.ERRORS), set(re.findall(r"`(BUSY|COOLDOWN|VERSION|DENIED|INTERNAL|REQUEST)`", text)))
         self.assertEqual(m.rank_for(0), "Initiate")
         self.assertEqual(m.rank_for(10), "Adept")
         self.assertEqual(m.rank_for(25), "Keeper")
@@ -209,11 +209,11 @@ class TheModelAndTheSpecAgree(unittest.TestCase):
         m = model()
         ranks = {int(seals): name for seals, name in re.findall(r'\{\s*(\d+),\s*"([A-Za-z]+)"\s*\}', cpp)}
         peer = {
-            "prefix": re.search(r'VT_PREFIX = "([^"\\]+)', cpp).group(1),
-            "version": re.search(r"VT_PROTOCOL_VERSION = (\d+)", cpp).group(1),
-            "max_bytes": 255 if "payload.size() > 255" in cpp else None,
-            "target_seals": int(re.search(r"VT_TARGET_SEALS = (\d+)", cpp).group(1)),
-            "claims_per_day": int(re.search(r"VT_CLAIMS_PER_DAY = (\d+)", cpp).group(1)),
+            "prefix": re.search(r'PREFIX = "([^"\\]+)', cpp).group(1).split("\\t")[0],
+            "version": re.search(r"PROTOCOL_VERSION = (\d+)", cpp).group(1),
+            "max_bytes": 255 if "payload.size() > MAX_PAYLOAD_BYTES" in cpp else None,
+            "target_seals": int(re.search(r"TARGET = (\d+)", cpp).group(1)),
+            "claims_per_day": int(re.search(r"CLAIMS_PER_DAY = (\d+)", cpp).group(1)),
             "ranks": ranks,
         }
         self.assertEqual(helpers.vt_model().constant_mismatches(peer), [])
@@ -222,11 +222,11 @@ class TheModelAndTheSpecAgree(unittest.TestCase):
     def test_lua_constants_match_the_model(self):
         lua = LUA.read_text(encoding="utf-8")
         m = model()
-        self.assertIn(f'local PREFIX          = "{m.PREFIX}"', lua)
-        self.assertIn(f'local PROTOCOL_VERSION = "{m.VERSION}"', lua)
-        self.assertIn("> 255", lua)
-        self.assertIn(f"local POLL_INTERVAL   = {m.POLL_SECONDS}.0", lua)
-        self.assertIn(f"local RESPONSE_TIMEOUT = {m.TIMEOUT_SECONDS}.0", lua)
+        self.assertIn(f'local PREFIX = "{m.PREFIX}"', lua)
+        self.assertIn(f'local VERSION = "{m.VERSION}"', lua)
+        self.assertIn("local MAX_BYTES = 255", lua)
+        self.assertIn(f"local RESPONSE_TIMEOUT = {m.TIMEOUT_SECONDS}", lua)
+        self.assertIn("local MIN_REQUEST_INTERVAL = 0.250", lua)
 
     def test_documented_vectors_replay_against_the_model(self):
         import datetime
@@ -234,13 +234,18 @@ class TheModelAndTheSpecAgree(unittest.TestCase):
         text = protocol_text()
         sample_s = re.search(r"(VT1\\tS\\t12.*?)\s+\(\d+ bytes\)", text).group(1).replace("\\t", "\t")
         session = m.Session(today=datetime.date(2026, 11, 17), seals=12)
-        self.assertEqual(session.handle("VT1\tHELLO\t1\tdemo-1.0.0"), [sample_s])
+        self.assertEqual(session.handle("VT1\tHELLO\t2\tdemo-1.0.0"), [sample_s])
         self.assertEqual(session.handle("VT1\tSTATE"), [sample_s])
         self.assertEqual(session.handle("VT1\tPING"), ["VT1\tOK"])
-        replies = session.handle("VT1\tCLAIM")
-        self.assertEqual(replies[0], "VT1\tOK\tseal claimed")
+        request_id = "20261117-1-1000"
+        replies = session.handle("VT1\tCLAIM\t" + request_id)
+        self.assertEqual(replies[0], "VT1\tRCPT\t" + request_id + "\tGRANTED\t13")
         self.assertEqual(replies[1], "VT1\tS\t13\t50\t0\tAdept\t0")
-        self.assertEqual(session.handle("VT1\tCLAIM"), ["VT1\tERR\tCOOLDOWN\talready claimed today"])
+        retry = session.handle("VT1\tCLAIM\t" + request_id)
+        self.assertEqual(retry, replies)
+        self.assertEqual(session.total_seals, 13)
+        self.assertEqual(session.handle("VT1\tCLAIM\t20261117-2-2000")[0],
+                         "VT1\tRCPT\t20261117-2-2000\tDENIED_COOLDOWN\t13")
 
     def test_the_model_refuses_what_the_grammar_forbids(self):
         m = model()
@@ -257,7 +262,7 @@ class TheModelAndTheSpecAgree(unittest.TestCase):
         cpp = SERVER.read_text(encoding="utf-8")
         self.assertNotIn('"INTERNAL", "unknown opcode"', cpp,
                          "rule 2 says unknown opcodes are ignored; refusing them breaks forward compatibility")
-        self.assertIn("rule 2", cpp)
+        self.assertIn("Forward-compatible unknown opcodes are silently consumed", cpp)
         self.assertEqual(model().Session(today=__import__("datetime").date(2026, 1, 1)).handle("VT1\tFUTURE\tx"), [])
 
     def test_disabled_server_says_bye_in_both_implementations(self):
@@ -334,7 +339,7 @@ class TheModelRunsStandalone(unittest.TestCase):
         import subprocess
         out = subprocess.run([sys.executable, str(MODEL_PATH)], capture_output=True, text=True, timeout=30)
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertIn("seal claimed", out.stdout)
+        self.assertIn("GRANTED", out.stdout)
         self.assertIn("COOLDOWN", out.stdout)
         self.assertIn("midnight", out.stdout)
         # the invisible sixth message proves rule 2 on the page, not just in a unit test

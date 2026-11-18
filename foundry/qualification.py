@@ -181,23 +181,22 @@ def _valid_database_attestation(attestations: Any, manifest_sha256: str,
 
 def _valid_characters_database_attestation(proof: Any, manifest_sha256: str,
                                            package: Path, table: str) -> bool:
-    """Validate one table-scoped Characters proof against this exact package.
+    """Bind one request-receipt qualification to package bytes and its table scope.
 
-    The result establishes semantic correspondence to disposable-MySQL checks,
-    not provenance authenticity. Callers must keep externally supplied records
-    labelled EXTERNAL_UNTRUSTED and must never use this result to bypass release
-    gates for server/client/runtime evidence.
+    Disposable MySQL behavior remains external/untrusted evidence. The exact
+    generated transaction templates and module source are checked so the proof
+    cannot promote behavior for a different request protocol or package.
     """
     expected_keys = {
         "schema", "qualification", "status", "trust", "package", "package_version",
         "manifest_sha256", "table", "database", "server_version", "migration_sha256",
-        "rollback_note_sha256", "atomic_claim_upsert_sha256", "module_source_sha256",
-        "spec_sha256", "core_source", "table_schema", "checks", "sequence", "limitations",
-        "environment",
+        "rollback_note_sha256", "request_transaction_sha256", "module_source_sha256",
+        "spec_sha256", "core_source", "table_schema", "request_table_schema", "checks",
+        "sequence", "limitations", "environment",
     }
     if not isinstance(proof, dict) or set(proof) != expected_keys:
         return False
-    if (proof.get("schema") != "arena-characters-db-qualification/2"
+    if (proof.get("schema") != "arena-characters-db-qualification/3"
             or proof.get("qualification") != "ARENA-DB-CHARACTERS"
             or proof.get("status") != "PASS"
             or proof.get("trust") != "SYNTHETIC_DISPOSABLE_MYSQL"
@@ -226,7 +225,7 @@ def _valid_characters_database_attestation(proof: Any, manifest_sha256: str,
         return False
 
     try:
-        from .generate import characters_claim_upsert_sql, characters_sql_files
+        from .generate import characters_claim_transaction_sql, characters_sql_files
         spec = _read_json(package / "spec.json")
         protocol = spec.get("addon_protocol")
         if (not isinstance(protocol, dict) or protocol.get("claims_table") != table
@@ -253,40 +252,56 @@ def _valid_characters_database_attestation(proof: Any, manifest_sha256: str,
         module_rel = (f"server/mod-{spec['name']}/src/"
                       f"{''.join(part.capitalize() for part in spec['name'].split('-'))}.cpp")
         module_hash = _sha256((package / module_rel).read_bytes())
-        test_guid = 4_294_967_000
-        claim_sql = characters_claim_upsert_sql({"addon_protocol": protocol}).replace(
-            "{}", str(test_guid))
+        transaction_templates = characters_claim_transaction_sql(spec)
+        transaction_hash = _sha256("\n".join(sql for sql, _args in transaction_templates).encode())
         expected_schema = {
             "engine": "InnoDB",
             "columns": [
                 "guid|int unsigned|NO|PRI|1",
                 "total_claims|int unsigned|NO||2",
                 "last_claim_day|date|YES||3",
+                "last_request_id|varchar(64)|YES||4",
             ],
             "primary_key": "guid",
+        }
+        expected_request_schema = {
+            "engine": "InnoDB",
+            "columns": [
+                "guid|int unsigned|NO|PRI|1",
+                "request_id|varchar(64)|NO|PRI|2",
+                "status|varchar(24)|NO||3",
+                "total_claims|int unsigned|NO||4",
+                "claim_day|date|NO||5",
+                "created_at|timestamp|NO||6",
+            ],
+            "primary_key": "guid,request_id",
         }
     except (OSError, ValueError, KeyError, TypeError):
         return False
 
     expected_checks = {
-        "migration_applied_twice", "schema_matches_declared_ledger",
-        "same_day_duplicate_ignored", "concurrent_daily_increment_serialized",
-        "concurrent_target_cap_enforced", "post_target_claim_refused",
-        "duplicate_character_row_rejected", "module_state_query", "fixture_rows_removed",
+        "migration_applied_twice", "legacy_daily_claims_migrated_and_retained",
+        "schema_matches_declared_ledger", "same_request_concurrent_retry_replayed", "lost_response_retry_replayed",
+        "concurrent_distinct_requests_attributed", "claim_day_rollover",
+        "concurrent_target_cap_enforced", "transaction_failure_rolled_back",
+        "retry_after_transaction_failure", "receipt_survives_new_connection",
+        "module_state_query", "duplicate_character_row_rejected", "fixture_rows_removed",
     }
     expected_sequence = [
-        "apply", "verify-schema", "apply-idempotently", "verify-schema",
-        "claim-same-day-twice", "simulate-day-boundary", "race-two-claim-connections",
-        "race-two-claims-at-target-minus-one", "attempt-claim-after-target",
-        "reject-second-character-row", "verify-module-state-query", "delete-test-fixture",
+        "seed-legacy-per-day-schema", "migrate-and-verify-history-preservation",
+        "verify-state-and-receipt-schema", "apply-migration-idempotently", "race-same-request-id", "drop-success-response-and-retry-on-new-connection",
+        "race-distinct-request-ids", "advance-database-day-and-retry-same-id",
+        "race-at-target-minus-one", "attempt-after-target", "inject-mid-transaction-failure",
+        "retry-failed-id", "verify-primary-key", "remove-only-test-guid-rows",
     ]
     return (
         proof.get("migration_sha256") == _sha256(migration_bytes)
         and proof.get("rollback_note_sha256") == _sha256(rollback_bytes)
-        and proof.get("atomic_claim_upsert_sha256") == _sha256(claim_sql.encode("utf-8"))
+        and proof.get("request_transaction_sha256") == transaction_hash
         and proof.get("module_source_sha256") == module_hash
         and proof.get("spec_sha256") == _sha256(spec_bytes)
         and proof.get("table_schema") == expected_schema
+        and proof.get("request_table_schema") == expected_request_schema
         and isinstance(proof.get("checks"), dict)
         and set(proof["checks"]) == expected_checks
         and all(value == "PASS" for value in proof["checks"].values())

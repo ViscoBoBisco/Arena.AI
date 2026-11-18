@@ -321,7 +321,7 @@ class VaultTerminalSurvivesHostileClients(unittest.TestCase):
     def test_fuzz_never_crashes_and_never_speaks_out_of_turn(self):
         import random
         rng = random.Random(20261117)
-        seeds = ["VT1\tHELLO\t1\tx", "VT1\tSTATE", "VT1\tCLAIM", "VT1\tPING",
+        seeds = ["VT1\tHELLO\t2\tx", "VT1\tSTATE", "VT1\tCLAIM\tseed-id", "VT1\tPING",
                  "VT1\tS\t12\t50\t1\tAdept\t1", "AzerothCore\tp\t1234\thelp"]
         alphabet = "VT1\\tHELLO STATESCLAIMPING xyz\t\n\r\x00héllo" + "0123456789ABC"
         session = self.session()
@@ -362,25 +362,113 @@ class VaultTerminalSurvivesHostileClients(unittest.TestCase):
         self.assertEqual(self.session().handle("VT1\tOK\t" + "x" * 249), [])   # 256: dropped
         self.assertEqual(self.session().handle("VT1\t" + "x" * 252), [])
 
-    def test_cooldown_resets_at_midnight_not_at_logout(self):
+    @staticmethod
+    def claim_frame(request_id):
+        return "VT1\tCLAIM\t" + request_id
+
+    def test_cooldown_resets_at_midnight_but_receipt_retry_does_not_reapply(self):
         import datetime
         session = self.session()
-        self.assertTrue(session.handle("VT1\tCLAIM")[0].startswith("VT1\tOK"))
+        first = session.handle(self.claim_frame("day-one"))
+        self.assertEqual(first[0], "VT1\tRCPT\tday-one\tGRANTED\t1")
         session.advance_to(datetime.date(2026, 11, 18))
-        self.assertTrue(session.handle("VT1\tCLAIM")[0].startswith("VT1\tOK"))
+        self.assertEqual(session.handle(self.claim_frame("day-one"))[0], first[0])
+        second = session.handle(self.claim_frame("day-two"))
+        self.assertEqual(second[0], "VT1\tRCPT\tday-two\tGRANTED\t2")
         self.assertEqual(session.total_seals, 2)
-        self.assertEqual(session.handle("VT1\tSTATE")[0].split("\t")[4], "0")   # claimsLeft
+        self.assertEqual(session.handle("VT1\tSTATE")[0].split("\t")[4], "0")
 
-    def test_a_client_cannot_claim_twice_by_reconnecting(self):
+    def test_same_request_retry_replays_its_receipt_without_another_increment(self):
         first = self.session(guid=7)
-        second = self.m.Session(today=self.today, store=first.store, guid=7)   # a second connection
-        self.assertTrue(first.handle("VT1\tCLAIM")[0].startswith("VT1\tOK"))
-        for connection in (second, first, second):
-            self.assertEqual(connection.handle("VT1\tCLAIM"),
-                             ["VT1\tERR\tCOOLDOWN\talready claimed today"])
+        request = self.claim_frame("retry-me")
+        response = first.handle(request)[0]
+        # The client disconnects after commit, then a new connection retries.
+        second = self.m.Session(today=self.today, store=first.store, guid=7)
+        self.assertEqual(second.handle(request)[0], response)
         self.assertEqual(first.total_seals, 1)
-        other = self.m.Session(today=self.today, store=first.store, guid=8)    # a different character
-        self.assertTrue(other.handle("VT1\tCLAIM")[0].startswith("VT1\tOK"))
+        self.assertEqual(second.handle(self.claim_frame("new-request"))[0],
+                         "VT1\tRCPT\tnew-request\tDENIED_COOLDOWN\t1")
+        other = self.m.Session(today=self.today, store=first.store, guid=8)
+        self.assertEqual(other.handle(self.claim_frame("other-guid"))[0],
+                         "VT1\tRCPT\tother-guid\tGRANTED\t1")
+
+    def test_barrier_controlled_distinct_request_race_has_one_attributed_grant(self):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        session = self.session(guid=21)
+        barrier = threading.Barrier(2)
+        def dispatch(request_id):
+            barrier.wait(timeout=2)
+            return session.handle(self.claim_frame(request_id))[0]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            replies = list(pool.map(dispatch, ("race-a", "race-b")))
+        parsed = [self.m.parse(reply)[1] for reply in replies]
+        self.assertEqual(sum(fields[1] == "GRANTED" for fields in parsed), 1)
+        self.assertEqual(sum(fields[1] == "DENIED_COOLDOWN" for fields in parsed), 1)
+        self.assertEqual({fields[0] for fields in parsed}, {"race-a", "race-b"})
+        self.assertEqual(session.total_seals, 1)
+
+    def test_barrier_controlled_same_request_retry_returns_same_receipt(self):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        session = self.session(guid=22)
+        barrier = threading.Barrier(2)
+        def dispatch():
+            barrier.wait(timeout=2)
+            return session.handle(self.claim_frame("same-id"))[0]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            replies = list(pool.map(lambda _n: dispatch(), range(2)))
+        self.assertEqual(replies, ["VT1\tRCPT\tsame-id\tGRANTED\t1"] * 2)
+        self.assertEqual(session.total_seals, 1)
+
+    def test_target_cap_is_serialized_with_competing_requests(self):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        session = self.session(guid=23, seals=49)
+        barrier = threading.Barrier(2)
+        def dispatch(request_id):
+            barrier.wait(timeout=2)
+            return session.handle(self.claim_frame(request_id))[0]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            replies = list(pool.map(dispatch, ("cap-a", "cap-b")))
+        statuses = sorted(self.m.parse(reply)[1][1] for reply in replies)
+        self.assertEqual(statuses, ["DENIED_TARGET", "GRANTED"])
+        self.assertEqual(session.total_seals, 50)
+        self.assertEqual(session.handle(self.claim_frame("cap-c"))[0],
+                         "VT1\tRCPT\tcap-c\tDENIED_TARGET\t50")
+
+    def test_database_failures_roll_back_state_and_allow_same_id_retry(self):
+        session = self.session(guid=24)
+        session.store.fail_after_update = True
+        request = self.claim_frame("db-retry")
+        self.assertEqual(session.handle(request)[0], "VT1\tRCPT\tdb-retry\tRETRY\t0")
+        self.assertEqual(session.total_seals, 0)
+        self.assertNotIn((24, "db-retry"), session.store.receipts)
+        self.assertEqual(session.handle(request)[0], "VT1\tRCPT\tdb-retry\tGRANTED\t1")
+        self.assertEqual(session.total_seals, 1)
+
+    def test_persisted_receipt_survives_session_restart_and_date_rollover(self):
+        import datetime
+        first = self.session(guid=25)
+        response = first.handle(self.claim_frame("durable-id"))[0]
+        # New Session represents a reconnected client/server process over durable storage.
+        restarted = self.m.Session(today=self.today, store=first.store, guid=25)
+        self.assertEqual(restarted.handle(self.claim_frame("durable-id"))[0], response)
+        restarted.advance_to(datetime.date(2026, 11, 18))
+        self.assertEqual(restarted.handle(self.claim_frame("durable-id"))[0], response)
+        self.assertEqual(restarted.total_seals, 1)
+        self.assertEqual(restarted.handle(self.claim_frame("next-day-id"))[0],
+                         "VT1\tRCPT\tnext-day-id\tGRANTED\t2")
+
+    def test_claim_requires_a_safe_explicit_request_id(self):
+        session = self.session()
+        for payload in ("VT1\tCLAIM", "VT1\tCLAIM\tbad\tid",
+                        "VT1\tCLAIM\t' OR 1=1 --"):
+            self.assertEqual(session.handle(payload)[0].split("\t")[2], "REQUEST")
+        self.assertEqual(session.total_seals, 0)
 
     def test_a_forged_state_frame_does_not_change_anything(self):
         session = self.session()
@@ -390,7 +478,7 @@ class VaultTerminalSurvivesHostileClients(unittest.TestCase):
 
     def test_disabled_server_still_speaks(self):
         session = self.session(disabled=True)
-        for payload in ("VT1\tHELLO\t1\tx", "VT1\tSTATE", "VT1\tCLAIM", "VT1\tPING"):
+        for payload in ("VT1\tHELLO\t2\tx", "VT1\tSTATE", "VT1\tCLAIM\tmaintenance-id", "VT1\tPING"):
             self.assertEqual(session.handle(payload), ["VT1\tBYE\tserver is under maintenance"])
         self.assertEqual(session.total_seals, 0)
 
@@ -406,7 +494,7 @@ class TheComparisonCanFail(unittest.TestCase):
             "ranks": {s: n for s, n in m.RANKS},
         }
         self.assertEqual(m.constant_mismatches(good), [])
-        for key, bad in (("prefix", "VT2"), ("version", "2"), ("max_bytes", 256),
+        for key, bad in (("prefix", "VT2"), ("version", "1"), ("max_bytes", 256),
                          ("ranks", {50: "Keeper", 25: "Adept", 10: "Initiate", 0: "Novice"})):
             problems = m.constant_mismatches({**good, key: bad})
             self.assertTrue(any(key in p for p in problems), f"{key}={bad!r} was not detected")

@@ -166,6 +166,19 @@ class NegativeTests(unittest.TestCase):
         result = validate(spec)
         self.assertEqual(result.verdicts["interaction"], "FAIL")
 
+    def test_counter_table_identifier_reserves_space_for_safe_migration_names(self):
+        spec = json.loads((helpers.REPO / "specs" / "vault-terminal.json").read_text())
+        table = "a" * 54
+        spec["addon_protocol"]["claims_table"] = table
+        spec["delivery"]["characters_sql_tables"] = [table]
+        accepted = validate(spec)
+        self.assertEqual(accepted.verdicts["interaction"], "PASS")
+
+        spec["addon_protocol"]["claims_table"] = table + "a"
+        spec["delivery"]["characters_sql_tables"] = [table + "a"]
+        rejected = validate(spec)
+        self.assertEqual(rejected.verdicts["interaction"], "FAIL")
+
     def test_too_few_acceptance_checks_fails(self):
         spec = copy.deepcopy(SPEC)
         spec["acceptance"] = spec["acceptance"][:1]
