@@ -125,6 +125,7 @@ Makefile                      `make check`, `make preflight CLIENT=… SERVER=�
 | [16 — Frontier Operations](docs/16-frontier-operations.md) | A bounded open-zone mission contract and synthetic state-machine prototype; no in-game integration claimed |
 | [17 — Vault Terminal client acceptance](docs/17-vault-terminal-client-acceptance.md) | Manual build-12340 client test plan; separates client evidence from Lua-shim, compile, and disposable-DB checks |
 | [18 — Local runtime handoff](docs/18-local-runtime-handoff.md) | Ordered, safe local-server/client qualification plan, evidence requirements, and explicit stop conditions |
+| [19 — Engineering handoff bundle](docs/19-engineering-handoff.md) | Reproducible, source-bound, non-installing handoff manifest, evidence matrix, and local-only acceptance checklist |
 
 ## Glossary
 

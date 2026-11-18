@@ -6,10 +6,13 @@ third-party packages. Imported by test_tier_*.py.
 
 from __future__ import annotations
 
+import atexit
 import json
+import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -20,6 +23,19 @@ MANIFEST = TOOLS / "manifest.py"
 CATALOG_TOOL = TOOLS / "catalog.py"
 CATALOG = REPO / "catalog" / "alterations.json"
 VAULT_TERMINAL = REPO / "examples" / "vault-terminal"
+_TEST_FIXTURE_ROOT = Path(tempfile.mkdtemp(prefix="arena-foundry-tests-"))
+atexit.register(shutil.rmtree, _TEST_FIXTURE_ROOT, ignore_errors=True)
+
+
+def foundry_spec_fixture(source: str, *, omit=()) -> Path:
+    """Write a clearly test-only spec variant for a supported emitter subset."""
+    original = REPO / "specs" / source
+    data = json.loads(original.read_text(encoding="utf-8"))
+    for key in omit:
+        data.pop(key, None)
+    output = _TEST_FIXTURE_ROOT / (original.stem + "-fixture.json")
+    output.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return output
 
 
 def dbc_bytes(field_count: int, rows, strings: bytes = b"\0", *,

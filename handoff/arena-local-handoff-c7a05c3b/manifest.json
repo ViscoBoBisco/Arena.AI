@@ -1,0 +1,33 @@
+{
+  "files": {
+    "CHECKLIST-client.md": {
+      "sha256": "128e0504d9cf9039fd0b5ce7444ec20f6201fe2777e6f99200ab1c622c0b77cf",
+      "size": 5855
+    },
+    "CHECKLIST-local-runtime.md": {
+      "sha256": "8c5f4978c429b2eb8969c92dbd1de5e7fb212a25b8408d35245b238ea85a36b0",
+      "size": 15706
+    },
+    "argent-foundation.json": {
+      "sha256": "a4558e7519807bddb4c9d1db8e7c9018d3565f5cb1d1304fc96b07a2132bf32e",
+      "size": 916
+    },
+    "handoff.json": {
+      "sha256": "cf83bb2d454e53c1ccd2eaddf6850078f41f28449f5b5a8557e58ca1a51725a6",
+      "size": 6929
+    },
+    "logs/foundry-verify.txt": {
+      "sha256": "91bbbc471b16dee58ac75fe2f5dcaa11e86c5a75e572a5178250a22dd99e6d51",
+      "size": 234
+    },
+    "logs/frost-fail-closed.txt": {
+      "sha256": "9c826f904cb4ad8685fa182aea7225ea1530ce9cf150e7fbfcd9f5b715638992",
+      "size": 2156
+    },
+    "logs/make-check.txt": {
+      "sha256": "8b6a43f3bc04682bf1b37681155f491d3d9b38ef8983df55e6fd8f55b9791ea5",
+      "size": 44730
+    }
+  },
+  "schema": "arena-local-handoff-manifest/1"
+}

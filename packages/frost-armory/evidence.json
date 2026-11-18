@@ -153,7 +153,7 @@
   },
   "evidence_levels": {
     "ARENA-COMPILE": "PASS; pinned-core qualification record: https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44201459186/job/134456328585",
-    "ARENA-DB": "pending (requires disposable compatible database)",
+    "ARENA-DB": "NOT_ASSESSED; current migration has no ownership-safe rollback cycle",
     "ARENA-PACK": "bundle assembled; run foundry verify before claiming integrity qualification",
     "ARENA-STATIC": "spec validation executed; see per-check verdicts above",
     "ARENA-SYNTHETIC": "NOT_ASSESSED by package build; run repository tests separately",
@@ -166,8 +166,8 @@
     "cpp_module": "registration skeleton; compiled against the pinned core, not feature-complete",
     "dbc_delta": "narrow Item.dbc delta only when explicitly requested; no MPQ assembly",
     "recipes": "descriptive dependency comments; no executable profession recipe",
-    "rollback": "generated; rollback not DB-qualified",
-    "sql_migrations": "generated; schema/application not DB-qualified"
+    "rollback": "automatic world rollback deliberately refuses because durable row ownership is not tracked",
+    "sql_migrations": "plain INSERT statements; pre-existing row collisions fail without deleting or overwriting data; rerun is unsupported"
   },
   "lifecycle": {
     "installable": false,

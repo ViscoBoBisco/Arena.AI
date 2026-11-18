@@ -17,6 +17,7 @@ from foundry.spec import allocate_ids, validate_spec  # noqa: E402
 
 SPEC = json.loads((helpers.REPO / "specs" / "frost-armory.json").read_text(encoding="utf-8"))
 FOUNDRY = helpers.REPO / "tools" / "foundry.py"
+SUPPORTED_SPEC = helpers.foundry_spec_fixture("frost-armory.json", omit=("recipes",))
 
 
 class Allocation(unittest.TestCase):
@@ -77,7 +78,7 @@ class BaselineCli(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             baseline = Path(tmp) / "baseline.json"
             baseline.write_text(json.dumps({"schema": "wrong", "reserved_ids": {}}))
-            result = helpers.run_tool(FOUNDRY, "plan", helpers.REPO / "specs/frost-armory.json",
+            result = helpers.run_tool(FOUNDRY, "plan", SUPPORTED_SPEC,
                                       "--baseline", baseline)
             self.assertEqual(result.returncode, 2)
             self.assertIn("arena-id-baseline/1", result.stderr)
@@ -89,7 +90,7 @@ class BaselineCli(unittest.TestCase):
                 "schema": "arena-id-baseline/1",
                 "reserved_ids": {"item_template": [901000, 901001]},
             }))
-            result = helpers.run_tool(FOUNDRY, "plan", helpers.REPO / "specs/frost-armory.json",
+            result = helpers.run_tool(FOUNDRY, "plan", SUPPORTED_SPEC,
                                       "--baseline", baseline)
             self.assertEqual(result.returncode, 0, result.stderr)
             plan = json.loads(result.stdout)
@@ -121,7 +122,7 @@ class BaselineCli(unittest.TestCase):
                 "reserved_ids": {"item_template": [901000]},
             }))
             out = Path(tmp) / "out"
-            result = helpers.run_tool(FOUNDRY, "build", helpers.REPO / "specs/frost-armory.json",
+            result = helpers.run_tool(FOUNDRY, "build", SUPPORTED_SPEC,
                                       "--baseline", baseline, "--out", out, "--allow-unverified")
             self.assertEqual(result.returncode, 0, result.stderr)
             allocation = json.loads((out / "id-allocation.json").read_text())

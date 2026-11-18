@@ -67,8 +67,8 @@
   },
   "files": {
     "README.md": {
-      "sha256": "26e75326a6bcad2db2db8b328a0ec3ec25a369b3da70767c1396ea530d212298",
-      "size": 2414
+      "sha256": "2256f08bec65c9225d081651b6a58afe6479529ae3e2a3f03b92564211c0dd9b",
+      "size": 2736
     },
     "addon/FrostArmory/FrostArmory.lua": {
       "sha256": "13162b043225c320f2b4c630a139932f9dccec0ceab9333090e736e55cf882ca",
@@ -115,12 +115,12 @@
       "size": 5649
     },
     "sql/01_world.sql": {
-      "sha256": "0eb48c29d9688f5634ddad803cde5f2c8cca1f547780a35f0edbd80cfe872ef7",
-      "size": 4209
+      "sha256": "09f72b0b015ad711e01bf895cc0fdd567cd4197e281aa77480f683657fcf435f",
+      "size": 3647
     },
     "sql/99_rollback.sql": {
-      "sha256": "15c05058cbb60d3289aae852e6e0f58acee0630d8d69ea578e6a90085a98ec74",
-      "size": 849
+      "sha256": "60ac19c043cdbc5f2310164c8824076dcc66c785561ced563af82303edc450f5",
+      "size": 347
     }
   },
   "id_baseline_sha256": "a7830c7e18af09980141e9ac392ff1859640264acc4a835866ff8c0b8a3b222f",
@@ -130,8 +130,8 @@
       "size": 263
     },
     "evidence.json": {
-      "sha256": "a8fcf2b4947963a475c56bed9a5e2473ebe34e1b90c7774a9dc4e25b6c4f0145",
-      "size": 9198
+      "sha256": "82ad5ffaa6f71810adf221dbc9decd0a35401a72075b565ea54dd72e059af894",
+      "size": 9341
     }
   },
   "package_version": "1.0.0",

@@ -1,0 +1,161 @@
+{
+  "asset_provenance": {
+    "local_dbc_supplied": false,
+    "proprietary_client_data_copied": false,
+    "stock_faction_reputation": {
+      "status": "UNRESOLVED",
+      "table": "Faction.dbc",
+      "value": null
+    },
+    "stock_hostility_template": {
+      "status": "UNRESOLVED",
+      "table": "FactionTemplate.dbc",
+      "value": null
+    }
+  },
+  "bundle_files": {
+    "CHECKLIST-client.md": {
+      "sha256": "128e0504d9cf9039fd0b5ce7444ec20f6201fe2777e6f99200ab1c622c0b77cf",
+      "size": 5855,
+      "source": "docs/17-vault-terminal-client-acceptance.md"
+    },
+    "CHECKLIST-local-runtime.md": {
+      "sha256": "8c5f4978c429b2eb8969c92dbd1de5e7fb212a25b8408d35245b238ea85a36b0",
+      "size": 15706,
+      "source": "docs/18-local-runtime-handoff.md"
+    },
+    "argent-foundation.json": {
+      "sha256": "a4558e7519807bddb4c9d1db8e7c9018d3565f5cb1d1304fc96b07a2132bf32e",
+      "size": 916,
+      "source": "designs/argent-faction-operations-foundation.json"
+    }
+  },
+  "checks": [
+    {
+      "command": [
+        "make",
+        "check"
+      ],
+      "exit": 0,
+      "expected_exit": 0,
+      "log": "logs/make-check.txt",
+      "log_sha256": "8b6a43f3bc04682bf1b37681155f491d3d9b38ef8983df55e6fd8f55b9791ea5",
+      "name": "make-check",
+      "status": "PASS"
+    },
+    {
+      "command": [
+        "/usr/bin/python",
+        "tools/foundry.py",
+        "verify",
+        "packages/frost-armory"
+      ],
+      "exit": 0,
+      "expected_exit": 0,
+      "log": "logs/foundry-verify.txt",
+      "log_sha256": "91bbbc471b16dee58ac75fe2f5dcaa11e86c5a75e572a5178250a22dd99e6d51",
+      "name": "foundry-verify",
+      "status": "PASS"
+    },
+    {
+      "command": [
+        "/usr/bin/python",
+        "tools/foundry.py",
+        "validate",
+        "specs/frost-armory.json",
+        "--allow-unverified"
+      ],
+      "exit": 1,
+      "expected_exit": 1,
+      "log": "logs/frost-fail-closed.txt",
+      "log_sha256": "9c826f904cb4ad8685fa182aea7225ea1530ce9cf150e7fbfcd9f5b715638992",
+      "name": "frost-fail-closed",
+      "status": "PASS"
+    }
+  ],
+  "evidence_matrix": {
+    "ARENA-COMPILE": "pinned targeted compile record applies only to exact hashed module sources; full build NOT_ASSESSED",
+    "ARENA-DB": "NOT_ASSESSED; World ownership-safe apply/rollback is deliberately blocked",
+    "ARENA-PACK": "PASS",
+    "ARENA-STATIC": "PASS",
+    "CAMPAIGN-PARTY": "NOT_ASSESSED",
+    "CLIENT-12340": "NOT_ASSESSED",
+    "FACTION-OPERATIONS": "DESIGN_ONLY_NOT_PLAYABLE; stock IDs unresolved",
+    "PLAYERBOT": "NOT_ASSESSED",
+    "SERVER-BOOT": "NOT_ASSESSED"
+  },
+  "generated_utc": "2026-11-18T20:26:44Z",
+  "ownership_ledger": {
+    "automatic_rollback": "REFUSED",
+    "production_writes": "NONE",
+    "schema": "arena-world-row-ownership/0",
+    "status": "NO_DURABLE_WORLD_ROW_OWNERSHIP_TRACKING",
+    "tracked_world_rows": []
+  },
+  "safety": {
+    "client_data_included": false,
+    "credentials_included": false,
+    "database_modified": false,
+    "installable": false,
+    "release_authorized": false
+  },
+  "schema": "arena-local-handoff/1",
+  "source": {
+    "branch": "arena/c7a05c3b-arena-ai",
+    "changed_source_sha256": {
+      "designs/argent-faction-operations-foundation.json": "a4558e7519807bddb4c9d1db8e7c9018d3565f5cb1d1304fc96b07a2132bf32e",
+      "docs/12-content-foundry.md": "e97a2b8e7d98e4ebcc257dc7da912b2da92d515aa0b6296abcba77cd68129e84",
+      "docs/18-local-runtime-handoff.md": "8c5f4978c429b2eb8969c92dbd1de5e7fb212a25b8408d35245b238ea85a36b0",
+      "docs/19-engineering-handoff.md": "5d5ef0ee48a696b3a19b9bd8682d3ad85dda943d13e16105e140ebf4bbe5602e",
+      "foundry/db_qualification.py": "d61721a38dc54f953e9fc1c46a98a5b299c58dcc82412d231cd4ae1a9a51454c",
+      "foundry/faction_ops.py": "3edf6499e59905221a91fa3c1de043392962202c86370c6bca3192fa183f0002",
+      "foundry/generate.py": "978eb9a79bd3947c9aac334644798f61959992b690379a633f377f4cb343f47b",
+      "foundry/package.py": "3589770f7797e2665a0082224fefdeeb0f7f776c0f189a9a9ed8c033cd9b0569",
+      "foundry/spec.py": "553c97a0af46221fcaea1257967e4bc2f8c166738fead78e51fd46052d1fe1e8",
+      "packages/frost-armory/README.md": "2256f08bec65c9225d081651b6a58afe6479529ae3e2a3f03b92564211c0dd9b",
+      "packages/frost-armory/evidence.json": "82ad5ffaa6f71810adf221dbc9decd0a35401a72075b565ea54dd72e059af894",
+      "packages/frost-armory/manifest.json": "d203e24b1fc548ad04bc69f174a93e5eded6f12c36df959ddf75b09ad2fe89ab",
+      "packages/frost-armory/sql/01_world.sql": "09f72b0b015ad711e01bf895cc0fdd567cd4197e281aa77480f683657fcf435f",
+      "packages/frost-armory/sql/99_rollback.sql": "60ac19c043cdbc5f2310164c8824076dcc66c785561ced563af82303edc450f5",
+      "tests/helpers.py": "c67ef6080767597c124ca6dbb5a0692cd115493549f019bfbdf12d8baf1426cc",
+      "tests/test_faction_ops_foundation.py": "5d1cad75aab5e1a2bfb4aeb115cf9ede1c3519bda28b25cd8777dd5050c941d9",
+      "tests/test_foundry_assets_package.py": "2f8555b9f37806fbd5dec1a0da9e0129e5a27abb2f5926308c5549196568a7a5",
+      "tests/test_foundry_db_qualification.py": "027be2773e33a5ad812344bc4498de386c78c96fb502cbdfda8d4924f6b6c4f1",
+      "tests/test_foundry_generate.py": "5a510b5ce5441ef532b453cc830daad411b338cb468db5eabc9909ff0d99ee75",
+      "tests/test_foundry_ids.py": "603088cc22205aae07d9c0aa66f71fd40045c08f27762080eb836df1da35937e",
+      "tests/test_foundry_lifecycle.py": "ec9cad6b1f8dedfd68a6925d16c46846d35cc92aecf321b14cd4fb5c0510cecf",
+      "tests/test_foundry_spec.py": "64defa80d6c3a96b4a4343fee99144f5ce515843a9cd072abe68e9a13945df55",
+      "tools/build_local_handoff.py": "a7ce3ed6c47a851d175cec963a994684aab6de1fe7fa8cea31c0e71cf61191a4"
+    },
+    "git_diff_head_sha256": "eeac5866fdb7d828537f3e6a35a7b58b65f402a184a0bbb65c8cc868a6d33d36",
+    "head": "54eceff33cea667af845ff3235ee1d75471704a3",
+    "repository": "ViscoBoBisco/Arena.AI",
+    "status_porcelain": [
+      "M README.md",
+      " M docs/12-content-foundry.md",
+      " M docs/18-local-runtime-handoff.md",
+      " M foundry/db_qualification.py",
+      " M foundry/generate.py",
+      " M foundry/package.py",
+      " M foundry/spec.py",
+      " M packages/frost-armory/README.md",
+      " M packages/frost-armory/evidence.json",
+      " M packages/frost-armory/manifest.json",
+      " M packages/frost-armory/sql/01_world.sql",
+      " M packages/frost-armory/sql/99_rollback.sql",
+      " M tests/helpers.py",
+      " M tests/test_foundry_assets_package.py",
+      " M tests/test_foundry_db_qualification.py",
+      " M tests/test_foundry_generate.py",
+      " M tests/test_foundry_ids.py",
+      " M tests/test_foundry_lifecycle.py",
+      " M tests/test_foundry_spec.py",
+      "?? designs/argent-faction-operations-foundation.json",
+      "?? docs/19-engineering-handoff.md",
+      "?? foundry/faction_ops.py",
+      "?? tests/test_faction_ops_foundation.py",
+      "?? tools/build_local_handoff.py"
+    ],
+    "worktree_status": "DIRTY"
+  }
+}

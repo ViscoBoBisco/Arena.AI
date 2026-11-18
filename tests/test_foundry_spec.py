@@ -75,8 +75,10 @@ class TheGateIsFailClosed(unittest.TestCase):
                     ref["verified"] = True  # claim alone is ignored; evidence is checked
                     ref["evidence"] = asset_index[asset_kind][str(ref["value"])]["evidence"]
             result = validate(spec, asset_index=asset_index)
-            self.assertTrue(result.ok, result.to_dict())
             self.assertEqual(result.verdicts["asset-verification"], "PASS")
+            # Local DBC evidence validates provenance only; it cannot turn the
+            # descriptive recipe into an emitted/installable crafting feature.
+            self.assertEqual(result.verdicts.get("emitter-coverage"), "FAIL")
 
     def test_wrong_hash_and_stale_dbc_are_rejected_even_with_allowance(self):
         import tempfile
@@ -135,6 +137,25 @@ class NegativeTests(unittest.TestCase):
         spec["invented"] = 1
         result = validate(spec, allow_unverified=True)
         self.assertEqual(result.verdicts["schema"], "FAIL")
+
+    def test_declared_kinds_without_concrete_emitters_fail_closed(self):
+        for field, entry in (("gameobjects", {"key": "door", "name": "Door"}),
+                             ("recipes", {"key": "recipe", "result_key": "frostbrand-blade",
+                                           "ingredients": []})):
+            spec = copy.deepcopy(SPEC)
+            spec[field] = [entry]
+            result = validate(spec, allow_unverified=True)
+            self.assertEqual(result.verdicts.get("emitter-coverage"), "FAIL", field)
+
+    def test_unsupported_spell_dbc_and_table_contracts_fail_closed(self):
+        spec = copy.deepcopy(SPEC)
+        spec["spells"][0]["dbc_row"] = True
+        self.assertEqual(validate(spec, allow_unverified=True).verdicts.get("emitter-coverage"), "FAIL")
+        spec = copy.deepcopy(SPEC)
+        spec["delivery"] = {"client_dbc_tables": ["Spell.dbc"],
+                            "server_dbc_tables": ["Spell.dbc"],
+                            "characters_sql_tables": []}
+        self.assertEqual(validate(spec, allow_unverified=True).verdicts.get("emitter-coverage"), "FAIL")
 
     def test_dangling_reference_fails(self):
         spec = copy.deepcopy(SPEC)

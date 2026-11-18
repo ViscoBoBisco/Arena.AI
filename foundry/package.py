@@ -2,8 +2,8 @@
 
 Bundle layout (all paths relative to the bundle root):
   spec.json            the exact spec bytes the package was built from
-  sql/01_world.sql     idempotent world migration
-  sql/99_rollback.sql  exact rollback
+  sql/01_world.sql     collision-failing world migration
+  sql/99_rollback.sql  guarded refusal until row ownership is tracked
   dbc/<table>.delta.json  DBC delta (only when the spec needs dbc rows)
   server/...           generated C++ module (when the spec declares one)
   addon/...            generated addon (when the spec declares one)
@@ -370,7 +370,10 @@ def _readme(spec: dict, result: ValidationResult,
         install_commands.append("# No install-time database or runtime artifacts are declared.")
     rollback_commands = []
     if has_world_content:
-        rollback_commands.append("mysql -u acore -p acore_world < sql/99_rollback.sql")
+        rollback_commands.append(
+            "# World SQL rollback is intentionally refused: generated rows have no durable ownership ledger.")
+        rollback_commands.append(
+            "# Preserve the world rows; manual cleanup requires independently proven ownership and review.")
     if isinstance(protocol, dict):
         rollback_commands.extend((
             "# Disable the module, stop worldserver, then remove its module and addon folders.",
@@ -399,7 +402,7 @@ def _readme(spec: dict, result: ValidationResult,
         "id-baseline.json     reserved IDs used for conflict-aware allocation",
         "id-allocation.json   deterministic table/key -> ID assignment",
         "sql/01_world.sql     generated world migration (when world objects are declared)",
-        "sql/99_rollback.sql  generated world rollback (when world objects are declared)",
+        "sql/99_rollback.sql  guarded refusal; no automatic world rollback without ownership proof",
         "sql/characters/     characters-DB migrations; retained state is not dropped on rollback",
         "server/             generated AzerothCore module sources, loader, and config (when declared)",
         "addon/              generated Interface 30300 addon (when declared)",

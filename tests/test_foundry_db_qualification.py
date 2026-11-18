@@ -88,68 +88,28 @@ class DatabaseQualification(unittest.TestCase):
         self.assertIn("quest_template (Id, LogTitle, ObjectiveText1, VerifiedBuild)", sql)
         self.assertNotIn("quest_template (Id, Title, Objectives", sql)
 
-    def test_apply_idempotence_rollback_and_reapply_produce_bound_attestation(self):
-        database = MemoryDatabase()
-        attestations = qualify_database(PACKAGE, "arena_foundry_disposable_test", database)
-        self.assertEqual(database.migration_count, 3)
-        self.assertEqual(database.rollback_count, 2)
-        self.assertEqual(database.rows, set())
-        proof = attestations["database_qualification"]
-        manifest = json.loads((PACKAGE / "manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual(proof["checked_rows"], len(database.expected))
-        self.assertGreater(proof["checked_values"], 0)
-        self.assertEqual(len(proof["semantic_sha256"]), 64)
-        self.assertEqual(proof["schema"], "arena-db-qualification/2")
-        self.assertEqual(proof["manifest_sha256"], hashlib.sha256(
-            (PACKAGE / "manifest.json").read_bytes()).hexdigest())
-        self.assertEqual(attestations["subject"]["manifest_sha256"],
-                         proof["manifest_sha256"])
-        self.assertEqual(attestations["levels"]["ARENA-DB"]["status"], "PASS")
-        self.assertEqual(manifest["spec"], "frost-armory")
+    def test_world_apply_qualification_refuses_without_ownership_ledger(self):
+        calls = []
+        with self.assertRaisesRegex(ValueError, "no durable world-row ownership ledger"):
+            qualify_database(PACKAGE, "arena_foundry_disposable_test",
+                             lambda sql: calls.append(sql) or "")
+        self.assertEqual(calls, [], "refusal must occur before any DB query or write")
 
-    def test_db_proof_is_semantically_bound_to_package_and_schema_pin(self):
-        # The in-memory runner only tests proof validation structure; it is not DB evidence.
-        attestations = qualify_database(
-            PACKAGE, "arena_foundry_disposable_test", MemoryDatabase())
-        manifest_sha = integrity_check(PACKAGE)["manifest_sha256"]
-        pin = json.loads((helpers.REPO / "foundry/core-pins.json").read_text())[
-            "azerothcore_wotlk"]
-        proof = attestations["database_qualification"]
-        proof["schema_source"] = {
-            "schema": "arena-db-schema-source/1",
-            "repository": pin["repository"],
-            "revision": pin["revision"],
-            "tables": {
-                f"data/sql/base/db_world/{table}.sql": "a" * 64
-                for table in ("creature_template", "creature_template_model", "game_event",
-                              "item_template", "npc_vendor", "quest_template", "spell_dbc")
-            },
-        }
-        proof_bytes = (json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n").encode()
-        attestations["levels"]["ARENA-DB"]["evidence"] = (
-            "sha256:" + hashlib.sha256(proof_bytes).hexdigest())
-        self.assertTrue(_valid_database_attestation(attestations, manifest_sha, PACKAGE))
-
-        proof["migration_sha256"] = "0" * 64
-        proof_bytes = (json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n").encode()
-        attestations["levels"]["ARENA-DB"]["evidence"] = (
-            "sha256:" + hashlib.sha256(proof_bytes).hexdigest())
-        self.assertFalse(_valid_database_attestation(attestations, manifest_sha, PACKAGE))
-
-    def test_refuses_collisions_and_unsafe_database_names_before_writes(self):
+    def test_collision_and_partial_rollback_paths_are_not_attempted_without_ownership(self):
         database = MemoryDatabase()
         database.rows.update(database.expected)
-        with self.assertRaisesRegex(RuntimeError, "expected 0, found 1"):
+        with self.assertRaisesRegex(ValueError, "no durable world-row ownership ledger"):
             qualify_database(PACKAGE, "arena_foundry_disposable_test", database)
         self.assertEqual(database.migration_count, 0)
         self.assertEqual(database.rollback_count, 0)
 
+    def test_non_disposable_database_name_is_rejected_before_runner(self):
         calls = []
         with self.assertRaisesRegex(ValueError, "disposable_ prefix"):
             qualify_database(PACKAGE, "production_world", lambda sql: calls.append(sql) or "")
         self.assertEqual(calls, [])
 
-    def test_rehashed_sql_value_drift_is_rejected_against_the_spec(self):
+    def test_rehashed_sql_value_drift_does_not_bypass_rollback_refusal(self):
         import shutil
         import tempfile
 
@@ -158,7 +118,7 @@ class DatabaseQualification(unittest.TestCase):
             shutil.copytree(PACKAGE, package)
             sql_path = package / "sql/01_world.sql"
             changed = sql_path.read_text(encoding="utf-8").replace(
-                "Prove the Cold", "Forged quest title")
+                "Frostbrand Blade", "Forged item name")
             self.assertNotEqual(changed, sql_path.read_text(encoding="utf-8"))
             sql_path.write_text(changed, encoding="utf-8")
             manifest_path = package / "manifest.json"
@@ -168,24 +128,9 @@ class DatabaseQualification(unittest.TestCase):
                 "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
             manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n",
                                      encoding="utf-8")
-            database = MemoryDatabase()
-            with self.assertRaisesRegex(ValueError, "do not match the spec-derived SQL"):
-                qualify_database(package, "arena_foundry_disposable_test", database)
-            self.assertEqual(database.migration_count, 0)
-
-    def test_column_value_mismatch_fails_and_rolls_back(self):
-        database = MemoryDatabase(wrong_semantic_column="logtitle")
-        with self.assertRaisesRegex(RuntimeError, "database semantic row mismatch"):
-            qualify_database(PACKAGE, "arena_foundry_disposable_test", database)
-        self.assertEqual(database.rollback_count, 1)
-        self.assertEqual(database.rows, set())
-
-    def test_failed_partial_apply_attempts_cleanup_and_emits_no_attestation(self):
-        database = MemoryDatabase(fail_first_migration=True)
-        with self.assertRaisesRegex(RuntimeError, "injected migration interruption"):
-            qualify_database(PACKAGE, "arena_foundry_disposable_test", database)
-        self.assertEqual(database.rollback_count, 1)
-        self.assertEqual(database.rows, set())
+            with self.assertRaisesRegex(ValueError, "no durable world-row ownership ledger"):
+                qualify_database(package, "arena_foundry_disposable_test",
+                                 lambda sql: self.fail("guard must refuse before DB access"))
 
     def test_attestation_write_is_atomic_and_never_overwrites(self):
         import tempfile
