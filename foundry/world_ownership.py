@@ -304,15 +304,16 @@ def _owned_world_operation(connection, *, migration: str, package_name: str,
     get_autocommit = getattr(connection, "get_autocommit", None)
     if callable(get_autocommit) and not get_autocommit():
         raise OwnershipError("connection autocommit must be enabled; the service starts its own transaction")
+    server_status = getattr(connection, "server_status", None)
+    if not isinstance(server_status, int):
+        raise OwnershipError("MySQL connector must expose protocol server_status for transaction safety")
+    # MySQL protocol SERVER_STATUS_IN_TRANS is bit 0 (value 1). Checking the
+    # connection state avoids a probe query that itself could begin a transaction.
+    if server_status & 1:
+        raise OwnershipError("connection must be idle; refusing to commit caller-owned transaction state")
     cursor = connection.cursor()
     transaction_started = False
     try:
-        cursor.execute("SELECT @@in_transaction")
-        transaction_state = cursor.fetchone()
-        in_transaction = transaction_state[0] if transaction_state and not isinstance(transaction_state, dict) else (
-            next(iter(transaction_state.values())) if transaction_state else None)
-        if in_transaction not in (0, False):
-            raise OwnershipError("connection must be idle; refusing to commit caller-owned transaction state")
         cursor.execute("SELECT DATABASE()")
         selected = cursor.fetchone()
         database = selected[0] if selected and not isinstance(selected, dict) else (
