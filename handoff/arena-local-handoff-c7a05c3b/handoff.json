@@ -39,7 +39,7 @@
       "exit": 0,
       "expected_exit": 0,
       "log": "logs/make-check.txt",
-      "log_sha256": "a00ee84a55df5b8141d649555c3db795607c35ce419a1a1e94cd49e702589cd0",
+      "log_sha256": "26488537f19a3ee511652a9912d9553dfed5dd001839a88f5344b5e8d7ce6394",
       "name": "make-check",
       "status": "PASS"
     },
@@ -84,7 +84,7 @@
     "PLAYERBOT": "NOT_ASSESSED",
     "SERVER-BOOT": "NOT_ASSESSED"
   },
-  "generated_utc": "2026-11-18T20:40:00Z",
+  "generated_utc": "2026-11-18T20:42:42Z",
   "ownership_ledger": {
     "automatic_rollback": "REFUSED",
     "production_writes": "NONE",
@@ -103,8 +103,8 @@
   "source": {
     "branch": "arena/c7a05c3b-arena-ai",
     "changed_source_sha256": {},
-    "git_diff_head_sha256": "8ddc06f120858c3acd85f6942cf0fd832625472a5f3dc0e1bcd11c26409cb8a1",
-    "head": "15138a7c77af7b9b664acfe946ee1f6dadbd8318",
+    "git_diff_head_sha256": "098eebdd6103c34a1792d3bcb5657d17a0fb3982e8118471203dbe5258ec78da",
+    "head": "5917788fe22474bd138c22cea7ac05ffd7904a99",
     "repository": "ViscoBoBisco/Arena.AI",
     "status_porcelain": [
       "M .github/workflows/azerothcore-db-qualification.yml",

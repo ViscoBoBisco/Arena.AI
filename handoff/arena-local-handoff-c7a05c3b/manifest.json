@@ -13,7 +13,7 @@
       "size": 916
     },
     "handoff.json": {
-      "sha256": "0d3ae85a1eb65f3b6a83886d9ef441b238ae7a359f2aaf90699790a40aec3b16",
+      "sha256": "2a5a0bba390bd6c84b6ae0770f5f2d2e2d13cb636d4b11f63deb57b7d2f37ae4",
       "size": 4065
     },
     "logs/foundry-verify.txt": {
@@ -25,7 +25,7 @@
       "size": 2156
     },
     "logs/make-check.txt": {
-      "sha256": "a00ee84a55df5b8141d649555c3db795607c35ce419a1a1e94cd49e702589cd0",
+      "sha256": "26488537f19a3ee511652a9912d9553dfed5dd001839a88f5344b5e8d7ce6394",
       "size": 44730
     }
   },

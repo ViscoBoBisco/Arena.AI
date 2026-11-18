@@ -125,6 +125,30 @@ jobs:
           python3 - <<'PY'
           import json
           from pathlib import Path
+          proof = json.loads(Path('/tmp/vault-terminal-characters-db-proof.json').read_text())
+          attestations = {
+              'schema': 'arena-qualification-attestations/1',
+              'subject': {'manifest_sha256': proof['manifest_sha256']},
+              'characters_database_qualifications': [proof],
+          }
+          Path('/tmp/vault-terminal-attestations.json').write_text(
+              json.dumps(attestations, indent=2, sort_keys=True) + chr(10))
+          PY
+          set +e
+          python3 tools/foundry.py qualify /tmp/vault-terminal \
+            --attestations /tmp/vault-terminal-attestations.json \
+            --out /tmp/vault-terminal-qualification-report.json \
+            > /tmp/vault-terminal-qualification.log 2>&1
+          qualify_status=$?
+          set -e
+          if [ "$qualify_status" -ne 1 ]; then
+            cat /tmp/vault-terminal-qualification.log
+            echo "Expected qualification to remain blocked by runtime/client gates."
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
           report = json.loads(Path('/tmp/vault-terminal-qualification-report.json').read_text())
           assert report.get('qualified') is False
           assert report.get('status') == 'BLOCKED'

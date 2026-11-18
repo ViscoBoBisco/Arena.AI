@@ -15,7 +15,7 @@ python3 tools/selftest.py
 
 selftest: PASS
 python3 -m unittest discover -s tests -v
-/tmp/tmp61zml1_m/big.dbc: 100000 of 100000 IDs used in [0, 99999]
+/tmp/tmpky3g_1a_/big.dbc: 100000 of 100000 IDs used in [0, 99999]
 free ranges: none
 
 --- stderr ---
@@ -345,6 +345,6 @@ test_passes_when_consistent (test_tools.Preflight.test_passes_when_consistent) .
 test_rejects_missing_server_dir (test_tools.Preflight.test_rejects_missing_server_dir) ... ok
 
 ----------------------------------------------------------------------
-Ran 315 tests in 13.381s
+Ran 315 tests in 13.477s
 
 OK (skipped=1)
