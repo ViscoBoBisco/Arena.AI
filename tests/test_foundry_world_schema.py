@@ -331,7 +331,7 @@ class PinnedWorldSchemaCrashRecovery(unittest.TestCase):
             proof["evidence_sha256"] = hashlib.sha256(
                 json.dumps(proof, sort_keys=True, separators=(",", ":"), default=str)
                 .encode("utf-8")).hexdigest()
-            self.schema_proof = proof
+            type(self).schema_proof = proof
             proof_path = os.environ.get("ARENA_WORLD_SCHEMA_PROOF")
             if proof_path:
                 Path(proof_path).write_text(json.dumps(proof, indent=2, sort_keys=True) + "\n",
