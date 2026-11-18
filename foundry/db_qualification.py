@@ -73,12 +73,12 @@ def expected_world_rows(spec: dict, allocations: dict) -> Set[RowIdentity]:
         creature_id = assigned(creature["key"])
         rows.add(_identity("creature_template", entry=creature_id))
         if _item_ref(creature.get("display_id")) is not None:
-            rows.add(_identity("creature_template_model", CreatureID=creature_id))
+            rows.add(_identity("creature_template_model", CreatureID=creature_id, Idx=0))
     for vendor in spec.get("vendors") or []:
         creature_id = assigned(vendor["creature_key"])
         for stock in vendor.get("rows") or []:
             rows.add(_identity("npc_vendor", entry=creature_id,
-                               item=assigned(stock["item_key"])))
+                               item=assigned(stock["item_key"]), ExtendedCost=0))
     for event in spec.get("events") or []:
         rows.add(_identity("game_event", eventEntry=assigned(event["key"])))
     return rows
@@ -141,13 +141,16 @@ def validate_generated_sql(text: str, *, rollback: bool) -> List[str]:
     return statements
 
 
+# Primary keys verified from the pinned AzerothCore WotLK base world schema.
+# Keep these identities aligned with the actual table keys: CreatureID alone
+# and (entry, item) alone are not unique for these composite-key tables.
 _INSERT_KEYS = {
     "item_template": ("entry",),
     "spell_dbc": ("id",),
     "quest_template": ("id",),
     "creature_template": ("entry",),
-    "creature_template_model": ("creatureid",),
-    "npc_vendor": ("entry", "item"),
+    "creature_template_model": ("creatureid", "idx"),
+    "npc_vendor": ("entry", "item", "extendedcost"),
     "game_event": ("evententry",),
 }
 _DELETE_RE = re.compile(r"^DELETE FROM `?(\w+)`? WHERE (.+);$", re.IGNORECASE)
@@ -336,7 +339,7 @@ def inspect_generated_sql(migration: List[str], rollback: List[str],
             table, predicate = match.groups()
             output.add(_parse_predicate(table, predicate))
     known_creature_models = {
-        _identity("creature_template_model", CreatureID=allocations["allocations"][creature["key"]])
+        _identity("creature_template_model", CreatureID=allocations["allocations"][creature["key"]], Idx=0)
         for creature in spec.get("creatures") or []
         if isinstance(allocations.get("allocations", {}).get(creature.get("key")), int)
         and not isinstance(allocations["allocations"][creature["key"]], bool)

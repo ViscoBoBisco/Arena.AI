@@ -88,6 +88,18 @@ class DatabaseQualification(unittest.TestCase):
         self.assertIn("quest_template (Id, LogTitle, ObjectiveText1, VerifiedBuild)", sql)
         self.assertNotIn("quest_template (Id, Title, Objectives", sql)
 
+    def test_composite_row_identities_match_pinned_world_table_primary_keys(self):
+        spec = {
+            "creatures": [{"key": "creature", "display_id": {"value": 77}}],
+            "vendors": [{"creature_key": "creature", "rows": [
+                {"item_key": "item"}]}],
+        }
+        allocation = {"allocations": {"creature": 901010, "item": 901011}}
+        rows = expected_world_rows(spec, allocation)
+        self.assertIn(("creature_template_model", (("creatureid", 901010), ("idx", 0))), rows)
+        self.assertIn(("npc_vendor", (("entry", 901010), ("extendedcost", 0),
+                                       ("item", 901011))), rows)
+
     def test_world_apply_qualification_refuses_without_ownership_ledger(self):
         calls = []
         with self.assertRaisesRegex(ValueError, "no durable world-row ownership ledger"):
@@ -150,19 +162,19 @@ class DatabaseQualification(unittest.TestCase):
         allocations = {"allocations": {"keeper": 901010}}
         expected = expected_world_rows(spec, allocations)
         migration = [
-            "DELETE FROM creature_template_model WHERE CreatureID = 901010;",
+            "DELETE FROM creature_template_model WHERE CreatureID = 901010 AND Idx = 0;",
             "DELETE FROM creature_template WHERE entry = 901010;",
             "INSERT INTO creature_template (entry) VALUES (901010);",
         ]
         rollback = [
-            "DELETE FROM creature_template_model WHERE CreatureID = 901010;",
+            "DELETE FROM creature_template_model WHERE CreatureID = 901010 AND Idx = 0;",
             "DELETE FROM creature_template WHERE entry = 901010;",
         ]
         deleted, inserted = inspect_generated_sql(migration, rollback, expected,
                                                   spec, allocations)
         self.assertEqual(inserted, expected)
         self.assertEqual(len(deleted - inserted), 1)
-        self.assertIn(("creature_template_model", (("creatureid", 901010),)),
+        self.assertIn(("creature_template_model", (("creatureid", 901010), ("idx", 0))),
                       deleted - inserted)
 
     def test_sql_artifacts_reject_ddl_and_second_statements(self):

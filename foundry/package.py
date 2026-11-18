@@ -3,7 +3,7 @@
 Bundle layout (all paths relative to the bundle root):
   spec.json            the exact spec bytes the package was built from
   sql/01_world.sql     collision-failing world migration
-  sql/99_rollback.sql  guarded refusal until row ownership is tracked
+  sql/99_rollback.sql  raw SQL refusal; use the owned-operation CLI only on disposable InnoDB
   dbc/<table>.delta.json  DBC delta (only when the spec needs dbc rows)
   server/...           generated C++ module (when the spec declares one)
   addon/...            generated addon (when the spec declares one)
@@ -351,7 +351,8 @@ def _readme(spec: dict, result: ValidationResult,
     module_dir = f"mod-{spec['name']}"
     install_commands = []
     if has_world_content:
-        install_commands.append("mysql -u acore -p acore_world < sql/01_world.sql")
+        install_commands.append(
+            "# Direct World SQL application is blocked; use foundry_world_operate.py only on a confirmed disposable InnoDB schema.")
     protocol = spec.get("addon_protocol")
     if isinstance(protocol, dict):
         table = protocol["claims_table"]
@@ -371,9 +372,9 @@ def _readme(spec: dict, result: ValidationResult,
     rollback_commands = []
     if has_world_content:
         rollback_commands.append(
-            "# World SQL rollback is intentionally refused: generated rows have no durable ownership ledger.")
+            "# Raw World SQL rollback is refused; use foundry_world_operate.py on the exact package and disposable InnoDB schema.")
         rollback_commands.append(
-            "# Preserve the world rows; manual cleanup requires independently proven ownership and review.")
+            "# Live World qualification and production writes remain blocked; never DELETE by generated ID alone.")
     if isinstance(protocol, dict):
         rollback_commands.extend((
             "# Disable the module, stop worldserver, then remove its module and addon folders.",
@@ -402,7 +403,7 @@ def _readme(spec: dict, result: ValidationResult,
         "id-baseline.json     reserved IDs used for conflict-aware allocation",
         "id-allocation.json   deterministic table/key -> ID assignment",
         "sql/01_world.sql     generated world migration (when world objects are declared)",
-        "sql/99_rollback.sql  guarded refusal; no automatic world rollback without ownership proof",
+        "sql/99_rollback.sql  guarded raw-SQL refusal; use the manifest-bound disposable operation tool",
         "sql/characters/     characters-DB migrations; retained state is not dropped on rollback",
         "server/             generated AzerothCore module sources, loader, and config (when declared)",
         "addon/              generated Interface 30300 addon (when declared)",

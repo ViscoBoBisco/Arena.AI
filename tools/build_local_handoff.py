@@ -19,7 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 BUNDLE_DOCS = (
     ("docs/17-vault-terminal-client-acceptance.md", "CHECKLIST-client.md"),
     ("docs/18-local-runtime-handoff.md", "CHECKLIST-local-runtime.md"),
+    ("docs/22-expanded-gameplay-program.md", "GAMEPLAY-PROGRAM.md"),
     ("designs/argent-faction-operations-foundation.json", "argent-foundation.json"),
+    ("designs/gameplay-systems-register.json", "gameplay-systems-register.json"),
 )
 
 
@@ -107,7 +109,7 @@ def main() -> int:
         "evidence_matrix": {
             "ARENA-STATIC": "PASS" if checks and checks[0]["status"] == "PASS" else "NOT_ASSESSED",
             "ARENA-PACK": "PASS" if len(checks) > 1 and checks[1]["status"] == "PASS" else "NOT_ASSESSED",
-            "ARENA-DB": "NOT_ASSESSED; World ownership-safe apply/rollback is deliberately blocked",
+            "ARENA-DB": "NOT_ASSESSED; ownership service is limited to disposable InnoDB fixtures; exact pinned AzerothCore World schema and recovery proof pending",
             "ARENA-COMPILE": "pinned targeted compile record applies only to exact hashed module sources; full build NOT_ASSESSED",
             "SERVER-BOOT": "NOT_ASSESSED",
             "CLIENT-12340": "NOT_ASSESSED",
@@ -116,10 +118,10 @@ def main() -> int:
             "FACTION-OPERATIONS": "DESIGN_ONLY_NOT_PLAYABLE; stock IDs unresolved",
         },
         "ownership_ledger": {
-            "schema": "arena-world-row-ownership/0",
-            "status": "NO_DURABLE_WORLD_ROW_OWNERSHIP_TRACKING",
-            "tracked_world_rows": [],
-            "automatic_rollback": "REFUSED",
+            "schema": "arena-world-row-ownership/1",
+            "status": "IMPLEMENTED_FOR_DISPOSABLE_INNODB_FIXTURES; PINNED_WORLD_SCHEMA_PROOF_PENDING",
+            "tracked_world_rows": "per-row identity, package/version/manifest, expected values, full-row snapshot and state",
+            "automatic_rollback": "AVAILABLE_ONLY_THROUGH_EXPLICIT_TOOL_ON_CONFIRMED_DISPOSABLE_INNODB_SCHEMA",
             "production_writes": "NONE",
         },
         "asset_provenance": {

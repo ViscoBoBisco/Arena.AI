@@ -14,22 +14,23 @@ Qualification fails closed on missing manifest-bound attestations. Artifact matu
 
 ## Disposable database migration check
 
-`tools/foundry_db_qualify.py` requires a clean checkout at the exact revision in `foundry/core-pins.json`; proofs record hashes of the touched pinned `data/sql/base/db_world/*.sql` sources. It refuses non-disposable database names and requires explicit confirmation. **Current world-SQL packages are not DB-qualified:** because generated rows have no durable ownership ledger, the qualifier refuses before contacting the database rather than attempting an unsafe rollback. Earlier v2 apply/idempotence/rollback machinery must not be treated as current evidence for these changed emitters. A future ownership-ledger implementation must qualify collision refusal, interrupted apply recovery, rollback ownership, and exact schema behavior before restoring a PASS path. The historical [run 44219922132](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44219922132) at `6d49045de64c11c619b1d2011dce179f5d81c97b` passed the then-current seven-table identity/idempotence/rollback gate and overall qualification was correctly **BLOCKED**, but it did not collect per-column value checks. CI must pass again with v2 before claiming semantic DB evidence. Even v2 remains table-scoped—not a full populated world/server, full schema or gameplay qualification—and does not qualify stock assets, MPQ delivery, acceptance or live gameplay.
+`tools/foundry_db_qualify.py` still refuses World DB qualification before contacting MySQL: the existing ARENA-DB attestation path has not yet been migrated to the new owner journal, pinned-schema recovery proof, and source-bound evidence. A new lower-level service, `foundry/world_ownership.py`, now performs package- and manifest-bound World row operations only through a persistent connection, a per-database advisory lock, and one InnoDB transaction. It records expected values and a full inserted-row snapshot, replays stable request receipts, rejects collisions/other owners/changed manifests, and refuses rollback after any row field changes. Its disposable MySQL tests use a synthetic `item_template` schema; they do not yet qualify all tables against the exact pinned AzerothCore schema. Raw `sql/99_rollback.sql` remains guarded and generated packages no longer suggest direct `mysql < sql/01_world.sql` installation. Changed-package upgrades remain refused.
 
 ```sh
-# First initialize this throwaway schema from the pinned compatible AzerothCore SQL base.
-python3 tools/foundry_db_qualify.py packages/frost-armory \
-  --database arena_foundry_disposable_frost \
-  --core-source /path/to/clean/pinned/azerothcore-wotlk \
-  --defaults-extra-file ~/.my.cnf \
-  --confirm-disposable \
-  --out /tmp/frost-db-attestations.json
-python3 tools/foundry.py qualify packages/frost-armory \
-  --attestations /tmp/frost-db-attestations.json \
-  --out /tmp/frost-qualification.json
+# Use only a newly built, integrity-checked package and an isolated disposable InnoDB schema.
+python3 -m pip install -r requirements-world-qualification.txt
+chmod 600 /secure/local-mysql.cnf
+python3 tools/foundry_world_operate.py apply /path/to/checked-package \
+  --database arena_foundry_disposable_world_test \
+  --defaults-extra-file /secure/local-mysql.cnf \
+  --request-id apply-feature-v1 --confirm-disposable
+python3 tools/foundry_world_operate.py rollback /path/to/checked-package \
+  --database arena_foundry_disposable_world_test \
+  --defaults-extra-file /secure/local-mysql.cnf \
+  --request-id rollback-feature-v1 --confirm-disposable
 ```
 
-Never point this command at production or a populated shared database. The credential option file should be user-readable only; credentials are not passed on the command line or copied into the attestation.
+The owned-operation CLI refuses all non-disposable database names. The existing qualification/attestation gate remains **BLOCKED** until the P0-01b follow-up validates source/schema hashes, recovery behavior, and exact pinned table definitions. Neither this synthetic MySQL slice nor the historical [run 44219922132](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44219922132) at `6d49045de64c11c619b1d2011dce179f5d81c97b` qualifies a full populated World DB, server boot, assets, MPQ delivery, client acceptance or gameplay. Never point the tool at production or a populated shared database.
 
 Commands (all use exit codes 0 success, 1 validation/integrity failure, 2 usage or input error):
 
