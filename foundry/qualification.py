@@ -191,9 +191,8 @@ def _valid_owned_world_attestation(attestations: dict, manifest_sha256: str,
         if (proof.get("migration_sha256") != _sha256(migration_path.read_bytes())
                 or proof.get("rollback_sha256") != _sha256(rollback_path.read_bytes())):
             return False
-        from .db_qualification import (expected_world_rows, inspect_generated_sql,
-                                       semantic_insert_rows, validate_generated_sql)
-        from .generate import world_sql
+        from .db_qualification import expected_world_rows, semantic_insert_rows, validate_generated_sql
+        from .generate import rollback_sql, world_sql
         spec = _read_json(package / "spec.json")
         allocation = _read_json(package / "id-allocation.json")
         baseline = _read_json(package / "id-baseline.json")
@@ -202,9 +201,9 @@ def _valid_owned_world_attestation(attestations: dict, manifest_sha256: str,
         canonical = semantic_insert_rows(validate_generated_sql(
             world_sql(spec, reserved=baseline.get("reserved_ids", {})), rollback=False))
         rows = expected_world_rows(spec, allocation)
-        rollback_statements = validate_generated_sql(
-            rollback_path.read_text(encoding="utf-8"), rollback=True)
-        inspect_generated_sql(statements, rollback_statements, rows, spec, allocation)
+        rollback_text = rollback_path.read_text(encoding="utf-8")
+        if rollback_text != rollback_sql(spec, reserved=baseline.get("reserved_ids", {})):
+            return False
         if not rows or semantics != canonical or len(semantics) != len(rows):
             return False
         semantic_value = {"rows": [[table, [[column, value] for column, value in keys], values]

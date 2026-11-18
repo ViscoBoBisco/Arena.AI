@@ -15,7 +15,7 @@ from .db_qualification import (
     semantic_insert_rows,
     validate_generated_sql,
 )
-from .generate import world_sql
+from .generate import rollback_sql, world_sql
 from .qualification import integrity_check
 from .world_ownership import operate_on_package, _identity_json
 from .world_schema import _extract_create_table, verify_pinned_world_schema
@@ -155,7 +155,8 @@ def qualify_owned_world_package(connection, package: Path, database: str,
     migration = migration_path.read_text(encoding="utf-8")
     rollback = rollback_path.read_text(encoding="utf-8")
     migration_statements = validate_generated_sql(migration, rollback=False)
-    rollback_statements = validate_generated_sql(rollback, rollback=True)
+    if rollback != rollback_sql(spec, reserved=baseline.get("reserved_ids", {})):
+        raise ValueError("package rollback file does not match the canonical fail-closed ownership guard")
     canonical = validate_generated_sql(
         world_sql(spec, reserved=baseline.get("reserved_ids", {})), rollback=False)
     semantic = semantic_insert_rows(migration_statements)
