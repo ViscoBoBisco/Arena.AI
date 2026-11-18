@@ -91,33 +91,52 @@ jobs:
 
       - name: Validate proof context and publish run summary
         run: |
+          set +e
+          python3 tools/foundry.py qualify /tmp/frost-armory \
+            --attestations /tmp/arena-db-attestations.json \
+            --out /tmp/arena-qualification-report.json > /tmp/arena-qualify.log 2>&1
+          qualify_status=$?
+          set -e
+          if [ "$qualify_status" -ne 1 ]; then
+            cat /tmp/arena-qualify.log
+            echo "Expected overall qualification to remain blocked outside the DB gate."
+            exit 1
+          fi
           python3 - <<'PY'
           import json
           from pathlib import Path
           proof = json.loads(Path('/tmp/arena-db-attestations.json').read_text())
+          report = json.loads(Path('/tmp/arena-qualification-report.json').read_text())
           db = proof['database_qualification']
           pin = json.loads(Path('foundry/core-pins.json').read_text())['azerothcore_wotlk']
+          gates = {gate['name']: gate['status'] for gate in report['gates']}
           assert proof['levels']['ARENA-DB']['status'] == 'PASS'
           assert db['schema_source']['revision'] == pin['revision']
           assert db['checked_rows'] > 0
+          assert gates.get('database_migrations') == 'PASS'
+          assert report['qualified'] is False
           print(f"ARENA-DB PASS: {db['checked_rows']} identities; MySQL {db['server_version']}")
           print(f"Pinned schema revision: {db['schema_source']['revision']}")
-          with open(Path('/tmp/arena-db-summary.md'), 'w') as stream:
-              stream.write('## ARENA-DB qualification\n\n')
-              stream.write('- Status: **PASS**\n')
-              stream.write(f"- Pinned AzerothCore schema: `{db['schema_source']['revision']}`\n")
-              stream.write(f"- MySQL: `{db['server_version']}`\n")
-              stream.write(f"- Checked row identities: `{db['checked_rows']}`\n")
-              stream.write(f"- Manifest SHA-256: `{db['manifest_sha256']}`\n")
+          print('Overall package remains BLOCKED by other unassessed gates, as expected.')
+          import os
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              print('## ARENA-DB qualification', file=summary)
+              print('', file=summary)
+              print('- ARENA-DB policy gate: **PASS**', file=summary)
+              print('- Overall package qualification: **BLOCKED** (expected; unrelated gates remain unassessed)', file=summary)
+              print(f"- Pinned AzerothCore schema: `{db['schema_source']['revision']}`", file=summary)
+              print(f"- MySQL: `{db['server_version']}`", file=summary)
+              print(f"- Checked row identities: `{db['checked_rows']}`", file=summary)
+              print(f"- Manifest SHA-256: `{db['manifest_sha256']}`", file=summary)
           PY
-          cat /tmp/arena-db-summary.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Preserve package and raw DB proof
+      - name: Preserve package and DB qualification records
         uses: actions/upload-artifact@v4
         with:
           name: arena-db-qualification-${{ github.run_id }}
           path: |
             /tmp/frost-armory/
             /tmp/arena-db-attestations.json
+            /tmp/arena-qualification-report.json
           if-no-files-found: error
           retention-days: 30
