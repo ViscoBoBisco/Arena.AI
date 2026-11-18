@@ -64,43 +64,53 @@ jobs:
               --database=arena_foundry_disposable_ci < "$source"
           done
 
-      - name: Build the package and execute apply/idempotence/rollback checks
+      - name: Build package preview
         run: |
           python3 tools/foundry.py build specs/frost-armory.json \
             --out /tmp/frost-armory --allow-unverified
-          python3 tools/foundry_db_qualify.py /tmp/frost-armory \
+
+      - name: Execute database apply/idempotence/rollback checks
+        run: |
+          if ! python3 tools/foundry_db_qualify.py /tmp/frost-armory \
             --database arena_foundry_disposable_ci \
             --core-source /tmp/azerothcore \
             --defaults-extra-file /tmp/arena-foundry-mysql.cnf \
             --confirm-disposable \
-            --out /tmp/arena-db-attestations.json
+            --out /tmp/arena-db-attestations.json > /tmp/arena-db-run.log 2>&1; then
+            cat /tmp/arena-db-run.log
+            python3 - <<'PY'
+          from pathlib import Path
+          lines = Path('/tmp/arena-db-run.log').read_text(errors='replace').strip().splitlines()
+          detail = lines[-1] if lines else 'qualification command failed'
+          detail = detail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print(f'::error title=ARENA-DB qualification failed::{detail}')
+          PY
+            exit 1
+          fi
+          cat /tmp/arena-db-run.log
+
+      - name: Validate proof context and publish run summary
+        run: |
           python3 - <<'PY'
           import json
           from pathlib import Path
           proof = json.loads(Path('/tmp/arena-db-attestations.json').read_text())
           db = proof['database_qualification']
+          pin = json.loads(Path('foundry/core-pins.json').read_text())['azerothcore_wotlk']
           assert proof['levels']['ARENA-DB']['status'] == 'PASS'
-          assert db['schema_source']['revision'] == json.loads(
-              Path('foundry/core-pins.json').read_text())['azerothcore_wotlk']['revision']
+          assert db['schema_source']['revision'] == pin['revision']
           assert db['checked_rows'] > 0
           print(f"ARENA-DB PASS: {db['checked_rows']} identities; MySQL {db['server_version']}")
           print(f"Pinned schema revision: {db['schema_source']['revision']}")
+          with open(Path('/tmp/arena-db-summary.md'), 'w') as stream:
+              stream.write('## ARENA-DB qualification\n\n')
+              stream.write('- Status: **PASS**\n')
+              stream.write(f"- Pinned AzerothCore schema: `{db['schema_source']['revision']}`\n")
+              stream.write(f"- MySQL: `{db['server_version']}`\n")
+              stream.write(f"- Checked row identities: `{db['checked_rows']}`\n")
+              stream.write(f"- Manifest SHA-256: `{db['manifest_sha256']}`\n")
           PY
-          {
-            echo '## ARENA-DB qualification'
-            echo ''
-            python3 - <<'PY'
-          import json
-          from pathlib import Path
-          proof = json.loads(Path('/tmp/arena-db-attestations.json').read_text())
-          db = proof['database_qualification']
-          print(f"- Status: **PASS**")
-          print(f"- Pinned AzerothCore schema: `{db['schema_source']['revision']}`")
-          print(f"- MySQL: `{db['server_version']}`")
-          print(f"- Checked row identities: `{db['checked_rows']}`")
-          print(f"- Manifest SHA-256: `{db['manifest_sha256']}`")
-          PY
-          } >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/arena-db-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Preserve package and raw DB proof
         uses: actions/upload-artifact@v4
