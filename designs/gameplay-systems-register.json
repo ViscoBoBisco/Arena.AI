@@ -31,7 +31,9 @@
         "foundry/world_ownership.py",
         "foundry/db_qualification.py",
         "foundry/core-pins.json",
-        "tests/test_foundry_world_ownership.py"
+        "tests/test_foundry_world_ownership.py",
+        "foundry/world_schema.py",
+        "tests/test_foundry_world_schema.py"
       ],
       "manifest_id_needs": [
         "package manifest SHA-256",
@@ -51,7 +53,7 @@
         "Changed manifests/versions are refused rather than upgraded",
         "Never use against production or populated shared DBs"
       ],
-      "next_milestone": "Run exact pinned World-schema qualification with source/schema hashes and process-crash recovery before enabling the existing ARENA-DB gate.",
+      "next_milestone": "Extend exact-schema write/rollback recovery coverage to every supported generated table and implement durable qualification attestation bound to source/schema/receipt hashes before enabling the ARENA-DB gate.",
       "completed_evidence": [
         {
           "kind": "SYNTHETIC_DISPOSABLE_MYSQL",
@@ -59,6 +61,14 @@
           "run_id": "44412436391",
           "source_sha": "aa2016076e2e68df60555d38ab507a3550683b38",
           "scope": "MySQL 8.4 disposable InnoDB item_template fixture; apply/retry/rollback/reapply, partial collision rollback, client connection loss/retry, ownership/manifest checks, full-row modification refusal, concurrency, engine/primary-key guards and caller-transaction refusal"
+        },
+        {
+          "kind": "SYNTHETIC_DISPOSABLE_MYSQL_PINNED_SCHEMA",
+          "status": "PASS",
+          "run_id": "44416270490",
+          "source_sha": "e981f72e47d2d97443ce78b5af51d71925cca4d6",
+          "upstream_source_sha": "6ffb62abb867dabb258de6813ff5d06d6b011543",
+          "scope": "MySQL 8.4 fresh empty disposable DB; seven pinned generated-table DDL sources hashed and initialized, runtime InnoDB engines/PKs checked; abrupt worker death after item INSERT, transaction/journal/receipt absence, same-request restart apply/replay and owned rollback verified. Not all generated tables' writes; no base rows imported."
         }
       ]
     },

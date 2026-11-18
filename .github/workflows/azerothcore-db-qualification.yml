@@ -59,8 +59,27 @@ jobs:
             exit "$test_status"
           fi
 
-      - name: Create protected client option file
+      - name: Fetch the exact pinned AzerothCore World schema source
         run: |
+          git init /tmp/acore-pinned
+          git -C /tmp/acore-pinned remote add origin https://github.com/azerothcore/azerothcore-wotlk.git
+          git -C /tmp/acore-pinned fetch --depth=1 --filter=blob:none origin 6ffb62abb867dabb258de6813ff5d06d6b011543
+          git -C /tmp/acore-pinned sparse-checkout init --cone
+          git -C /tmp/acore-pinned sparse-checkout set data/sql/base/db_world
+          git -C /tmp/acore-pinned checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/acore-pinned rev-parse HEAD)" = 6ffb62abb867dabb258de6813ff5d06d6b011543
+
+      - name: Initialize exact pinned World DDL and exercise process-crash recovery
+        env:
+          ARENA_MYSQL_HOST: 127.0.0.1
+          ARENA_MYSQL_PORT: 3306
+          ARENA_MYSQL_DATABASE: arena_foundry_disposable_pinned_ci
+          ARENA_MYSQL_USER: root
+          ARENA_MYSQL_PASSWORD: arena-foundry-ci-only
+          ARENA_PINNED_CORE_SOURCE: /tmp/acore-pinned
+          ARENA_WORLD_SCHEMA_PROOF: /tmp/arena-world-schema-proof.json
+        run: |
+          set -o pipefail
           cat > /tmp/arena-foundry-mysql.cnf <<'EOF'
           [client]
           host=127.0.0.1
@@ -69,7 +88,46 @@ jobs:
           EOF
           chmod 600 /tmp/arena-foundry-mysql.cnf
           mysql --defaults-extra-file=/tmp/arena-foundry-mysql.cnf \
-            --execute='SELECT VERSION(), DATABASE();' arena_foundry_disposable_ci
+            --execute='CREATE DATABASE arena_foundry_disposable_pinned_ci CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'
+          python3 -m unittest tests.test_foundry_world_schema -v 2>&1 | tee /tmp/arena-world-schema-test.log
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          proof = json.loads(Path('/tmp/arena-world-schema-proof.json').read_text())
+          proof_hash = proof.pop('runtime_schema_sha256')
+          canonical = json.dumps(proof, sort_keys=True, separators=(',', ':'), default=str).encode()
+          assert hashlib.sha256(canonical).hexdigest() == proof_hash
+          proof['runtime_schema_sha256'] = proof_hash
+          assert proof['schema'] == 'arena-world-schema-source/1'
+          assert proof['trust'] == 'SYNTHETIC_DISPOSABLE_MYSQL_PINNED_SCHEMA'
+          assert proof['source']['revision'] == '6ffb62abb867dabb258de6813ff5d06d6b011543'
+          assert len(proof['created_tables']) == 7
+          assert proof['base_data_imported'] is False
+          assert all(table['engine'] == 'innodb' for table in proof['runtime_tables'].values())
+          assert proof['process_recovery']['status'] == 'PASS'
+          assert proof['process_recovery']['child_exit_code'] == 73
+          assert proof['process_recovery']['uncommitted_world_row_and_journal_absent_after_restart'] == 'PASS'
+          assert proof['process_recovery']['same_request_receipt_replayed'] == 'PASS'
+          print('Pinned DDL source hashes, runtime World-table keys, and process recovery verified.')
+          with open(__import__('os').environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              print('## Pinned World schema ownership/restart evidence', file=summary)
+              print('', file=summary)
+              print('- Exact upstream commit: `6ffb62abb867dabb258de6813ff5d06d6b011543`', file=summary)
+              print('- Seven source-derived table DDLs and runtime InnoDB primary keys: **PASS**', file=summary)
+              print('- Abrupt child-process death mid-transaction, restart retry, receipt replay, rollback: **PASS**', file=summary)
+              print('- Evidence is synthetic disposable MySQL schema only; no base data, server boot, gameplay, or live qualification.', file=summary)
+          PY
+
+      - name: Preserve pinned World schema and process recovery proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: arena-world-schema-recovery-${{ github.run_id }}
+          path: |
+            /tmp/arena-world-schema-proof.json
+            /tmp/arena-world-schema-test.log
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Assert unsupported World content fails closed
         run: |
