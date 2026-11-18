@@ -1,4 +1,4 @@
-name: pinned AzerothCore disposable DB qualification
+name: Disposable Characters DB qualification
 
 on:
   push:
@@ -8,8 +8,8 @@ permissions:
   contents: read
 
 jobs:
-  qualify-generated-world-sql:
-    name: Qualify Foundry world SQL on pinned AzerothCore schema
+  qualify-vault-terminal-characters-db:
+    name: Qualify Vault Terminal Characters DB on disposable MySQL
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     services:
@@ -33,13 +33,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y default-mysql-client
 
-      - name: Checkout exact AzerothCore schema source pin
-        run: |
-          revision="$(python3 -c 'import json; print(json.load(open("foundry/core-pins.json"))["azerothcore_wotlk"]["revision"])')"
-          git clone https://github.com/azerothcore/azerothcore-wotlk.git /tmp/azerothcore
-          git -C /tmp/azerothcore checkout --detach "$revision"
-          test "$(git -C /tmp/azerothcore rev-parse HEAD)" = "$revision"
-
       - name: Create protected client option file
         run: |
           cat > /tmp/arena-foundry-mysql.cnf <<'EOF'
@@ -52,85 +45,21 @@ jobs:
           mysql --defaults-extra-file=/tmp/arena-foundry-mysql.cnf \
             --execute='SELECT VERSION(), DATABASE();' arena_foundry_disposable_ci
 
-      - name: Initialize touched tables from pinned world base SQL
+      - name: Assert unsupported World content fails closed
         run: |
-          set -euo pipefail
-          for table in \
-            creature_template creature_template_model game_event item_template \
-            npc_vendor quest_template spell_dbc; do
-            source="/tmp/azerothcore/data/sql/base/db_world/${table}.sql"
-            test -s "$source"
-            mysql --defaults-extra-file=/tmp/arena-foundry-mysql.cnf \
-              --database=arena_foundry_disposable_ci < "$source"
-          done
-
-      - name: Build package preview
-        run: |
-          python3 tools/foundry.py build specs/frost-armory.json \
-            --out /tmp/frost-armory --allow-unverified
-
-      - name: Execute database apply/idempotence/rollback checks
-        run: |
-          if ! python3 tools/foundry_db_qualify.py /tmp/frost-armory \
-            --database arena_foundry_disposable_ci \
-            --core-source /tmp/azerothcore \
-            --defaults-extra-file /tmp/arena-foundry-mysql.cnf \
-            --confirm-disposable \
-            --out /tmp/arena-db-attestations.json > /tmp/arena-db-run.log 2>&1; then
-            cat /tmp/arena-db-run.log
-            python3 - <<'PY'
-          from pathlib import Path
-          lines = Path('/tmp/arena-db-run.log').read_text(errors='replace').strip().splitlines()
-          detail = lines[-1] if lines else 'qualification command failed'
-          detail = detail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-          print(f'::error title=ARENA-DB qualification failed::{detail}')
-          PY
-            exit 1
-          fi
-          cat /tmp/arena-db-run.log
-
-      - name: Validate proof context and publish run summary
-        run: |
+          python3 tools/foundry.py verify packages/frost-armory
           set +e
-          python3 tools/foundry.py qualify /tmp/frost-armory \
-            --attestations /tmp/arena-db-attestations.json \
-            --out /tmp/arena-qualification-report.json > /tmp/arena-qualify.log 2>&1
-          qualify_status=$?
+          python3 tools/foundry.py validate specs/frost-armory.json \
+            --allow-unverified > /tmp/frost-validation.json
+          status=$?
           set -e
-          if [ "$qualify_status" -ne 1 ]; then
-            cat /tmp/arena-qualify.log
-            echo "Expected overall qualification to remain blocked outside the DB gate."
-            exit 1
-          fi
+          test "$status" -eq 1
           python3 - <<'PY'
           import json
           from pathlib import Path
-          proof = json.loads(Path('/tmp/arena-db-attestations.json').read_text())
-          report = json.loads(Path('/tmp/arena-qualification-report.json').read_text())
-          db = proof['database_qualification']
-          pin = json.loads(Path('foundry/core-pins.json').read_text())['azerothcore_wotlk']
-          gates = {gate['name']: gate['status'] for gate in report['gates']}
-          assert proof['levels']['ARENA-DB']['status'] == 'PASS'
-          assert db['schema'] == 'arena-db-qualification/2'
-          assert db['schema_source']['revision'] == pin['revision']
-          assert db['checked_rows'] > 0
-          assert db['checked_values'] >= db['checked_rows']
-          assert len(db['semantic_sha256']) == 64
-          assert gates.get('database_migrations') == 'PASS'
-          assert report['qualified'] is False
-          print(f"ARENA-DB PASS: {db['checked_rows']} identities; MySQL {db['server_version']}")
-          print(f"Pinned schema revision: {db['schema_source']['revision']}")
-          print('Overall package remains BLOCKED by other unassessed gates, as expected.')
-          import os
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-              print('## ARENA-DB qualification', file=summary)
-              print('', file=summary)
-              print('- ARENA-DB policy gate: **PASS**', file=summary)
-              print('- Overall package qualification: **BLOCKED** (expected; unrelated gates remain unassessed)', file=summary)
-              print(f"- Pinned AzerothCore schema: `{db['schema_source']['revision']}`", file=summary)
-              print(f"- MySQL: `{db['server_version']}`", file=summary)
-              print(f"- Checked row identities: `{db['checked_rows']}`", file=summary)
-              print(f"- Manifest SHA-256: `{db['manifest_sha256']}`", file=summary)
+          result = json.loads(Path('/tmp/frost-validation.json').read_text())
+          assert result['verdicts']['emitter-coverage'] == 'FAIL'
+          print('World DB qualification is intentionally blocked; no database was contacted.')
           PY
 
       - name: Build generated Vault Terminal package
@@ -249,15 +178,15 @@ jobs:
               print('- Overall qualification: **BLOCKED** by runtime/client/live gates.', file=summary)
           PY
 
-      - name: Preserve package and DB qualification records
+      - name: Preserve Vault Terminal Characters qualification records
         uses: actions/upload-artifact@v4
         with:
-          name: arena-db-qualification-${{ github.run_id }}
+          name: arena-characters-db-qualification-${{ github.run_id }}
           path: |
-            /tmp/frost-armory/
             /tmp/vault-terminal/
-            /tmp/arena-db-attestations.json
-            /tmp/arena-qualification-report.json
             /tmp/vault-terminal-characters-db-proof.json
+            /tmp/vault-terminal-characters-db.log
+            /tmp/vault-terminal-qualification-report.json
+            /tmp/vault-terminal-qualification.log
           if-no-files-found: error
           retention-days: 30
