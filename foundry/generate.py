@@ -497,13 +497,15 @@ public:
         ForgetRequest(player);
     }}
 
-    void OnPlayerBeforeSendChatMessage(Player* player, uint32& /*type*/, uint32& lang,
+    void OnPlayerBeforeSendChatMessage(Player* player, uint32& type, uint32& lang,
                                        std::string& message) override
     {{
         if (lang != LANG_ADDON || message.rfind(PREFIX, 0) != 0)
             return;
         std::string frame = message;
         message.clear();
+        if (type != CHAT_MSG_WHISPER)
+            return; // Only the documented self-WHISPER transport is actionable.
         if (!IsValidFrame(frame))
             return;
         std::vector<std::string> fields = SplitTabs(frame);
