@@ -191,6 +191,19 @@ class Packaging(unittest.TestCase):
             self.assertEqual(verified.returncode, 1)
             self.assertIn("INVALID", verified.stdout)
 
+    def test_build_refuses_existing_output_without_touching_unrelated_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "pkg"
+            out.mkdir()
+            unrelated = out / "keep.txt"
+            unrelated.write_text("operator data\\n", encoding="utf-8")
+            result = helpers.run_tool(FOUNDRY, "build", SPEC, "--out", out,
+                                      "--allow-unverified")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("already exists", result.stderr)
+            self.assertEqual(unrelated.read_text(encoding="utf-8"), "operator data\\n")
+            self.assertEqual(list(out.iterdir()), [unrelated])
+
     def test_rebuild_is_byte_identical(self):
         with tempfile.TemporaryDirectory() as tmp:
             a, b = Path(tmp) / "a", Path(tmp) / "b"

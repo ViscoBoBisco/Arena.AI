@@ -21,6 +21,8 @@ from foundry.db_qualification import (  # noqa: E402
     validate_generated_sql,
     write_attestations,
 )
+from foundry.qualification import _valid_database_attestation, integrity_check  # noqa: E402
+from foundry.generate import world_sql  # noqa: E402
 
 PACKAGE = helpers.REPO / "packages" / "frost-armory"
 
@@ -59,6 +61,14 @@ class MemoryDatabase:
 
 
 class DatabaseQualification(unittest.TestCase):
+    def test_spell_overlay_uses_the_pinned_schema_localized_name_column(self):
+        spec = json.loads((PACKAGE / "spec.json").read_text(encoding="utf-8"))
+        sql = world_sql(spec)
+        self.assertIn("spell_dbc (Id, Name_Lang_enUS)", sql)
+        self.assertNotIn("spell_dbc (Id, Name)", sql)
+        self.assertIn("quest_template (Id, LogTitle, ObjectiveText1, VerifiedBuild)", sql)
+        self.assertNotIn("quest_template (Id, Title, Objectives", sql)
+
     def test_apply_idempotence_rollback_and_reapply_produce_bound_attestation(self):
         database = MemoryDatabase()
         attestations = qualify_database(PACKAGE, "arena_foundry_disposable_test", database)
@@ -74,6 +84,35 @@ class DatabaseQualification(unittest.TestCase):
                          proof["manifest_sha256"])
         self.assertEqual(attestations["levels"]["ARENA-DB"]["status"], "PASS")
         self.assertEqual(manifest["spec"], "frost-armory")
+
+    def test_db_proof_is_semantically_bound_to_package_and_schema_pin(self):
+        # The in-memory runner only tests proof validation structure; it is not DB evidence.
+        attestations = qualify_database(
+            PACKAGE, "arena_foundry_disposable_test", MemoryDatabase())
+        manifest_sha = integrity_check(PACKAGE)["manifest_sha256"]
+        pin = json.loads((helpers.REPO / "foundry/core-pins.json").read_text())[
+            "azerothcore_wotlk"]
+        proof = attestations["database_qualification"]
+        proof["schema_source"] = {
+            "schema": "arena-db-schema-source/1",
+            "repository": pin["repository"],
+            "revision": pin["revision"],
+            "tables": {
+                f"data/sql/base/db_world/{table}.sql": "a" * 64
+                for table in ("creature_template", "creature_template_model", "game_event",
+                              "item_template", "npc_vendor", "quest_template", "spell_dbc")
+            },
+        }
+        proof_bytes = (json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        attestations["levels"]["ARENA-DB"]["evidence"] = (
+            "sha256:" + hashlib.sha256(proof_bytes).hexdigest())
+        self.assertTrue(_valid_database_attestation(attestations, manifest_sha, PACKAGE))
+
+        proof["migration_sha256"] = "0" * 64
+        proof_bytes = (json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        attestations["levels"]["ARENA-DB"]["evidence"] = (
+            "sha256:" + hashlib.sha256(proof_bytes).hexdigest())
+        self.assertFalse(_valid_database_attestation(attestations, manifest_sha, PACKAGE))
 
     def test_refuses_collisions_and_unsafe_database_names_before_writes(self):
         database = MemoryDatabase()

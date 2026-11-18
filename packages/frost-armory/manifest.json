@@ -115,8 +115,8 @@
       "size": 5649
     },
     "sql/01_world.sql": {
-      "sha256": "b76228a6096f4cd1c0e3a014d4b33a6bb9312d0516cf66be7c8ccd7f2b16ae48",
-      "size": 4182
+      "sha256": "0eb48c29d9688f5634ddad803cde5f2c8cca1f547780a35f0edbd80cfe872ef7",
+      "size": 4209
     },
     "sql/99_rollback.sql": {
       "sha256": "15c05058cbb60d3289aae852e6e0f58acee0630d8d69ea578e6a90085a98ec74",
@@ -140,7 +140,7 @@
   "spec": "frost-armory",
   "spec_version": 1,
   "summary": {
-    "bytes": 16147,
+    "bytes": 16174,
     "files": 14
   }
 }

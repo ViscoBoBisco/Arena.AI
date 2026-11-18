@@ -19,9 +19,14 @@ every file except manifest.json's optional ``generated_utc`` stamp.
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import json
-from pathlib import Path
+import os
+import shutil
+import tempfile
+from pathlib import Path, PurePosixPath
 from typing import Dict, Optional
 
 from . import ADAPTER_VERSION, SPEC_VERSION
@@ -38,6 +43,23 @@ EVIDENCE_LEVELS = (
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _rename_directory_noreplace(source: Path, destination: Path) -> None:
+    """Atomically publish a directory without replacing a concurrently-created path."""
+    try:
+        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+    except AttributeError as exc:
+        raise OSError(errno.ENOSYS, "atomic no-replace directory publication is unavailable") from exc
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p,
+                          ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    at_fdcwd, rename_noreplace = -100, 1
+    result = renameat2(at_fdcwd, os.fsencode(source), at_fdcwd,
+                       os.fsencode(destination), rename_noreplace)
+    if result != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), str(destination))
 
 
 def _matching_compile_qualification(spec: dict, files: dict) -> Optional[dict]:
@@ -84,10 +106,27 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
             and result.verdicts.get("asset-verification") == "SKIPPED"):
         raise ValueError(
             "validation failed closed: " + "; ".join(result.essential_blocked))
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if out_dir.is_symlink():
+        raise ValueError(f"package output cannot be a symlink: {out_dir}")
+    out_dir = out_dir.resolve()
+    if out_dir.exists():
+        raise ValueError(f"package output already exists: {out_dir}")
+    try:
+        out_dir.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(f"cannot create package output parent: {exc}") from exc
     files: Dict[str, bytes] = {}
 
     def put(rel: str, content) -> None:
+        if not isinstance(rel, str):
+            raise ValueError("generated package path must be a string")
+        path = PurePosixPath(rel)
+        if (path.is_absolute() or not path.parts or ".." in path.parts
+                or path.as_posix() != rel or "\\" in rel):
+            raise ValueError(f"unsafe generated package path: {rel!r}")
+        if rel in files or any(existing.startswith(rel + "/") or rel.startswith(existing + "/")
+                               for existing in files):
+            raise ValueError(f"generated package path collision: {rel}")
         files[rel] = content.encode() if isinstance(content, str) else content
 
     put("spec.json", generate.spec_json(spec))
@@ -239,10 +278,20 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
     }
     put("manifest.json", json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
-    for rel, data in sorted(files.items()):
-        target = out_dir / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+    stage = None
+    try:
+        stage = Path(tempfile.mkdtemp(prefix=f".{out_dir.name}.stage-",
+                                      dir=out_dir.parent))
+        for rel, data in sorted(files.items()):
+            target = stage.joinpath(*PurePosixPath(rel).parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        _rename_directory_noreplace(stage, out_dir)
+    except OSError as exc:
+        raise ValueError(f"atomic package publication failed: {exc}") from exc
+    finally:
+        if stage is not None and stage.exists():
+            shutil.rmtree(stage, ignore_errors=True)
     return manifest
 
 

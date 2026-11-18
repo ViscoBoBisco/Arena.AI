@@ -73,7 +73,8 @@ def world_sql(spec: dict, *, reserved=None) -> str:
             sid = ids[obj["key"]]
             lines.append(f"DELETE FROM spell_dbc WHERE Id = {sid};")
             lines.append(
-                f"INSERT INTO spell_dbc (Id, Name) VALUES ({sid}, {_sql_str(obj.get('name'))});")
+                f"INSERT INTO spell_dbc (Id, Name_Lang_enUS) VALUES "
+                f"({sid}, {_sql_str(obj.get('name'))});")
         lines.append("")
     # quests
     quests = spec.get("quests") or []
@@ -83,7 +84,7 @@ def world_sql(spec: dict, *, reserved=None) -> str:
             qid = ids[obj["key"]]
             lines.append(f"DELETE FROM quest_template WHERE Id = {qid};")
             lines.append(
-                f"INSERT INTO quest_template (Id, Title, Objectives, VerifiedBuild) VALUES "
+                f"INSERT INTO quest_template (Id, LogTitle, ObjectiveText1, VerifiedBuild) VALUES "
                 f"({qid}, {_sql_str(obj.get('title'))}, {_sql_str(obj.get('objectives', ''))}, 12340);")
         lines.append("")
     # creatures
