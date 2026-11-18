@@ -272,7 +272,7 @@ def _valid_characters_database_attestation(proof: Any, manifest_sha256: str,
                 "status|varchar(24)|NO||3",
                 "total_claims|int unsigned|NO||4",
                 "claim_day|date|NO||5",
-                "created_at|timestamp|NO||6",
+                "created_at|timestamp|NO|MUL|6",
             ],
             "primary_key": "guid,request_id",
         }
