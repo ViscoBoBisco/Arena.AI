@@ -34,14 +34,16 @@ python3 tools/catalog.py query --no-mpq            # what needs no client patch 
 python3 tools/dbc_tool.py info Item.dbc
 python3 tools/manifest.py make --staging patch/ --version 2026.11.1 --out manifest.json
 python3 tools/manifest.py verify --manifest manifest.json --staging patch/
-python3 tools/foundry.py plan specs/frost-armory.json
-python3 tools/foundry.py build specs/frost-armory.json --out /tmp/frost-armory --allow-unverified
-python3 tools/foundry.py verify /tmp/frost-armory
+python3 tools/foundry.py validate specs/vault-terminal.json
+python3 tools/foundry.py build specs/vault-terminal.json --out /tmp/vault-terminal
+python3 tools/foundry.py verify /tmp/vault-terminal
 ```
 
-The Frost Armory command deliberately emits a **preview bundle**: its stock asset IDs are not
-verified, its SQL/module are not DB- or compile-qualified, and allowlisting unknown assets does not
-make the result production-ready. See `evidence.json` and [docs/12](docs/12-content-foundry.md).
+The checked-in Frost Armory bundle is a historical, non-installable preview: the source spec's
+recipe has no executable emitter, its stock IDs are unverified, and its World DB rollback refuses
+unknown ownership. A fresh build must fail closed. The Vault Terminal quickstart builds a handoff
+bundle only; it does not install or qualify gameplay. See its `evidence.json` and
+[docs/12](docs/12-content-foundry.md).
 
 The static and synthetic tools need no WoW client, database, or Windows; they generate their own
 fixtures. Asset verification, SQL qualification, core compilation and live acceptance do require
@@ -75,7 +77,7 @@ explicit `--allow-unverified`; it is not release approval.
 
 ```
 README.md                     this page
-docs/                         knowledge base, Foundry/adapter contracts, world-scale design (01–16)
+docs/                         knowledge base, catalog, Foundry/adapter contracts, handoffs, and project inventory (01–21)
 foundry/                      spec validation, ID policy, assets, generators, adapter, bundler, CLI
 specs/                        versioned declarative feature specifications
 designs/                      creative campaign and feature contracts; explicitly not Foundry input
@@ -126,6 +128,8 @@ Makefile                      `make check`, `make preflight CLIENT=… SERVER=�
 | [17 — Vault Terminal client acceptance](docs/17-vault-terminal-client-acceptance.md) | Manual build-12340 client test plan; separates client evidence from Lua-shim, compile, and disposable-DB checks |
 | [18 — Local runtime handoff](docs/18-local-runtime-handoff.md) | Ordered, safe local-server/client qualification plan, evidence requirements, and explicit stop conditions |
 | [19 — Engineering handoff bundle](docs/19-engineering-handoff.md) | Reproducible, source-bound, non-installing handoff manifest, evidence matrix, and local-only acceptance checklist |
+| [20 — Project stocktake](docs/20-project-stocktake.md) | Repository-wide area/leaf inventory, current local evidence, gaps, and external qualification boundaries |
+| [21 — Systematic completion plan](docs/21-systematic-completion-plan.md) | Prioritized project-wide audit sequence, workstream exit criteria, evidence ledger, and progress log |
 
 ## Glossary
 

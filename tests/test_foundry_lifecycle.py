@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import helpers  # noqa: E402
@@ -19,7 +20,9 @@ from foundry.qualification import (  # noqa: E402
     _required_gate_names,
     _valid_delivery_contract,
     integrity_check,
+    release_package,
 )
+from foundry.package import _rename_directory_noreplace
 
 FOUNDRY = helpers.REPO / "tools" / "foundry.py"
 FROST_SPEC = helpers.foundry_spec_fixture("frost-armory.json", omit=("recipes",))
@@ -246,6 +249,33 @@ class LifecyclePhases(unittest.TestCase):
             self.assertEqual(integrity_check(output)["ok"], True)
             self.assertEqual((package / "manifest.json").read_bytes(),
                              (output / "manifest.json").read_bytes())
+
+    def test_release_does_not_replace_destination_created_after_preflight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package, attestations = _minimal_qualified_fixture(root)
+            report_path = root / "qualified.json"
+            qualified = helpers.run_tool(FOUNDRY, "qualify", package,
+                                         "--attestations", attestations,
+                                         "--out", report_path)
+            self.assertEqual(qualified.returncode, 0, qualified.stdout + qualified.stderr)
+
+            destination = root / "raced-destination"
+            sentinel = destination / "operator-data.txt"
+
+            def race_create_output(stage: Path, output: Path):
+                output.mkdir()
+                sentinel.write_text("must survive", encoding="utf-8")
+                _rename_directory_noreplace(stage, output)
+
+            with patch("foundry.qualification._rename_directory_noreplace",
+                       side_effect=race_create_output):
+                with self.assertRaises(FileExistsError):
+                    release_package(package, report_path, destination)
+
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "must survive")
+            self.assertEqual(list(destination.iterdir()), [sentinel])
+            self.assertFalse(list(root.glob(".raced-destination.stage-*")))
 
     def test_each_declared_delivery_surface_needs_its_own_qualification(self):
         with tempfile.TemporaryDirectory() as tmp:

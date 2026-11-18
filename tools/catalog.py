@@ -36,12 +36,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_CATALOG = REPO / "catalog" / "alterations.json"
+CATALOG_ID_RE = re.compile(
+    r"^(?:policy|content|mech|system|client|novel)\.[a-z0-9]+(?:[.-][a-z0-9]+)*$"
+)
 LAYER_PREFIX = {
     "policy": "policy.",
     "content": "content.",
@@ -64,8 +68,12 @@ def load(path: Path) -> Dict:
     try:
         # utf-8-sig: editors on Windows routinely add a BOM, which plain json.loads rejects
         data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError) as exc:
+        raise CatalogError(f"{path}: cannot read catalog ({exc})") from exc
     except json.JSONDecodeError as exc:
         raise CatalogError(f"{path}: invalid JSON ({exc})") from exc
+    if not isinstance(data, dict):
+        raise CatalogError(f"{path}: top-level catalog must be an object")
     if "entries" not in data:
         raise CatalogError(f"{path}: no 'entries' key")
     return data
@@ -85,9 +93,45 @@ def _allowlist(path: Path) -> Optional[set]:
 
 
 def validate(data: Dict, base: Path = REPO) -> List[str]:
+    """Return all discoverable schema/integrity issues without trusting JSON types."""
     problems: List[str] = []
-    layers = {layer["id"] for layer in data.get("layers", [])}
-    kinds = {kind["id"] for kind in data.get("patch_kinds", [])}
+    if not isinstance(data, dict):
+        return ["top-level catalog must be an object"]
+    if type(data.get("schema")) is not int or data.get("schema") != 1:
+        problems.append("'schema' must equal integer 1")
+    for field in ("client", "about"):
+        if not isinstance(data.get(field), str) or not data[field].strip():
+            problems.append(f"'{field}' must be a non-empty string")
+
+    def definitions(field: str, required_fields: tuple[str, ...]) -> set[str]:
+        raw = data.get(field)
+        if not isinstance(raw, list):
+            problems.append(f"'{field}' must be a list")
+            return set()
+        result: set[str] = set()
+        for index, item in enumerate(raw):
+            if not isinstance(item, dict):
+                problems.append(f"{field}[{index}] must be an object")
+                continue
+            ident = item.get("id")
+            if not isinstance(ident, str) or not ident.strip():
+                problems.append(f"{field}[{index}].id must be a non-empty string")
+                continue
+            for required in required_fields:
+                value = item.get(required)
+                if not isinstance(value, str) or not value.strip():
+                    problems.append(f"{field}[{index}].{required} must be a non-empty string")
+            if field == "layers":
+                clock = item.get("clock")
+                if isinstance(clock, bool) or not isinstance(clock, int) or clock not in CLOCKS:
+                    problems.append(f"layers[{index}].clock must be one of {CLOCKS}")
+            if ident in result:
+                problems.append(f"duplicate {field} id '{ident}'")
+            result.add(ident)
+        return result
+
+    layers = definitions("layers", ("title", "surface", "summary"))
+    kinds = definitions("patch_kinds", ("title", "detail"))
     tables = _allowlist(base / "catalog" / "world_tables.txt")
     conf_keys = _allowlist(base / "catalog" / "config_keys.txt")
     unknown_surfaces: List[str] = []
@@ -96,64 +140,99 @@ def validate(data: Dict, base: Path = REPO) -> List[str]:
     if not kinds:
         problems.append("no patch_kinds defined")
 
+    raw_entries = data.get("entries")
+    if not isinstance(raw_entries, list):
+        problems.append("'entries' must be a list")
+        return problems
+
     seen: Dict[str, int] = {}
     doc_dirs = {p.stem.split("-")[0]: p for p in (base / "docs").glob("[0-9][0-9]-*.md")}
 
-    for index, entry in enumerate(data.get("entries", [])):
-        where = entry.get("id") or f"entries[{index}]"
+    for index, entry in enumerate(raw_entries):
+        if not isinstance(entry, dict):
+            problems.append(f"entries[{index}] must be an object")
+            continue
+        raw_id = entry.get("id")
+        where = raw_id if isinstance(raw_id, str) and raw_id else f"entries[{index}]"
         for field in ("id", "title", "layer", "patch", "clock", "surfaces", "effect", "verify", "docs"):
             if field not in entry:
                 problems.append(f"{where}: missing field '{field}'")
-        if "id" not in entry:
-            continue
-        entry_id = entry["id"]
-        seen[entry_id] = seen.get(entry_id, 0) + 1
+
+        if not isinstance(raw_id, str) or not raw_id.strip():
+            problems.append(f"{where}: 'id' must be a non-empty string")
+            entry_id = where
+        else:
+            entry_id = raw_id
+            if not CATALOG_ID_RE.fullmatch(entry_id):
+                problems.append(f"{entry_id}: id must be a lowercase dotted catalog identifier")
+            seen[entry_id] = seen.get(entry_id, 0) + 1
+
+        if "notes" in entry and (not isinstance(entry["notes"], str) or not entry["notes"].strip()):
+            problems.append(f"{entry_id}: optional 'notes' must be a non-empty string when present")
+
+        for field in ("title",):
+            value = entry.get(field)
+            if not isinstance(value, str) or not value.strip():
+                problems.append(f"{entry_id}: '{field}' must be a non-empty string")
 
         layer = entry.get("layer")
-        if layer not in layers:
-            problems.append(f"{entry_id}: unknown layer '{layer}'")
-        elif not entry_id.startswith(LAYER_PREFIX[layer]):
+        if not isinstance(layer, str) or layer not in layers:
+            problems.append(f"{entry_id}: unknown layer {layer!r}")
+        elif isinstance(raw_id, str) and not raw_id.startswith(LAYER_PREFIX.get(layer, "")):
             problems.append(
                 f"{entry_id}: id should start with '{LAYER_PREFIX[layer]}' for layer '{layer}'"
             )
 
-        if entry.get("patch") not in kinds:
-            problems.append(f"{entry_id}: unknown patch kind '{entry.get('patch')}'")
-        if entry.get("clock") not in CLOCKS:
+        patch = entry.get("patch")
+        if not isinstance(patch, str) or patch not in kinds:
+            problems.append(f"{entry_id}: unknown patch kind {patch!r}")
+        clock = entry.get("clock")
+        if isinstance(clock, bool) or not isinstance(clock, int) or clock not in CLOCKS:
             problems.append(f"{entry_id}: clock must be one of {CLOCKS}")
 
         for field in ("surfaces", "verify", "docs"):
             value = entry.get(field)
-            if not isinstance(value, list) or not value:
-                problems.append(f"{entry_id}: '{field}' must be a non-empty list")
+            if (not isinstance(value, list) or not value
+                    or any(not isinstance(item, str) or not item.strip() for item in value)):
+                problems.append(f"{entry_id}: '{field}' must be a non-empty list of non-empty strings")
 
-        if not str(entry.get("effect", "")).strip():
-            problems.append(f"{entry_id}: empty effect")
+        effect = entry.get("effect")
+        if not isinstance(effect, str) or not effect.strip():
+            problems.append(f"{entry_id}: 'effect' must be a non-empty string")
 
-        for surface in entry.get("surfaces", []):
+        surfaces = entry.get("surfaces")
+        if not isinstance(surfaces, list):
+            surfaces = []
+        for surface in surfaces:
+            if not isinstance(surface, str) or not surface.strip():
+                problems.append(f"{entry_id}: each surface must be a non-empty string")
+                continue
             if ":" not in surface:
                 problems.append(f"{entry_id}: surface '{surface}' should be 'kind:target'")
                 continue
-            kind, rest = surface.split(":", 1)
-            target = rest.split(":", 1)[0]          # table:creature_template:HealthModifier -> creature_template
-            if kind not in {"conf", "table", "dbc", "file", "addon", "code"}:
-                problems.append(f"{entry_id}: unknown surface kind '{kind}'")
-            elif kind == "table" and tables is not None and target not in tables:
+            surface_kind, rest = surface.split(":", 1)
+            target = rest.split(":", 1)[0]  # table:creature_template:HealthModifier -> table name
+            if not target:
+                problems.append(f"{entry_id}: surface '{surface}' has an empty target")
+            if surface_kind not in {"conf", "table", "dbc", "file", "addon", "code"}:
+                problems.append(f"{entry_id}: unknown surface kind '{surface_kind}'")
+            elif surface_kind == "table" and tables is not None and target not in tables:
                 unknown_surfaces.append(f"{entry_id}: table '{target}' is not in catalog/world_tables.txt")
-            elif kind == "conf" and conf_keys is not None and target not in conf_keys:
+            elif surface_kind == "conf" and conf_keys is not None and target not in conf_keys:
                 unknown_surfaces.append(f"{entry_id}: conf key '{target}' is not in catalog/config_keys.txt")
 
-        for ref in entry.get("docs", []):
-            if ref not in doc_dirs:
+        docs = entry.get("docs")
+        if not isinstance(docs, list):
+            docs = []
+        for ref in docs:
+            if isinstance(ref, str) and ref not in doc_dirs:
                 problems.append(f"{entry_id}: doc reference '{ref}' has no docs/{ref}-*.md")
 
     for entry_id, count in seen.items():
         if count > 1:
             problems.append(f"duplicate id '{entry_id}' ({count} entries)")
 
-    for line in sorted(set(unknown_surfaces)):
-        problems.append(line)
-
+    problems.extend(sorted(set(unknown_surfaces)))
     return problems
 
 
@@ -350,6 +429,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         data = load(getattr(args, "catalog", DEFAULT_CATALOG))
+        if args.command != "validate":
+            problems = validate(data)
+            if problems:
+                for problem in problems:
+                    print(f"catalog invalid: {problem}", file=sys.stderr)
+                return 1
         handlers = {
             "validate": cmd_validate,
             "list": cmd_list,

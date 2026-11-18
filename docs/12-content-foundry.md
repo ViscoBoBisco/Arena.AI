@@ -34,17 +34,39 @@ Never point this command at production or a populated shared database. The crede
 Commands (all use exit codes 0 success, 1 validation/integrity failure, 2 usage or input error):
 
 ```sh
-python3 tools/foundry.py validate specs/frost-armory.json
-python3 tools/foundry.py plan specs/frost-armory.json
+python3 tools/foundry.py validate specs/vault-terminal.json
+python3 tools/foundry.py plan specs/vault-terminal.json
 python3 tools/foundry.py assets --dbc-dir /path/to/local/dbc --query frost
 python3 tools/foundry.py assets --inventory local-assets.json --query frost --kind item_display
-python3 tools/foundry.py build specs/frost-armory.json --out /tmp/frost-armory --allow-unverified
-python3 tools/foundry.py verify /tmp/frost-armory
-python3 tools/foundry.py qualify /tmp/frost-armory
-python3 tools/foundry.py release /tmp/frost-armory --out /tmp/releases/frost-armory
+python3 tools/foundry.py build specs/vault-terminal.json --out /tmp/vault-terminal
+python3 tools/foundry.py verify /tmp/vault-terminal
+python3 tools/foundry.py qualify /tmp/vault-terminal
+python3 tools/foundry.py release /tmp/vault-terminal --out /tmp/releases/vault-terminal
 ```
 
+Frost Armory is not the happy-path example: its declared recipe has no executable emitter, so
+current validation/build must fail at emitter coverage. Its checked-in package is historical only.
+
 `build` publishes to a new destination only: it assembles in a same-filesystem staging directory and atomically renames into place without replacing an existing path. A collision or write failure leaves the prior destination untouched; move or archive an old package explicitly before rebuilding there. `validate` is fail-closed. Only `PASS` qualifies. Missing required database/client evidence is never silently treated as success: checks can be `FAIL`, `SKIPPED`, or `NOT_ASSESSED`. `--allow-unverified` does not convert an unknown asset into a verified one; it explicitly allows building a handoff preview, records the `SKIPPED` verdict and leaves the overall qualification unsuccessful. Without the flag, the build is blocked. The allowance is a development escape hatch, not a release approval.
+
+### CLI command contract
+
+| Command | Reads / writes | Success and non-success meaning |
+|---|---|---|
+| `validate` | Reads spec plus optional ID baseline and local DBC directory; writes verdict JSON to stdout only | Exit 0 means the declared local validation gates pass. Exit 1 means a gate fails; exit 2 means input/usage could not be read. |
+| `plan` | Reads spec/baseline/optional DBC; emits proposed IDs, delivery requirements and validation JSON; writes no package | Exit 0 permits a plan unless the only blocked essential gate is asset verification. This is a planning exception, **not** a build/release pass. Unsupported emitters still block. |
+| `build` | Reads spec and evidence inputs; writes a new bundle at `--out` | Exit 0 means a handoff package was generated. By default unverified assets block; `--allow-unverified` permits only the explicitly skipped-asset preview case. Package remains non-installable and unqualified. `--stamp` adds a time field and therefore opts out of byte-identical rebuilds. |
+| `verify` | Reads package and manifest; no writes | Exit 0 checks byte integrity and listed-file inventory only. It cannot promote qualification or release status. |
+| `assets` | Reads either local parsed DBCs or a discovery inventory; emits JSON | Parsed DBC evidence binds table/row/hash. Inventory claims are discovery hints, not asset qualification. It does not copy supplied client files into a package. |
+| `qualify` | Reads package and optional attestations; atomically writes a report outside the package | Exit 0 means policy gates in that report qualify the exact package. Exit 1 means blocked/unqualified; exit 2 means malformed inputs or report I/O failure. User-supplied attestations remain externally untrusted unless independently authenticated. |
+| `release` | Reads package and qualification report; copies a qualified package to a new output | Exit 0 means the policy-approved copy was staged and rechecked; exit 1 means release is blocked or the operation failed. Publication uses an atomic no-replace rename, so a destination that appears after preflight is preserved. It is not an installer or gameplay run. |
+| `export-candidate` | Reads an integrity-checked package; creates a new ZIP outside its source | Exit 0 creates an explicitly non-authorizing, non-installable review archive. It does not add qualification evidence. |
+| `explain` | Reads spec; writes a short title/cost/evidence pointer | Descriptive output only; it does not run validation, allocate IDs or build artifacts. |
+
+Treat command status as scoped to that command: `plan` is not `validate`, `build` is not `verify`,
+`verify` is not `qualify`, a `qualify` report is not trusted merely because it parses, and `release`
+is not live acceptance. Refer to the actual command output and package-bound evidence, not a prior
+run or an overall word like “PASS” without its gate name.
 
 ## Spec v1 contract
 
@@ -102,19 +124,19 @@ Generated artifacts remain mixed-maturity and do not establish complete gameplay
 A repeatable targeted compiler gate is available after configuring that exact core checkout with the generated module present. The configure step must complete successfully with AzerothCore's native build dependencies installed; it emits `compile_commands.json`. Then run:
 
 ```sh
-python3 tools/foundry.py build specs/frost-armory.json --out /tmp/frost-armory --allow-unverified
-cp -a /tmp/frost-armory/server/mod-frost-armory /path/to/azerothcore/modules/
+python3 tools/foundry.py build specs/vault-terminal.json --out /tmp/vault-terminal
+cp -a /tmp/vault-terminal/server/mod-vault-terminal /path/to/azerothcore/modules/
 cmake -S /path/to/azerothcore -B /path/to/azerothcore-build \
   -DWITHOUT_GIT=1 -DNOJEM=1 -DUSE_COREPCH=0 -DUSE_SCRIPTPCH=0 \
   -DTOOLS_BUILD=none -DWITH_WARNINGS=0
 python3 tools/compile_generated_module.py \
   --build-dir /path/to/azerothcore-build \
   --core-source /path/to/azerothcore \
-  --module mod-frost-armory \
-  --registration AddFrostArmoryScripts
+  --module mod-vault-terminal \
+  --registration AddVaultTerminalScripts
 ```
 
-The helper refuses a different core revision, compiles the generated feature TU, module-local loader and CMake-generated static loader using that build's exact compiler commands, then checks the registration symbols connect with `nm`. Frost Armory's record remains `foundry/qualifications/azerothcore-module.json`. The current generated Vault Terminal source (`VaultTerminal.cpp` SHA-256 `dc23be4e95e2702c5c862d4d2f89a305b8690efd862796b0633a694bfea3b81a`) passed the pinned-source compile/linkage workflow in [run 44378437285](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44378437285/job/135063773024), against revision `6ffb62abb867dabb258de6813ff5d06d6b011543`; the matching exact-source record is `foundry/qualifications/vault-terminal-azerothcore-module.json`. Earlier the package's fail-closed hash check correctly omitted `ARENA-COMPILE` because that record still described a previous C++ source hash, despite a newer compile run having passed. The record was refreshed, and the package test now requires exact source-hash matching. Source review also found the request hook accepted addon frames carried over non-WHISPER chat distributions; the generated C++ now consumes and rejects any VT1 frame not sent as the documented WHISPER transport. Its new guard passed pinned-core compile/linkage CI. This does not prove a complete server build, database, live client, or runtime behavior. The generated Characters migration/read/claim behavior passed isolated DB qualification in [run 44307329762](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44307329762). Package generation and qualification require the pinned core revision, canonical checked-in feature record, and every packaged module `.cpp`/`.h` hash to match. These are targeted compile/linkage and disposable DB checks—not a complete AzerothCore build, final module link, booted worldserver feature session, 3.3.5a client run or gameplay qualification. They do not certify live feature behavior.
+The helper refuses a different core revision, compiles the generated feature TU, module-local loader and CMake-generated static loader using that build's exact compiler commands, then checks the registration symbols connect with `nm`. The current Vault Terminal module record is `foundry/qualifications/vault-terminal-azerothcore-module.json`. Its generated source (`VaultTerminal.cpp` SHA-256 `dc23be4e95e2702c5c862d4d2f89a305b8690efd862796b0633a694bfea3b81a`) passed the pinned-source compile/linkage workflow in [run 44378437285](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44378437285/job/135063773024), against revision `6ffb62abb867dabb258de6813ff5d06d6b011543`; the matching exact-source record is `foundry/qualifications/vault-terminal-azerothcore-module.json`. Earlier the package's fail-closed hash check correctly omitted `ARENA-COMPILE` because that record still described a previous C++ source hash, despite a newer compile run having passed. The record was refreshed, and the package test now requires exact source-hash matching. Source review also found the request hook accepted addon frames carried over non-WHISPER chat distributions; the generated C++ now consumes and rejects any VT1 frame not sent as the documented WHISPER transport. Its new guard passed pinned-core compile/linkage CI. This does not prove a complete server build, database, live client, or runtime behavior. The generated Characters migration/read/claim behavior passed isolated DB qualification in [run 44307329762](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44307329762). Package generation and qualification require the pinned core revision, canonical checked-in feature record, and every packaged module `.cpp`/`.h` hash to match. These are targeted compile/linkage and disposable DB checks—not a complete AzerothCore build, final module link, booted worldserver feature session, 3.3.5a client run or gameplay qualification. They do not certify live feature behavior.
 
 ## Traceable task ledger
 
