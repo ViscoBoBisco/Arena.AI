@@ -176,8 +176,15 @@ def _compile_qualification_matches(package: Path, evidence: dict) -> bool:
     )
 
 
-def qualify_package(package: Path, attestations_path: Optional[Path] = None) -> dict:
-    """Produce a manifest-bound report; records cannot override package defects."""
+def _canonical_json_sha256(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False).encode("utf-8")
+    return _sha256(encoded)
+
+
+def qualify_package(package: Path, attestations_path: Optional[Path] = None,
+                    *, _attestations_override: Optional[dict] = None) -> dict:
+    """Produce a reproducible manifest-bound report from raw attestation records."""
     integrity = integrity_check(package)
     report = {
         "schema": "arena-qualification-report/1",
@@ -210,17 +217,21 @@ def qualify_package(package: Path, attestations_path: Optional[Path] = None) -> 
         return report
 
     try:
-        attestations = _read_json(attestations_path) if attestations_path else {}
+        attestations = (_attestations_override if _attestations_override is not None
+                        else _read_json(attestations_path) if attestations_path else {})
+        if not isinstance(attestations, dict):
+            raise ValueError("attestations must be a JSON object")
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         attestations = {}
         report["attestations_error"] = str(exc)
+    report["attestations"] = attestations
     subject = attestations.get("subject") if isinstance(attestations, dict) else None
     attested = (isinstance(attestations, dict)
                 and attestations.get("schema") == "arena-qualification-attestations/1"
                 and isinstance(subject, dict)
                 and subject.get("manifest_sha256") == integrity["manifest_sha256"])
     report["attestations_sha256"] = (
-        _sha256(attestations_path.read_bytes()) if attested and attestations_path else None)
+        _canonical_json_sha256(attestations) if attested else None)
     gate("attestation_binding", attested,
          "attestations bind to this manifest" if attested
          else "manifest-bound qualification attestations are required")
@@ -387,8 +398,14 @@ def release_package(package: Path, qualification_path: Path, out_dir: Path) -> d
     try:
         evidence = _read_json(package / "evidence.json")
         required_gates = _required_gate_names(evidence, integrity["manifest"])
+        raw_attestations = report.get("attestations")
+        if not isinstance(raw_attestations, dict):
+            raise ValueError("qualification report does not contain raw attestation records")
+        recomputed = qualify_package(package, _attestations_override=raw_attestations)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"package evidence is not releasable: {exc}") from exc
+    if report != recomputed:
+        raise ValueError("qualification report does not match recomputed policy from package and raw attestations")
     gate_names = [gate.get("name") for gate in gates if isinstance(gate, dict)] \
         if isinstance(gates, list) else []
     if (report.get("schema") != "arena-qualification-report/1"

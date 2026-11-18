@@ -16,6 +16,7 @@ import helpers  # noqa: E402
 sys.path.insert(0, str(helpers.REPO))
 from foundry.qualification import (  # noqa: E402
     _compile_qualification_matches,
+    _required_gate_names,
     _valid_delivery_contract,
     integrity_check,
 )
@@ -127,6 +128,50 @@ class LifecyclePhases(unittest.TestCase):
                                        "--qualification", report_path, "--out", release_dir)
             self.assertEqual(released.returncode, 1)
             self.assertFalse(release_dir.exists())
+
+    def test_forged_all_pass_report_cannot_release_blocked_frost(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package = helpers.REPO / "packages" / "frost-armory"
+            checked = integrity_check(package)
+            evidence = json.loads((package / "evidence.json").read_text(encoding="utf-8"))
+            gate_names = sorted(_required_gate_names(evidence, checked["manifest"]))
+            forged = {
+                "schema": "arena-qualification-report/1",
+                "package": str(package),
+                "manifest_sha256": checked["manifest_sha256"],
+                "integrity": "PASS",
+                "status": "QUALIFIED",
+                "qualified": True,
+                "blocked_reasons": [],
+                "gates": [{"name": name, "status": "PASS",
+                           "detail": "operator asserts PASS"} for name in gate_names],
+            }
+            report_path = Path(tmp) / "fabricated-report.json"
+            output = Path(tmp) / "must-not-release"
+            report_path.write_text(json.dumps(forged), encoding="utf-8")
+            result = helpers.run_tool(FOUNDRY, "release", package,
+                                      "--qualification", report_path, "--out", output)
+            self.assertEqual(result.returncode, 1,
+                             "a self-consistent PASS report must not authorize release")
+            self.assertFalse(output.exists())
+
+            # A report that starts from a genuine blocked result is no more
+            # authoritative: editing gate/status fields must disagree with a
+            # fresh policy evaluation over the package and preserved raw inputs.
+            genuine_path = Path(tmp) / "genuine-blocked.json"
+            helpers.run_tool(FOUNDRY, "qualify", package, "--out", genuine_path)
+            edited = json.loads(genuine_path.read_text(encoding="utf-8"))
+            edited["qualified"] = True
+            edited["status"] = "QUALIFIED"
+            edited["blocked_reasons"] = []
+            for gate in edited["gates"]:
+                gate["status"] = "PASS"
+                gate["detail"] = "fabricated"
+            report_path.write_text(json.dumps(edited), encoding="utf-8")
+            result = helpers.run_tool(FOUNDRY, "release", package,
+                                      "--qualification", report_path, "--out", output)
+            self.assertEqual(result.returncode, 1)
+            self.assertFalse(output.exists())
 
     def test_qualified_report_is_manifest_bound_and_release_copy_is_atomic(self):
         with tempfile.TemporaryDirectory() as tmp:
