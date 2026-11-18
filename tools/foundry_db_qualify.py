@@ -17,6 +17,8 @@ def _args(argv=None):
     parser.add_argument("package", type=Path, help="integrity-checked Foundry package directory")
     parser.add_argument("--database", required=True,
                         help="dedicated disposable schema (must start arena_foundry_disposable_)")
+    parser.add_argument("--core-source", type=Path, required=True,
+                        help="clean checkout of the exact revision in foundry/core-pins.json")
     parser.add_argument("--mysql", default="mysql", help="MySQL/MariaDB CLI executable")
     parser.add_argument("--defaults-extra-file", type=Path,
                         help="optional MySQL option file; keep credentials out of shell arguments")
@@ -72,7 +74,8 @@ def main(argv=None) -> int:
         return result.stdout
 
     try:
-        attestations = qualify_database(args.package, args.database, run_mysql)
+        attestations = qualify_database(args.package, args.database, run_mysql,
+                                        core_source=args.core_source)
         write_attestations(args.out, attestations)
     except Exception as exc:
         print(f"database qualification failed: {exc}", file=sys.stderr)

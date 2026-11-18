@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -88,6 +89,80 @@ def _passed_record(record: Any) -> bool:
     return (isinstance(record, dict) and record.get("status") == "PASS"
             and isinstance(record.get("evidence"), str)
             and bool(record["evidence"].strip()))
+
+
+def _valid_database_attestation(attestations: Any, manifest_sha256: str,
+                                package: Path) -> bool:
+    """Semantically bind DB proof, migrations and schema source to this package/pin."""
+    if (not isinstance(attestations, dict)
+            or attestations.get("schema") != "arena-qualification-attestations/1"
+            or attestations.get("subject") != {"manifest_sha256": manifest_sha256}):
+        return False
+    levels = attestations.get("levels")
+    record = levels.get("ARENA-DB") if isinstance(levels, dict) else None
+    proof = attestations.get("database_qualification")
+    if (not _passed_record(record) or not isinstance(proof, dict)
+            or proof.get("schema") != "arena-db-qualification/1"
+            or proof.get("manifest_sha256") != manifest_sha256):
+        return False
+    database = proof.get("database")
+    if (not isinstance(database, str) or len(database) > 64
+            or not re.fullmatch(r"arena_foundry_disposable_[A-Za-z0-9_]+", database)):
+        return False
+    if not isinstance(proof.get("server_version"), str) or not proof["server_version"].strip():
+        return False
+    checked_rows = proof.get("checked_rows")
+    if not isinstance(checked_rows, int) or isinstance(checked_rows, bool) or checked_rows < 1:
+        return False
+    expected_sequence = [
+        "apply", "verify", "apply-idempotently", "verify", "rollback", "verify-empty",
+        "reapply-after-rollback", "verify", "rollback", "verify-empty",
+    ]
+    if proof.get("sequence") != expected_sequence:
+        return False
+    try:
+        migration_path = package / "sql" / "01_world.sql"
+        rollback_path = package / "sql" / "99_rollback.sql"
+        migration_hash = _sha256(migration_path.read_bytes())
+        rollback_hash = _sha256(rollback_path.read_bytes())
+        pins = _read_json(Path(__file__).resolve().parent / "core-pins.json")
+        from .db_qualification import (expected_world_rows, inspect_generated_sql,
+                                       validate_generated_sql)
+        spec = _read_json(package / "spec.json")
+        allocation = _read_json(package / "id-allocation.json")
+        migration_statements = validate_generated_sql(
+            migration_path.read_text(encoding="utf-8"), rollback=False)
+        rollback_statements = validate_generated_sql(
+            rollback_path.read_text(encoding="utf-8"), rollback=True)
+        expected_rows = expected_world_rows(spec, allocation)
+        migration_deletes, _ = inspect_generated_sql(
+            migration_statements, rollback_statements, expected_rows, spec, allocation)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    if (proof.get("migration_sha256") != migration_hash
+            or proof.get("rollback_sha256") != rollback_hash
+            or checked_rows != len(migration_deletes)):
+        return False
+    source = proof.get("schema_source")
+    pin = pins.get("azerothcore_wotlk") if isinstance(pins, dict) else None
+    if (not isinstance(source, dict)
+            or source.get("schema") != "arena-db-schema-source/1"
+            or not isinstance(pin, dict)
+            or source.get("repository") != pin.get("repository")
+            or source.get("revision") != pin.get("revision")):
+        return False
+    tables = source.get("tables")
+    required_tables = {
+        f"data/sql/base/db_world/{table}.sql" for table in (
+            "creature_template", "creature_template_model", "game_event", "item_template",
+            "npc_vendor", "quest_template", "spell_dbc",
+        )
+    }
+    return (isinstance(tables, dict) and set(tables) == required_tables
+            and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+                    for value in tables.values())
+            and record.get("evidence") == "sha256:" + _sha256(
+                (json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n").encode()))
 
 
 _ARTIFACT_KINDS = {
@@ -290,7 +365,9 @@ def qualify_package(package: Path, attestations_path: Optional[Path] = None,
              else f"client/server DBC hashes match for {table}")
 
     if artifact_kinds & {"world_sql", "data_migration", "characters_sql"}:
-        db_pass = _passed_record(external_levels.get("ARENA-DB"))
+        db_pass = (_valid_database_attestation(attestations, integrity["manifest_sha256"],
+                                               package)
+                   if attested else False)
         gate("database_migrations", db_pass,
              "disposable-schema/apply/rollback evidence required" if not db_pass
              else "database qualification record supplied")

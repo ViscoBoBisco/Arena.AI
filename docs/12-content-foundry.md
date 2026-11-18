@@ -14,12 +14,13 @@ Qualification fails closed on missing manifest-bound attestations. Applicable su
 
 ## Disposable database migration check
 
-`tools/foundry_db_qualify.py` can produce an `ARENA-DB` attestation when run against an initialized, disposable AzerothCore world schema. It refuses database names without the `arena_foundry_disposable_` prefix, requires an explicit confirmation flag, verifies that every generated row key is initially unused, accepts only the Foundry DML subset, checks inserted row identities, then exercises apply twice, rollback, reapply, and rollback again. It attempts cleanup after an interrupted apply and emits no PASS attestation on failure. This is a harness, not a database claim: it must be run against the actual compatible schema, and does not qualify stock assets, MPQ delivery, acceptance, or live gameplay.
+`tools/foundry_db_qualify.py` can produce an `ARENA-DB` attestation only when supplied a clean checkout at the exact revision in `foundry/core-pins.json`; the proof records the SHA-256 of every touched table's pinned `data/sql/base/db_world/*.sql` source. It refuses database names without the `arena_foundry_disposable_` prefix, requires an explicit confirmation flag, verifies that every generated row key is initially unused, accepts only the Foundry DML subset, checks inserted row identities, then exercises apply twice, rollback, reapply, and rollback again. It attempts cleanup after an interrupted apply and emits no PASS attestation on failure. A CI job is configured to initialize the seven tables the generated Frost Armory migration touches from those exact pinned base SQL files in disposable MySQL 8.4.3, then upload the package and raw DB proof as a workflow artifact. No real-DB PASS is claimed until that workflow has succeeded and its run artifact is available. This is table-scoped DB qualification, not a full populated AzerothCore world/server qualification; it does not qualify stock assets, MPQ delivery, acceptance, or live gameplay.
 
 ```sh
 # First initialize this throwaway schema from the pinned compatible AzerothCore SQL base.
 python3 tools/foundry_db_qualify.py packages/frost-armory \
   --database arena_foundry_disposable_frost \
+  --core-source /path/to/clean/pinned/azerothcore-wotlk \
   --defaults-extra-file ~/.my.cnf \
   --confirm-disposable \
   --out /tmp/frost-db-attestations.json

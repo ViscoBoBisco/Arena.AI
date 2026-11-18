@@ -215,6 +215,15 @@ class LifecyclePhases(unittest.TestCase):
                 {"kind": "server_dbc", "table": "Item.dbc"},
                 {"kind": "mpq", "table": "Item.dbc"},
             ])
+            raw_attestations = json.loads(attestations.read_text(encoding="utf-8"))
+            raw_attestations["levels"]["ARENA-DB"] = {
+                "status": "PASS", "evidence": "sha256:" + "0" * 64,
+            }
+            raw_attestations["database_qualification"] = {
+                "schema": "arena-db-qualification/1",
+                "manifest_sha256": raw_attestations["subject"]["manifest_sha256"],
+            }
+            attestations.write_text(json.dumps(raw_attestations), encoding="utf-8")
             report_path = root / "qualification.json"
             qualified = helpers.run_tool(FOUNDRY, "qualify", package,
                                          "--attestations", attestations,
@@ -224,7 +233,8 @@ class LifecyclePhases(unittest.TestCase):
             blocked = {gate["name"] for gate in report["gates"]
                        if gate["status"] == "BLOCKED"}
             self.assertTrue({"database_migrations", "server_module", "mpq_delivery",
-                             "dbc_parity:Item.dbc"} <= blocked)
+                             "dbc_parity:Item.dbc"} <= blocked,
+                            "a free-form ARENA-DB PASS string is not semantic DB proof")
 
     def test_delivery_contract_rejects_ambiguous_mpq_surfaces(self):
         base = {

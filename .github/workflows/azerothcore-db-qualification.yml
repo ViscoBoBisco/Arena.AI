@@ -1,0 +1,113 @@
+name: pinned AzerothCore disposable DB qualification
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  qualify-generated-world-sql:
+    name: Qualify Foundry world SQL on pinned AzerothCore schema
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    services:
+      mysql:
+        image: mysql:8.4.3
+        env:
+          MYSQL_ROOT_PASSWORD: arena-foundry-ci-only
+          MYSQL_DATABASE: arena_foundry_disposable_ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent --host=127.0.0.1 --user=root --password=$MYSQL_ROOT_PASSWORD"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MySQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y default-mysql-client
+
+      - name: Checkout exact AzerothCore schema source pin
+        run: |
+          revision="$(python3 -c 'import json; print(json.load(open("foundry/core-pins.json"))["azerothcore_wotlk"]["revision"])')"
+          git clone https://github.com/azerothcore/azerothcore-wotlk.git /tmp/azerothcore
+          git -C /tmp/azerothcore checkout --detach "$revision"
+          test "$(git -C /tmp/azerothcore rev-parse HEAD)" = "$revision"
+
+      - name: Create protected client option file
+        run: |
+          cat > /tmp/arena-foundry-mysql.cnf <<'EOF'
+          [client]
+          host=127.0.0.1
+          user=root
+          password=arena-foundry-ci-only
+          EOF
+          chmod 600 /tmp/arena-foundry-mysql.cnf
+          mysql --defaults-extra-file=/tmp/arena-foundry-mysql.cnf \
+            --execute='SELECT VERSION(), DATABASE();' arena_foundry_disposable_ci
+
+      - name: Initialize touched tables from pinned world base SQL
+        run: |
+          set -euo pipefail
+          for table in \
+            creature_template creature_template_model game_event item_template \
+            npc_vendor quest_template spell_dbc; do
+            source="/tmp/azerothcore/data/sql/base/db_world/${table}.sql"
+            test -s "$source"
+            mysql --defaults-extra-file=/tmp/arena-foundry-mysql.cnf \
+              --database=arena_foundry_disposable_ci < "$source"
+          done
+
+      - name: Build the package and execute apply/idempotence/rollback checks
+        run: |
+          python3 tools/foundry.py build specs/frost-armory.json \
+            --out /tmp/frost-armory --allow-unverified
+          python3 tools/foundry_db_qualify.py /tmp/frost-armory \
+            --database arena_foundry_disposable_ci \
+            --core-source /tmp/azerothcore \
+            --defaults-extra-file /tmp/arena-foundry-mysql.cnf \
+            --confirm-disposable \
+            --out /tmp/arena-db-attestations.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          proof = json.loads(Path('/tmp/arena-db-attestations.json').read_text())
+          db = proof['database_qualification']
+          assert proof['levels']['ARENA-DB']['status'] == 'PASS'
+          assert db['schema_source']['revision'] == json.loads(
+              Path('foundry/core-pins.json').read_text())['azerothcore_wotlk']['revision']
+          assert db['checked_rows'] > 0
+          print(f"ARENA-DB PASS: {db['checked_rows']} identities; MySQL {db['server_version']}")
+          print(f"Pinned schema revision: {db['schema_source']['revision']}")
+          PY
+          {
+            echo '## ARENA-DB qualification'
+            echo ''
+            python3 - <<'PY'
+          import json
+          from pathlib import Path
+          proof = json.loads(Path('/tmp/arena-db-attestations.json').read_text())
+          db = proof['database_qualification']
+          print(f"- Status: **PASS**")
+          print(f"- Pinned AzerothCore schema: `{db['schema_source']['revision']}`")
+          print(f"- MySQL: `{db['server_version']}`")
+          print(f"- Checked row identities: `{db['checked_rows']}`")
+          print(f"- Manifest SHA-256: `{db['manifest_sha256']}`")
+          PY
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve package and raw DB proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: arena-db-qualification-${{ github.run_id }}
+          path: |
+            /tmp/frost-armory/
+            /tmp/arena-db-attestations.json
+          if-no-files-found: error
+          retention-days: 30

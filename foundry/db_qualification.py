@@ -12,9 +12,10 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .qualification import integrity_check
 
@@ -280,8 +281,62 @@ def _assert_rows(runner: QueryRunner, rows: Set[RowIdentity], expected: int) -> 
         raise RuntimeError("; ".join(mismatches))
 
 
-def qualify_database(package: Path, database: str, runner: QueryRunner) -> dict:
-    """Run apply/idempotence/rollback/reapply/rollback and return attestations."""
+_DB_SCHEMA_TABLES = (
+    "creature_template", "creature_template_model", "game_event", "item_template",
+    "npc_vendor", "quest_template", "spell_dbc",
+)
+
+
+def _pinned_schema_source(core_source: Path) -> dict:
+    """Record hashes of the exact pinned AzerothCore base SQL used to initialize tables."""
+    pins_path = Path(__file__).resolve().parent / "core-pins.json"
+    pins = _json_object(pins_path)
+    pin = pins.get("azerothcore_wotlk")
+    if not isinstance(pin, dict):
+        raise ValueError("AzerothCore source pin is missing")
+    repo = core_source.resolve()
+    try:
+        revision = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+            capture_output=True, text=True, timeout=15).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f"cannot identify pinned AzerothCore checkout: {exc}") from exc
+    if revision != pin.get("revision"):
+        raise ValueError(f"AzerothCore checkout {revision!r} does not match pinned revision")
+    table_hashes = {}
+    source_paths = [f"data/sql/base/db_world/{table}.sql" for table in _DB_SCHEMA_TABLES]
+    try:
+        dirty = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain", "--", *source_paths],
+            check=True, capture_output=True, text=True, timeout=15).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f"cannot verify pinned AzerothCore schema sources: {exc}") from exc
+    if dirty:
+        raise ValueError("AzerothCore schema source files have local modifications")
+    for rel in source_paths:
+        path = repo / rel
+        try:
+            path.resolve().relative_to(repo)
+            if path.is_symlink() or not path.is_file():
+                raise OSError("not a regular file")
+            content = path.read_bytes()
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"pinned world-schema source is unavailable: {rel}: {exc}") from exc
+        if not content:
+            raise ValueError(f"pinned world-schema source is empty: {rel}")
+        table_hashes[rel] = hashlib.sha256(content).hexdigest()
+    return {
+        "schema": "arena-db-schema-source/1",
+        "repository": pin.get("repository"),
+        "revision": revision,
+        "tables": table_hashes,
+    }
+
+
+def qualify_database(package: Path, database: str, runner: QueryRunner,
+                     *, core_source: Optional[Path] = None) -> dict:
+    """Run apply/idempotence/rollback/reapply and return manifest-bound attestations."""
+    schema_source = _pinned_schema_source(core_source) if core_source is not None else None
     if not isinstance(database, str) or not database.startswith("arena_foundry_disposable_"):
         raise ValueError("database must use the arena_foundry_disposable_ prefix")
     if not _IDENT.fullmatch(database) or len(database) > 64:
@@ -361,6 +416,8 @@ def qualify_database(package: Path, database: str, runner: QueryRunner) -> dict:
                      "verify-empty", "reapply-after-rollback", "verify", "rollback",
                      "verify-empty"],
     }
+    if schema_source is not None:
+        proof["schema_source"] = schema_source
     proof_bytes = (json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n").encode()
     proof_sha256 = hashlib.sha256(proof_bytes).hexdigest()
     return {
