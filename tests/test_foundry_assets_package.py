@@ -16,7 +16,10 @@ sys.path.insert(0, str(helpers.REPO))
 from foundry.assets import ingest_dbc_dir, ingest_inventory, patch_cost, search  # noqa: E402
 
 FOUNDRY = helpers.REPO / "tools" / "foundry.py"
-SPEC = helpers.REPO / "specs" / "frost-armory.json"
+# Packaging behavior is tested against only emitter-supported declarations;
+# the source Frost Armory spec intentionally retains its recipe and must fail closed.
+FROST_SOURCE = helpers.REPO / "specs" / "frost-armory.json"
+SPEC = helpers.foundry_spec_fixture("frost-armory.json", omit=("recipes",))
 
 
 class Assets(unittest.TestCase):
@@ -73,6 +76,15 @@ class Assets(unittest.TestCase):
 
 
 class Packaging(unittest.TestCase):
+    def test_frost_armory_recipe_declaration_is_not_silently_packaged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "pkg"
+            result = helpers.run_tool(FOUNDRY, "build", FROST_SOURCE, "--out", out,
+                                      "--allow-unverified")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("emitter-coverage", result.stderr)
+            self.assertFalse(out.exists())
+
     def test_cli_build_verify_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "pkg"

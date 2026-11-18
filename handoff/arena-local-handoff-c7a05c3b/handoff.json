@@ -1,0 +1,122 @@
+{
+  "asset_provenance": {
+    "local_dbc_supplied": false,
+    "proprietary_client_data_copied": false,
+    "stock_faction_reputation": {
+      "status": "UNRESOLVED",
+      "table": "Faction.dbc",
+      "value": null
+    },
+    "stock_hostility_template": {
+      "status": "UNRESOLVED",
+      "table": "FactionTemplate.dbc",
+      "value": null
+    }
+  },
+  "bundle_files": {
+    "CHECKLIST-client.md": {
+      "sha256": "128e0504d9cf9039fd0b5ce7444ec20f6201fe2777e6f99200ab1c622c0b77cf",
+      "size": 5855,
+      "source": "docs/17-vault-terminal-client-acceptance.md"
+    },
+    "CHECKLIST-local-runtime.md": {
+      "sha256": "8c5f4978c429b2eb8969c92dbd1de5e7fb212a25b8408d35245b238ea85a36b0",
+      "size": 15706,
+      "source": "docs/18-local-runtime-handoff.md"
+    },
+    "argent-foundation.json": {
+      "sha256": "a4558e7519807bddb4c9d1db8e7c9018d3565f5cb1d1304fc96b07a2132bf32e",
+      "size": 916,
+      "source": "designs/argent-faction-operations-foundation.json"
+    }
+  },
+  "checks": [
+    {
+      "command": [
+        "make",
+        "check"
+      ],
+      "exit": 0,
+      "expected_exit": 0,
+      "log": "logs/make-check.txt",
+      "log_sha256": "26488537f19a3ee511652a9912d9553dfed5dd001839a88f5344b5e8d7ce6394",
+      "name": "make-check",
+      "status": "PASS"
+    },
+    {
+      "command": [
+        "/usr/bin/python",
+        "tools/foundry.py",
+        "verify",
+        "packages/frost-armory"
+      ],
+      "exit": 0,
+      "expected_exit": 0,
+      "log": "logs/foundry-verify.txt",
+      "log_sha256": "91bbbc471b16dee58ac75fe2f5dcaa11e86c5a75e572a5178250a22dd99e6d51",
+      "name": "foundry-verify",
+      "status": "PASS"
+    },
+    {
+      "command": [
+        "/usr/bin/python",
+        "tools/foundry.py",
+        "validate",
+        "specs/frost-armory.json",
+        "--allow-unverified"
+      ],
+      "exit": 1,
+      "expected_exit": 1,
+      "log": "logs/frost-fail-closed.txt",
+      "log_sha256": "9c826f904cb4ad8685fa182aea7225ea1530ce9cf150e7fbfcd9f5b715638992",
+      "name": "frost-fail-closed",
+      "status": "PASS"
+    }
+  ],
+  "evidence_matrix": {
+    "ARENA-COMPILE": "pinned targeted compile record applies only to exact hashed module sources; full build NOT_ASSESSED",
+    "ARENA-DB": "NOT_ASSESSED; World ownership-safe apply/rollback is deliberately blocked",
+    "ARENA-PACK": "PASS",
+    "ARENA-STATIC": "PASS",
+    "CAMPAIGN-PARTY": "NOT_ASSESSED",
+    "CLIENT-12340": "NOT_ASSESSED",
+    "FACTION-OPERATIONS": "DESIGN_ONLY_NOT_PLAYABLE; stock IDs unresolved",
+    "PLAYERBOT": "NOT_ASSESSED",
+    "SERVER-BOOT": "NOT_ASSESSED"
+  },
+  "generated_utc": "2026-11-18T20:42:42Z",
+  "ownership_ledger": {
+    "automatic_rollback": "REFUSED",
+    "production_writes": "NONE",
+    "schema": "arena-world-row-ownership/0",
+    "status": "NO_DURABLE_WORLD_ROW_OWNERSHIP_TRACKING",
+    "tracked_world_rows": []
+  },
+  "safety": {
+    "client_data_included": false,
+    "credentials_included": false,
+    "database_modified": false,
+    "installable": false,
+    "release_authorized": false
+  },
+  "schema": "arena-local-handoff/1",
+  "source": {
+    "branch": "arena/c7a05c3b-arena-ai",
+    "changed_source_sha256": {},
+    "git_diff_head_sha256": "098eebdd6103c34a1792d3bcb5657d17a0fb3982e8118471203dbe5258ec78da",
+    "head": "5917788fe22474bd138c22cea7ac05ffd7904a99",
+    "repository": "ViscoBoBisco/Arena.AI",
+    "status_porcelain": [
+      "M .github/workflows/azerothcore-db-qualification.yml",
+      " D handoff/arena-local-handoff-c7a05c3b/CHECKLIST-client.md",
+      " D handoff/arena-local-handoff-c7a05c3b/CHECKLIST-local-runtime.md",
+      " D handoff/arena-local-handoff-c7a05c3b/argent-foundation.json",
+      " D handoff/arena-local-handoff-c7a05c3b/handoff.json",
+      " D handoff/arena-local-handoff-c7a05c3b/logs/foundry-verify.txt",
+      " D handoff/arena-local-handoff-c7a05c3b/logs/frost-fail-closed.txt",
+      " D handoff/arena-local-handoff-c7a05c3b/logs/make-check.txt",
+      " D handoff/arena-local-handoff-c7a05c3b/manifest.json"
+    ],
+    "worktree_status": "DIRTY"
+  }
+}

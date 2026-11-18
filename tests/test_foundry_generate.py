@@ -51,32 +51,26 @@ class Determinism(unittest.TestCase):
 
 
 class RollbackSymmetry(unittest.TestCase):
-    def test_every_insert_has_a_delete(self):
+    def test_migration_never_deletes_or_overwrites_existing_rows(self):
         world = generate.world_sql(SPEC)
-        rollback = generate.rollback_sql(SPEC)
-        inserts = re.findall(r"INSERT INTO (\w+)", world)
-        deletes = re.findall(r"DELETE FROM (\w+)", rollback)
-        for table in set(inserts):
-            self.assertIn(table, deletes, f"{table} inserted but never rolled back")
+        statements = [line for line in world.splitlines()
+                      if line.lstrip().upper().startswith(("INSERT INTO", "DELETE FROM", "REPLACE INTO"))]
+        self.assertTrue(statements)
+        self.assertTrue(all(line.startswith("INSERT INTO") for line in statements))
+        self.assertIn("existing rows cause an error", world)
+        self.assertNotRegex(world, r"(?i)\b(DELETE|REPLACE)\s+FROM\b")
 
-    def test_delete_before_insert(self):
+    def test_rollback_refuses_unknown_ownership(self):
+        rollback = generate.rollback_sql(SPEC)
+        self.assertIn("REFUSED", rollback)
+        self.assertIn("SIGNAL SQLSTATE '45000'", rollback)
+        self.assertIn("ownership is unknown", rollback)
+        self.assertNotRegex(rollback, r"(?i)\bDELETE\s+FROM\b")
+
+    def test_reapplying_is_explicitly_not_claimed_idempotent(self):
         world = generate.world_sql(SPEC)
-        for m in re.finditer(r"DELETE FROM (\w+) WHERE entry = (\d+);\nINSERT INTO \1", world):
-            self.assertTrue(m)
-        # every INSERT is preceded by a DELETE for the same table
-        lines = world.splitlines()
-        for i, line in enumerate(lines):
-            if line.startswith("INSERT INTO"):
-                table = line.split()[2]
-                prior = "\n".join(lines[:i])
-                self.assertIn(f"DELETE FROM {table}", prior, line)
-
-    def test_rollback_covers_every_allocated_id(self):
-        rollback = generate.rollback_sql(SPEC)
-        for key, nid in allocate_ids(SPEC).items():
-            if key.startswith("recipe") or key.endswith("vendor"):
-                continue  # no table row of their own
-            self.assertIn(str(nid), rollback, key)
+        self.assertIn("Re-running after success is not supported", world)
+        self.assertNotIn("Idempotent", world)
 
 
 class ModuleAndAddon(unittest.TestCase):

@@ -1,0 +1,35 @@
+{
+  "authority": {
+    "diplomacy": "personal_accord",
+    "global_hostility_mutation": false,
+    "npc_player_group_emulation": false,
+    "standing": "core_character_reputation"
+  },
+  "evidence_levels": {
+    "campaign_party": "NOT_ASSESSED",
+    "local_dbc_row_presence": "NOT_ASSESSED",
+    "playerbot": "NOT_ASSESSED",
+    "provenance": "NOT_ASSESSED",
+    "runtime": "NOT_ASSESSED",
+    "source_pin": "public AzerothCore WotLK source layout only"
+  },
+  "identity": {
+    "hostility_templates": [
+      {
+        "evidence_sha256": null,
+        "status": "UNRESOLVED",
+        "table": "FactionTemplate.dbc",
+        "value": null
+      }
+    ],
+    "reputation": {
+      "evidence_sha256": null,
+      "status": "UNRESOLVED",
+      "table": "Faction.dbc",
+      "value": null
+    }
+  },
+  "key": "argent-accord",
+  "schema": "arena-faction-operations-foundation/1",
+  "status": "DESIGN_ONLY_NOT_PLAYABLE"
+}

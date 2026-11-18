@@ -1,0 +1,7 @@
+COMMAND: /usr/bin/python tools/foundry.py verify packages/frost-armory
+EXIT: 0
+--- stdout ---
+package frost-armory: OK (16 payload/metadata file(s) match)
+integrity only: qualification and release status are unchanged
+
+--- stderr ---

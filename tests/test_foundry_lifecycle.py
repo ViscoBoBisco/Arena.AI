@@ -22,7 +22,7 @@ from foundry.qualification import (  # noqa: E402
 )
 
 FOUNDRY = helpers.REPO / "tools" / "foundry.py"
-FROST_SPEC = helpers.REPO / "specs" / "frost-armory.json"
+FROST_SPEC = helpers.foundry_spec_fixture("frost-armory.json", omit=("recipes",))
 
 
 def _hash(data: bytes) -> str:

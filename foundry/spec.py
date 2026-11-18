@@ -327,15 +327,23 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
                         or len(set(tables)) != len(tables)):
                     add(Problem("schema", FAIL,
                                 f"delivery.{table_key} must be a unique list of non-empty strings"))
-            client_tables = set(delivery.get("client_dbc_tables", [])) \
-                if isinstance(delivery.get("client_dbc_tables", []), list) else set()
-            server_tables = set(delivery.get("server_dbc_tables", [])) \
-                if isinstance(delivery.get("server_dbc_tables", []), list) else set()
+            client_values = delivery.get("client_dbc_tables", [])
+            server_values = delivery.get("server_dbc_tables", [])
+            client_tables = ({value for value in client_values if isinstance(value, str)}
+                             if isinstance(client_values, list) else set())
+            server_tables = ({value for value in server_values if isinstance(value, str)}
+                             if isinstance(server_values, list) else set())
             if client_tables != server_tables:
                 add(Problem(
                     "delivery", FAIL,
                     "client_dbc_tables and server_dbc_tables must declare "
                     "the same tables for parity"))
+            unsupported_dbc = (client_tables | server_tables) - {"Item.dbc"}
+            if unsupported_dbc:
+                add(Problem(
+                    "emitter-coverage", FAIL,
+                    "no concrete DBC delta emitter exists for: "
+                    + ", ".join(sorted(unsupported_dbc))))
     id_range = spec.get("id_range") or {}
     if not isinstance(id_range, dict):
         id_range = {}
@@ -345,6 +353,19 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
         lo = hi = None
 
     # --- objects, references, IDs ----------------------------------------
+    # A schema kind is not a capability claim: until the generator emits an
+    # executable artifact, accepting these arrays would silently omit content.
+    for field_name, rationale in (
+            ("gameobjects", "gameobject_template emission is not implemented"),
+            ("recipes", "recipes are currently descriptive only; no crafting rows are emitted")):
+        value = spec.get(field_name)
+        if isinstance(value, list) and value:
+            add(Problem("emitter-coverage", FAIL,
+                        f"{field_name} is not installable: {rationale}"))
+    for obj in spec.get("spells", []) if isinstance(spec.get("spells"), list) else []:
+        if isinstance(obj, dict) and obj.get("dbc_row") is True:
+            add(Problem("emitter-coverage", FAIL,
+                        f"spell:{obj.get('key')}: Spell.dbc row emission is not implemented"))
     keys: Dict[str, str] = {}          # key -> kind
     allocated: Dict[str, int] = {}     # key -> numeric id
     unverified: List[str] = []

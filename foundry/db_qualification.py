@@ -459,6 +459,9 @@ def qualify_database(package: Path, database: str, runner: QueryRunner,
     rollback_path = package / "sql" / "99_rollback.sql"
     migration = migration_path.read_text(encoding="utf-8")
     rollback = rollback_path.read_text(encoding="utf-8")
+    if "SIGNAL SQLSTATE '45000'" in rollback and "REFUSED:" in rollback:
+        raise ValueError(
+            "ARENA-DB apply/rollback cycle refused: package has no durable world-row ownership ledger")
     migration_statements = validate_generated_sql(migration, rollback=False)
     rollback_statements = validate_generated_sql(rollback, rollback=True)
     baseline = _json_object(package / "id-baseline.json")
