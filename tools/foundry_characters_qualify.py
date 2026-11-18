@@ -193,8 +193,9 @@ def qualify(package: Path, database: str, defaults_file: Path) -> dict:
     if fixture_rows != "0":
         raise ValueError(f"test fixture cleanup failed: {fixture_rows} row(s) remain")
 
+    pins = _read_json(REPO / "foundry" / "core-pins.json")["azerothcore_wotlk"]
     proof_body = {
-        "schema": "arena-characters-db-qualification/1",
+        "schema": "arena-characters-db-qualification/2",
         "qualification": "ARENA-DB-CHARACTERS",
         "status": "PASS",
         "trust": "SYNTHETIC_DISPOSABLE_MYSQL",
@@ -210,7 +211,8 @@ def qualify(package: Path, database: str, defaults_file: Path) -> dict:
         "module_source_sha256": integrity_check(package)["manifest"]["files"][
             f"server/mod-{spec['name']}/src/{''.join(part.capitalize() for part in spec['name'].split('-'))}.cpp"]["sha256"],
         "spec_sha256": _sha256((package.resolve() / "spec.json").read_bytes()),
-        "schema": {"engine": engine, "columns": columns, "primary_key": primary},
+        "core_source": {"repository": pins["repository"], "revision": pins["revision"]},
+        "table_schema": {"engine": engine, "columns": columns, "primary_key": primary},
         "checks": {
             "migration_applied_twice": "PASS",
             "schema_matches_declared_ledger": "PASS",
@@ -234,8 +236,11 @@ def qualify(package: Path, database: str, defaults_file: Path) -> dict:
         "environment": {
             "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
             "workflow_job": os.environ.get("GITHUB_JOB"),
-            "workflow_ref": os.environ.get("GITHUB_REF"),
+            "workflow_name": os.environ.get("GITHUB_WORKFLOW"),
+            "workflow_ref": os.environ.get("GITHUB_WORKFLOW_REF"),
             "source_commit": os.environ.get("GITHUB_SHA"),
+            "core_repository": pins["repository"],
+            "core_revision": pins["revision"],
         },
     }
     return proof_body

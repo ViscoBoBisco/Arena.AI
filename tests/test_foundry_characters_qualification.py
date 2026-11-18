@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -27,6 +30,82 @@ class CharactersQualification(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return package
 
+    def _characters_proof(self, package: Path) -> dict:
+        from foundry.generate import characters_claim_upsert_sql
+        spec = json.loads((package / "spec.json").read_text(encoding="utf-8"))
+        protocol = spec["addon_protocol"]
+        table = protocol["claims_table"]
+        migration = package / "sql" / "characters" / f"{table}.sql"
+        rollback = package / "sql" / "characters" / f"99_{spec['name']}_rollback.sql"
+        module = (package / "server" / f"mod-{spec['name']}" / "src" /
+                  f"{''.join(part.capitalize() for part in spec['name'].split('-'))}.cpp")
+        manifest_sha = hashlib.sha256((package / "manifest.json").read_bytes()).hexdigest()
+        pin = json.loads((REPO / "foundry" / "core-pins.json").read_text())["azerothcore_wotlk"]
+        claim_sql = characters_claim_upsert_sql({"addon_protocol": protocol}).replace(
+            "{}", str(4_294_967_000))
+        return {
+            "schema": "arena-characters-db-qualification/2",
+            "qualification": "ARENA-DB-CHARACTERS",
+            "status": "PASS",
+            "trust": "SYNTHETIC_DISPOSABLE_MYSQL",
+            "package": spec["name"],
+            "package_version": spec["version"],
+            "manifest_sha256": manifest_sha,
+            "table": table,
+            "database": "arena_foundry_disposable_characters_ci",
+            "server_version": "MySQL 8.4.3 test fixture",
+            "migration_sha256": hashlib.sha256(migration.read_bytes()).hexdigest(),
+            "rollback_note_sha256": hashlib.sha256(rollback.read_bytes()).hexdigest(),
+            "atomic_claim_upsert_sha256": hashlib.sha256(claim_sql.encode()).hexdigest(),
+            "module_source_sha256": hashlib.sha256(module.read_bytes()).hexdigest(),
+            "spec_sha256": hashlib.sha256((package / "spec.json").read_bytes()).hexdigest(),
+            "core_source": {"repository": pin["repository"], "revision": pin["revision"]},
+            "table_schema": {
+                "engine": "InnoDB",
+                "columns": [
+                    "guid|int unsigned|NO|PRI|1",
+                    "total_claims|int unsigned|NO||2",
+                    "last_claim_day|date|YES||3",
+                ],
+                "primary_key": "guid",
+            },
+            "checks": {key: "PASS" for key in (
+                "migration_applied_twice", "schema_matches_declared_ledger",
+                "same_day_duplicate_ignored", "concurrent_daily_increment_serialized",
+                "concurrent_target_cap_enforced", "post_target_claim_refused",
+                "duplicate_character_row_rejected", "module_state_query", "fixture_rows_removed",
+            )},
+            "sequence": [
+                "apply", "verify-schema", "apply-idempotently", "verify-schema",
+                "claim-same-day-twice", "simulate-day-boundary", "race-two-claim-connections",
+                "race-two-claims-at-target-minus-one", "attempt-claim-after-target",
+                "reject-second-character-row", "verify-module-state-query", "delete-test-fixture",
+            ],
+            "limitations": ["synthetic proof fixture; not an authenticated CI statement"],
+            "environment": {
+                "workflow_run_id": "44300000000",
+                "workflow_job": "qualify-generated-world-sql",
+                "workflow_name": "pinned AzerothCore disposable DB qualification",
+                "workflow_ref": ("ViscoBoBisco/Arena.AI/.github/workflows/"
+                                 "azerothcore-db-qualification.yml@refs/pull/1/merge"),
+                "source_commit": "a" * 40,
+                "core_repository": pin["repository"],
+                "core_revision": pin["revision"],
+            },
+        }
+
+    def _attest(self, package: Path, *proofs: dict, world_proof=None) -> dict:
+        manifest_sha = hashlib.sha256((package / "manifest.json").read_bytes()).hexdigest()
+        result = {
+            "schema": "arena-qualification-attestations/1",
+            "subject": {"manifest_sha256": manifest_sha},
+            "characters_database_qualifications": list(proofs),
+        }
+        if world_proof is not None:
+            result["database_qualification"] = world_proof
+            result["levels"] = {"ARENA-DB": {"status": "PASS", "evidence": "sha256:forged"}}
+        return result
+
     def test_requires_exact_generated_migration_and_rollback_note(self):
         with tempfile.TemporaryDirectory() as tmp:
             package = self._build(Path(tmp))
@@ -49,6 +128,148 @@ class CharactersQualification(unittest.TestCase):
             migration.write_text(migration.read_text() + "DROP TABLE unsafe;\n")
             with self.assertRaisesRegex(ValueError, "integrity check failed"):
                 qualifier._check_package(package)
+
+    def test_table_scoped_proof_promotes_only_characters_database_behaviors(self):
+        from foundry.qualification import qualify_package
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package = self._build(Path(tmp))
+            proof = self._characters_proof(package)
+            report = qualify_package(package, _attestations_override=self._attest(package, proof))
+            gates = {gate["name"]: gate["status"] for gate in report["gates"]}
+            maturity = {item["identity"]: item for item in report["artifact_maturity"]["artifacts"]}
+            char = maturity["characters_sql:vault_terminal_claims"]["status"]
+            migration = maturity["data_migration:vault_terminal_claims"]["status"]
+
+            self.assertEqual(gates["attestation_binding"], "PASS")
+            self.assertEqual(gates["database_migrations:characters:vault_terminal_claims"], "PASS")
+            self.assertEqual(gates["database_migrations"], "PASS")
+            self.assertEqual(char["schema_valid"], "PASS")
+            self.assertEqual(char["migration_tested"], "PASS")
+            self.assertEqual(migration["schema_valid"], "PASS")
+            self.assertEqual(migration["migration_tested"], "PASS")
+            self.assertEqual(report["artifact_maturity"]["trust"], "EXTERNAL_UNTRUSTED")
+            self.assertEqual(report["status"], "BLOCKED")
+            self.assertFalse(report["qualified"])
+            self.assertEqual(gates["artifact_maturity:server_module:runtime_exercised"], "BLOCKED")
+            self.assertEqual(gates["artifact_maturity:addon_files:runtime_exercised"], "BLOCKED")
+            self.assertEqual(gates["live_gameplay"], "BLOCKED")
+
+    def test_forged_stale_or_substituted_characters_proofs_are_rejected(self):
+        from foundry.qualification import qualify_package
+
+        mutations = (
+            ("bare pass", lambda p: {"schema": "arena-characters-db-qualification/2",
+                                     "qualification": "ARENA-DB-CHARACTERS",
+                                     "status": "PASS", "table": p["table"]}),
+            ("failed status", lambda p: {**p, "status": "FAIL"}),
+            ("stale manifest", lambda p: {**p, "manifest_sha256": "0" * 64}),
+            ("wrong table", lambda p: {**p, "table": "other_characters_table"}),
+            ("wrong database", lambda p: {**p, "database": "arena_foundry_disposable_ci"}),
+            ("different Characters database", lambda p: {
+                **p, "database": "arena_foundry_disposable_characters_other"}),
+            ("wrong schema", lambda p: {**p, "table_schema": {**p["table_schema"], "engine": "MyISAM"}}),
+            ("substituted migration", lambda p: {**p, "migration_sha256": "0" * 64}),
+            ("substituted query", lambda p: {**p, "atomic_claim_upsert_sha256": "0" * 64}),
+            ("substituted module", lambda p: {**p, "module_source_sha256": "0" * 64}),
+            ("wrong core", lambda p: {**p, "core_source": {"repository": "other", "revision": "b" * 40}}),
+            ("missing concurrent behavior", lambda p: {**p, "checks": {
+                key: value for key, value in p["checks"].items()
+                if key != "concurrent_daily_increment_serialized"}}),
+            ("wrong workflow", lambda p: {**p, "environment": {
+                **p["environment"], "workflow_name": "user supplied"}}),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            package = self._build(Path(tmp))
+            for label, mutate in mutations:
+                with self.subTest(label=label):
+                    candidate = mutate(copy.deepcopy(self._characters_proof(package)))
+                    report = qualify_package(
+                        package, _attestations_override=self._attest(package, candidate))
+                    gates = {gate["name"]: gate["status"] for gate in report["gates"]}
+                    self.assertEqual(
+                        gates["database_migrations:characters:vault_terminal_claims"], "BLOCKED")
+                    self.assertEqual(report["status"], "BLOCKED")
+
+    def test_world_database_proof_cannot_substitute_for_characters_proof(self):
+        from foundry.qualification import qualify_package
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package = self._build(Path(tmp))
+            manifest_sha = hashlib.sha256((package / "manifest.json").read_bytes()).hexdigest()
+            world_only = {
+                "schema": "arena-qualification-attestations/1",
+                "subject": {"manifest_sha256": manifest_sha},
+                "levels": {"ARENA-DB": {"status": "PASS", "evidence": "sha256:bare"}},
+                "database_qualification": {
+                    "schema": "arena-db-qualification/2",
+                    "manifest_sha256": manifest_sha,
+                },
+            }
+            report = qualify_package(package, _attestations_override=world_only)
+            gates = {gate["name"]: gate["status"] for gate in report["gates"]}
+            self.assertEqual(
+                gates["database_migrations:characters:vault_terminal_claims"], "BLOCKED")
+            self.assertEqual(
+                report["artifact_maturity"]["artifacts"][1]["status"]["schema_valid"],
+                "NOT_ASSESSED")
+
+    def test_mixed_package_requires_world_and_characters_proofs_independently(self):
+        from foundry.qualification import qualify_package
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec = json.loads(SPEC.read_text(encoding="utf-8"))
+            spec["name"] = "mixed-proof"
+            spec["title"] = "Mixed Proof"
+            spec["id_range"] = {"start": 900500, "end": 900550}
+            spec["addon"]["prefix"] = "MP1"
+            spec["addon"]["slash_commands"] = ["/mp"]
+            spec["module"]["conf_key"] = "MixedProof.Enable"
+            spec["config"] = {"MixedProof.Enable": 1}
+            spec["addon_protocol"]["prefix"] = "MP1"
+            spec["addon_protocol"]["claims_table"] = "mixed_claims"
+            spec["delivery"]["characters_sql_tables"] = ["mixed_claims"]
+            spec["items"] = [{"key": "test-token", "name": "Test Token",
+                               "description": "mixed database fixture"}]
+            spec_path = root / "mixed-proof.json"
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+            package = root / "mixed-package"
+            result = helpers.run_tool(FOUNDRY, "build", spec_path, "--out", package)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            proof = self._characters_proof(package)
+            report = qualify_package(package, _attestations_override=self._attest(package, proof))
+            gates = {gate["name"]: gate["status"] for gate in report["gates"]}
+            maturity = {item["identity"]: item["status"]
+                        for item in report["artifact_maturity"]["artifacts"]}
+            self.assertEqual(gates["database_migrations:characters:mixed_claims"], "PASS")
+            self.assertEqual(gates["database_migrations:world"], "BLOCKED")
+            self.assertEqual(gates["database_migrations"], "BLOCKED")
+            self.assertEqual(maturity["characters_sql:mixed_claims"]["schema_valid"], "PASS")
+            self.assertEqual(maturity["world_sql"]["schema_valid"], "NOT_ASSESSED")
+            self.assertEqual(report["status"], "BLOCKED")
+
+    def test_duplicate_and_unlisted_characters_proofs_fail_inventory(self):
+        from foundry.qualification import qualify_package
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package = self._build(Path(tmp))
+            proof = self._characters_proof(package)
+            for proofs in ((proof, copy.deepcopy(proof)),
+                           (proof, {**proof, "table": "undeclared_table"})):
+                with self.subTest(proof_count=len(proofs), table=proofs[-1]["table"]):
+                    report = qualify_package(
+                        package, _attestations_override=self._attest(package, *proofs))
+                    gates = {gate["name"]: gate["status"] for gate in report["gates"]}
+                    self.assertEqual(gates["characters_database_evidence_inventory"], "BLOCKED")
+                    if proofs[-1]["table"] == "undeclared_table":
+                        self.assertEqual(
+                            gates["database_migrations:characters:vault_terminal_claims"], "PASS")
+                    else:
+                        self.assertEqual(
+                            gates["database_migrations:characters:vault_terminal_claims"], "BLOCKED")
+                    self.assertEqual(report["status"], "BLOCKED")
 
     def test_database_name_and_explicit_disposable_flag_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
