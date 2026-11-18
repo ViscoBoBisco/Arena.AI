@@ -33,8 +33,9 @@ jobs:
       - name: Generate preview module and configure the pinned core
         run: |
           python3 tools/foundry.py build specs/frost-armory.json --out /tmp/frost-armory --allow-unverified
+          python3 tools/foundry.py build specs/vault-terminal.json --out /tmp/vault-terminal
           cp -a /tmp/frost-armory/server/mod-frost-armory /tmp/azerothcore/modules/
-          cp -a examples/vault-terminal/server/mod-vault-terminal /tmp/azerothcore/modules/
+          cp -a /tmp/vault-terminal/server/mod-vault-terminal /tmp/azerothcore/modules/
           cmake -S /tmp/azerothcore -B /tmp/azerothcore-build \
             -DWITHOUT_GIT=1 -DNOJEM=1 -DUSE_COREPCH=0 -DUSE_SCRIPTPCH=0 \
             -DTOOLS_BUILD=none -DWITH_WARNINGS=0 -DMODULES=static
@@ -59,7 +60,7 @@ jobs:
           fi
           exit "$result"
 
-      - name: Compile Vault Terminal reference module against the pinned core
+      - name: Compile generated Vault Terminal module against the pinned core
         run: |
           if ! python3 tools/compile_generated_module.py \
             --build-dir /tmp/azerothcore-build \

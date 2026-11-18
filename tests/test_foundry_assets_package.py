@@ -81,6 +81,27 @@ class Packaging(unittest.TestCase):
             verified = helpers.run_tool(FOUNDRY, "verify", out)
             self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
 
+    def test_vault_terminal_compile_record_is_bound_to_exact_generated_sources(self):
+        spec = helpers.REPO / "specs" / "vault-terminal.json"
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "vault-terminal"
+            built = helpers.run_tool(FOUNDRY, "build", spec, "--out", out)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            evidence = json.loads((out / "evidence.json").read_text(encoding="utf-8"))
+            record = evidence["compile_qualification"]
+            if record is None:
+                self.assertIn("pending", evidence["evidence_levels"]["ARENA-COMPILE"])
+                self.assertIn("not compiled or runtime-qualified",
+                              evidence["generated_scope"]["cpp_module"])
+                return
+            self.assertIsInstance(record["environment"]["workflow_run_id"], int)
+            self.assertEqual(record["environment"]["core_revision"],
+                             "6ffb62abb867dabb258de6813ff5d06d6b011543")
+            self.assertEqual(evidence["evidence_levels"]["ARENA-COMPILE"].split(";", 1)[0], "PASS")
+            self.assertIn("compiled against the pinned core but not runtime-qualified",
+                          evidence["generated_scope"]["cpp_module"])
+            self.assertIn("Does not qualify database schemas", record["limitations"][1])
+
     def test_compile_qualification_does_not_carry_to_changed_module_sources(self):
         spec = json.loads(SPEC.read_text(encoding="utf-8"))
         spec["title"] += " changed"

@@ -1,0 +1,48 @@
+{
+  "spec_version": 1,
+  "name": "vault-terminal",
+  "version": "1.0.0",
+  "title": "Vault Terminal",
+  "description": "A server-authoritative, patch-free addon panel that exposes a character's daily claim counter and rank.",
+  "id_range": {"start": 900300, "end": 900399},
+  "requires": {"core": "azerothcore-wotlk@6ffb62abb867dabb258de6813ff5d06d6b011543", "client_build": "3.3.5a.12340"},
+  "items": [],
+  "spells": [],
+  "quests": [],
+  "creatures": [],
+  "gameobjects": [],
+  "vendors": [],
+  "recipes": [],
+  "events": [],
+  "addon": {"title": "Vault Terminal", "prefix": "VT1", "slash_commands": ["/vt", "/vaultterminal"]},
+  "module": {"conf_key": "VaultTerminal.Enable"},
+  "addon_protocol": {
+    "schema": "arena-counter-terminal/1",
+    "prefix": "VT1",
+    "version": 1,
+    "max_bytes": 255,
+    "minimum_request_interval_ms": 250,
+    "claims_table": "vault_terminal_claims",
+    "target": 50,
+    "claims_per_day": 1,
+    "client_opcodes": ["HELLO", "STATE", "CLAIM", "PING"],
+    "server_opcodes": ["S", "OK", "ERR", "BYE"],
+    "rank_ladder": [
+      {"threshold": 0, "name": "Initiate"},
+      {"threshold": 10, "name": "Adept"},
+      {"threshold": 25, "name": "Keeper"},
+      {"threshold": 50, "name": "Vaultmaster"}
+    ]
+  },
+  "config": {"VaultTerminal.Enable": 1},
+  "delivery": {"characters_sql_tables": ["vault_terminal_claims"]},
+  "dependencies": ["AzerothCore addon channel enabled (AddonChannel = 1)"],
+  "acceptance": [
+    {"check": "Open /vt and request the server snapshot.", "expected": "Panel renders seals, target, available claims, and server-derived rank."},
+    {"check": "Claim twice through separate sessions on the same server day.", "expected": "At most one atomic counter increment per character/database day, including concurrent requests; later sequential claims receive COOLDOWN."},
+    {"check": "Restart the worldserver and query the panel again.", "expected": "Claim count and rank remain derived from the characters database."},
+    {"check": "Disable VaultTerminal.Enable and send HELLO.", "expected": "Server answers BYE; addon stops polling and offers manual retry."},
+    {"check": "Send malformed, oversized, wrong-version, and unknown-opcode frames.", "expected": "Malformed/oversized and unknown frames do not mutate state; version mismatch is refused."}
+  ],
+  "notes": "This is an on-demand addon panel, not an NPC/world-spawn feature. It uses no custom item, spell, creature, client DBC, or MPQ. The characters table is retained on feature rollback to preserve user progress; operators disable the module/addon and may purge data only as a separate reviewed action after backup."
+}

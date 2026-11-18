@@ -199,6 +199,390 @@ def _cpp_module_identifier(name: str) -> str:
     return "_" + identifier if identifier[0].isdigit() else identifier
 
 
+def characters_claim_upsert_sql(spec: dict) -> str:
+    """Atomic per-character daily claim increment, capped at the declared target."""
+    protocol = spec["addon_protocol"]
+    table = protocol["claims_table"]
+    target = protocol["target"]
+    return (f"INSERT INTO `{table}` (guid, total_claims, last_claim_day) "
+            "VALUES ({}, 1, CURRENT_DATE()) "
+            "ON DUPLICATE KEY UPDATE "
+            f"total_claims = IF((last_claim_day IS NULL OR last_claim_day <> CURRENT_DATE()) "
+            f"AND total_claims < {target}, total_claims + 1, total_claims), "
+            f"last_claim_day = IF((last_claim_day IS NULL OR last_claim_day <> CURRENT_DATE()) "
+            f"AND total_claims <= {target}, "
+            "CURRENT_DATE(), last_claim_day)")
+
+
+def _counter_terminal_module_cpp(spec: dict) -> Dict[str, str]:
+    """Emit a generic, server-authoritative daily-counter terminal module."""
+    name = spec["name"]
+    addon = spec["addon"]
+    protocol = spec["addon_protocol"]
+    module = spec["module"]
+    dirname = f"mod-{name}"
+    class_name = _cpp_module_identifier(name)
+    loader_fn = "Add" + dirname.replace("-", "_") + "Scripts"
+    inner_fn = f"Add{class_name}Scripts"
+    header_guard = f"ARENA_{dirname.replace('-', '_').upper()}_LOADER_H"
+    conf_key = module["conf_key"]
+    table = protocol["claims_table"]
+    claim_upsert = characters_claim_upsert_sql(spec)
+    prefix = protocol["prefix"]
+    version = protocol["version"]
+    max_bytes = protocol["max_bytes"]
+    target = protocol["target"]
+    claims_per_day = protocol["claims_per_day"]
+    min_interval = protocol["minimum_request_interval_ms"]
+    ranks = sorted(protocol["rank_ladder"], key=lambda row: row["threshold"], reverse=True)
+    rank_rows = ",\n".join(
+        f'        {{{row["threshold"]}, "{row["name"]}"}}' for row in ranks)
+    cpp_prefix = f"{prefix}\\t"
+    main = f'''// {spec.get('title', name)} — generated functional daily-counter module.
+// The client submits intent only. CharacterDatabase is authoritative.
+#include "ScriptMgr.h"
+#include "Player.h"
+#include "Chat.h"
+#include "Config.h"
+#include "DatabaseEnv.h"
+#include "Log.h"
+
+#include "{dirname}.h"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace
+{{
+    constexpr char const* PREFIX = "{cpp_prefix}";
+    constexpr char const* PREFIX_TOKEN = "{prefix}";
+    constexpr uint32 PROTOCOL_VERSION = {version};
+    constexpr uint32 MAX_PAYLOAD_BYTES = {max_bytes};
+    constexpr uint64 TARGET = {target};
+    constexpr uint32 CLAIMS_PER_DAY = {claims_per_day};
+    constexpr uint32 MIN_REQUEST_INTERVAL_MS = {min_interval};
+    constexpr char const* CLAIM_TABLE = "{table}";
+
+    struct RankStep {{ uint64 threshold; char const* name; }};
+    constexpr RankStep RANKS[] = {{
+{rank_rows}
+    }};
+
+    struct CounterState
+    {{
+        uint64 totalClaims = 0;
+        uint64 claimsToday = 0;
+    }};
+
+    std::atomic_bool enabled{{true}};
+    std::mutex requestMutex;
+    std::unordered_map<uint32, std::chrono::steady_clock::time_point> lastRequest;
+
+    std::vector<std::string> SplitTabs(std::string const& value)
+    {{
+        std::vector<std::string> fields;
+        std::size_t start = 0;
+        for (;;)
+        {{
+            std::size_t const end = value.find('\\t', start);
+            fields.emplace_back(value.substr(start, end == std::string::npos ? end : end - start));
+            if (end == std::string::npos)
+                break;
+            start = end + 1;
+        }}
+        return fields;
+    }}
+
+    bool IsUpperOpcode(std::string const& value)
+    {{
+        return !value.empty() && value.size() <= 8
+            && std::all_of(value.begin(), value.end(), [](unsigned char c) {{ return c >= 'A' && c <= 'Z'; }});
+    }}
+
+    bool IsValidFrame(std::string const& value)
+    {{
+        if (value.size() > MAX_PAYLOAD_BYTES)
+            return false;
+        return std::all_of(value.begin(), value.end(), [](unsigned char c)
+        {{
+            return c == '\\t' || (c >= 0x20 && c <= 0x7e);
+        }});
+    }}
+
+    char const* RankFor(uint64 seals)
+    {{
+        for (RankStep const& step : RANKS)
+            if (seals >= step.threshold)
+                return step.name;
+        return RANKS[(sizeof(RANKS) / sizeof(RANKS[0])) - 1].name;
+    }}
+
+    bool AllowRequest(Player* player)
+    {{
+        uint32 const guid = player->GetGUID().GetCounter();
+        auto const now = std::chrono::steady_clock::now();
+        std::lock_guard<std::mutex> lock(requestMutex);
+        auto const found = lastRequest.find(guid);
+        if (found != lastRequest.end()
+            && now - found->second < std::chrono::milliseconds(MIN_REQUEST_INTERVAL_MS))
+            return false;
+        lastRequest[guid] = now;
+        return true;
+    }}
+
+    void ForgetRequest(Player* player)
+    {{
+        std::lock_guard<std::mutex> lock(requestMutex);
+        lastRequest.erase(player->GetGUID().GetCounter());
+    }}
+
+    void Send(Player* player, std::string const& payload)
+    {{
+        if (payload.size() > MAX_PAYLOAD_BYTES)
+        {{
+            LOG_ERROR("module.{name}", "refusing oversized terminal response ({{}} bytes)", payload.size());
+            return;
+        }}
+        WorldPacket packet;
+        ChatHandler::BuildChatPacket(packet, CHAT_MSG_WHISPER, LANG_ADDON, player, player, payload);
+        player->SendDirectMessage(&packet);
+    }}
+
+    void SendError(Player* player, char const* code, char const* text)
+    {{
+        Send(player, std::string(PREFIX) + "ERR\\t" + code + "\\t" + text);
+    }}
+
+    bool LoadState(Player* player, CounterState& state)
+    {{
+        QueryResult result = CharacterDatabase.Query(
+            "SELECT COALESCE(MAX(total_claims), 0), "
+            "COALESCE(MAX(last_claim_day = CURRENT_DATE()), 0) "
+            "FROM `" + std::string(CLAIM_TABLE) + "` WHERE guid = {{}}",
+            player->GetGUID().GetCounter());
+        if (!result)
+            return false;
+        Field* fields = result->Fetch();
+        state.totalClaims = fields[0].Get<uint64>();
+        state.claimsToday = fields[1].Get<uint64>();
+        return true;
+    }}
+
+    void SendState(Player* player, CounterState const& state)
+    {{
+        uint64 const claimsLeft = state.totalClaims >= TARGET || state.claimsToday >= CLAIMS_PER_DAY
+            ? 0 : CLAIMS_PER_DAY - state.claimsToday;
+        char const* const flag = claimsLeft ? "1" : "0";
+        Send(player, std::string(PREFIX) + "S\\t" + std::to_string(state.totalClaims) + "\\t"
+            + std::to_string(TARGET) + "\\t" + std::to_string(claimsLeft) + "\\t"
+            + RankFor(state.totalClaims) + "\\t" + flag);
+    }}
+
+    void HandleState(Player* player)
+    {{
+        CounterState state;
+        if (!LoadState(player, state))
+        {{
+            SendError(player, "INTERNAL", "state is temporarily unavailable");
+            return;
+        }}
+        SendState(player, state);
+    }}
+
+    void HandleClaim(Player* player)
+    {{
+        CounterState before;
+        if (!LoadState(player, before))
+        {{
+            SendError(player, "INTERNAL", "state is temporarily unavailable");
+            return;
+        }}
+        if (before.totalClaims >= TARGET)
+        {{
+            SendError(player, "DENIED", "claim target reached");
+            return;
+        }}
+        if (before.claimsToday >= CLAIMS_PER_DAY)
+        {{
+            SendError(player, "COOLDOWN", "already claimed today");
+            return;
+        }}
+
+        // One InnoDB row per character serializes daily increments across sessions
+        // and worldserver processes; the SQL predicate also enforces the total target.
+        CharacterDatabase.DirectExecute(
+            "{claim_upsert}",
+            player->GetGUID().GetCounter());
+
+        CounterState after;
+        if (!LoadState(player, after))
+        {{
+            SendError(player, "INTERNAL", "claim could not be confirmed");
+            return;
+        }}
+        if (after.totalClaims == before.totalClaims)
+        {{
+            if (after.totalClaims >= TARGET)
+                SendError(player, "DENIED", "claim target reached");
+            else if (after.claimsToday >= CLAIMS_PER_DAY)
+                SendError(player, "COOLDOWN", "already claimed today");
+            else
+                SendError(player, "INTERNAL", "claim could not be confirmed");
+            return;
+        }}
+        Send(player, std::string(PREFIX) + "OK\\tclaim recorded");
+        SendState(player, after);
+    }}
+
+
+}}
+
+class {class_name}PlayerScript final : public PlayerScript
+{{
+public:
+    {class_name}PlayerScript() : PlayerScript("{class_name}PlayerScript", {{
+        PLAYERHOOK_ON_BEFORE_SEND_CHAT_MESSAGE,
+        PLAYERHOOK_ON_LOGOUT
+    }}) {{ }}
+
+    void OnPlayerLogout(Player* player) override
+    {{
+        ForgetRequest(player);
+    }}
+
+    void OnPlayerBeforeSendChatMessage(Player* player, uint32& /*type*/, uint32& lang,
+                                       std::string& message) override
+    {{
+        if (lang != LANG_ADDON || message.rfind(PREFIX, 0) != 0)
+            return;
+        std::string frame = message;
+        message.clear();
+        if (!IsValidFrame(frame))
+            return;
+        std::vector<std::string> fields = SplitTabs(frame);
+        if (fields.size() < 2 || fields[0] != PREFIX_TOKEN || !IsUpperOpcode(fields[1])
+            || std::any_of(fields.begin(), fields.end(), [](std::string const& field) {{ return field.size() > 64; }}))
+            return;
+        std::string const& opcode = fields[1];
+        bool const known = opcode == "HELLO" || opcode == "STATE" || opcode == "CLAIM" || opcode == "PING";
+        if (!known)
+            return; // Forward-compatible unknown opcodes are silently consumed.
+        if (!enabled.load())
+        {{
+            Send(player, std::string(PREFIX) + "BYE\\tserver is under maintenance");
+            return;
+        }}
+        if (!AllowRequest(player))
+        {{
+            SendError(player, "BUSY", "please wait before sending another request");
+            return;
+        }}
+        if (opcode == "HELLO")
+        {{
+            if (fields.size() != 4 || fields[2] != std::to_string(PROTOCOL_VERSION))
+                SendError(player, "VERSION", "client protocol is not supported");
+            else
+                HandleState(player);
+        }}
+        else if (fields.size() != 2)
+            return; // Malformed action frames never reach persistence.
+        else if (opcode == "STATE")
+            HandleState(player);
+        else if (opcode == "CLAIM")
+            HandleClaim(player);
+        else if (opcode == "PING")
+            Send(player, std::string(PREFIX) + "OK");
+    }}
+}};
+
+class {class_name}WorldScript final : public WorldScript
+{{
+public:
+    {class_name}WorldScript() : WorldScript("{class_name}WorldScript") {{ }}
+    void OnAfterConfigLoad(bool /*reload*/) override
+    {{
+        enabled.store(sConfigMgr->GetOption<bool>("{conf_key}", true));
+    }}
+}};
+
+void {inner_fn}()
+{{
+    new {class_name}PlayerScript();
+    new {class_name}WorldScript();
+}}
+'''
+    header = f'''// Shared declaration between generated feature and module loader.
+#ifndef {header_guard}
+#define {header_guard}
+void {inner_fn}();
+#endif
+'''
+    loader = f'''// AzerothCore's generated ModulesLoader.cpp calls this module entry point.
+#include "{dirname}.h"
+void {loader_fn}() {{ {inner_fn}(); }}
+'''
+    conf = f"# {spec.get('title', name)} configuration\\n{conf_key} = 1\\n"
+    return {
+        f"server/{dirname}/src/{class_name}.cpp": main,
+        f"server/{dirname}/src/{dirname}.h": header,
+        f"server/{dirname}/src/{dirname}_loader.cpp": loader,
+        f"server/{dirname}/conf/{dirname}.conf.dist": conf,
+        f"server/{dirname}/README.md": (
+            f"# {dirname}\\n\\nGenerated functional daily-counter terminal.\\n"
+            f"Persistent state: AzerothCore CharacterDatabase table `{table}`.\\n"
+            f"Protocol `{prefix}` v{version}; config `{conf_key}`.\\n"),
+    }
+
+
+def characters_sql_files(spec: dict) -> Dict[str, str]:
+    """Emit the atomic daily-counter row schema and non-destructive rollback note."""
+    protocol = spec.get("addon_protocol")
+    if not isinstance(protocol, dict):
+        return {}
+    table = protocol["claims_table"]
+    migration = f'''-- {spec.get('title', spec['name'])}: characters database migration.
+-- One InnoDB row per character serializes increments atomically across sessions/processes.
+-- The server uses a conditional upsert to enforce one claim/day and the configured total target.
+CREATE TABLE IF NOT EXISTS `{table}` (
+  `guid` int unsigned NOT NULL COMMENT 'AzerothCore character low GUID',
+  `total_claims` int unsigned NOT NULL DEFAULT 0 COMMENT 'server-authoritative total',
+  `last_claim_day` date DEFAULT NULL COMMENT 'database-server day of the last claim',
+  PRIMARY KEY (`guid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+'''
+    rollback = f'''-- Non-destructive rollback for {spec['name']}.
+-- Disable the module and remove the addon. Keep `{table}` to preserve character progress.
+-- Purging this table is intentionally a separate, operator-reviewed action after backup.
+'''
+    return {
+        f"sql/characters/{table}.sql": migration,
+        f"sql/characters/99_{spec['name']}_rollback.sql": rollback,
+    }
+
+
+def protocol_files(spec: dict) -> Dict[str, str]:
+    protocol = spec.get("addon_protocol")
+    if not isinstance(protocol, dict):
+        return {}
+    return {f"protocol/{spec['name']}.json":
+            json.dumps({"schema": protocol["schema"], "prefix": protocol["prefix"],
+                        "version": protocol["version"], "max_bytes": protocol["max_bytes"],
+                        "client_opcodes": protocol["client_opcodes"],
+                        "server_opcodes": protocol["server_opcodes"],
+                        "claims_table": protocol["claims_table"],
+                        "target": protocol["target"],
+                        "claims_per_day": protocol["claims_per_day"],
+                        "minimum_request_interval_ms": protocol["minimum_request_interval_ms"],
+                        "rank_ladder": protocol["rank_ladder"]},
+                       indent=2, sort_keys=True) + "\n"}
+
+
 def module_cpp(spec: dict) -> Optional[Dict[str, str]]:
     """Server module sources using AzerothCore's per-module loader contract.
 
@@ -209,6 +593,8 @@ def module_cpp(spec: dict) -> Optional[Dict[str, str]]:
     module = spec.get("module")
     if not module:
         return None
+    if isinstance(spec.get("addon_protocol"), dict):
+        return _counter_terminal_module_cpp(spec)
     name = spec["name"]
     dirname = f"mod-{name}"
     class_name = _cpp_module_identifier(name)
@@ -273,11 +659,261 @@ void {loader_fn}()
     }
 
 
+def _counter_terminal_addon_files(spec: dict) -> Dict[str, str]:
+    """Emit a functional Interface 30300 daily-counter panel."""
+    name = spec["name"]
+    addon = spec["addon"]
+    protocol = spec["addon_protocol"]
+    prefix = protocol["prefix"]
+    version = protocol["version"]
+    max_bytes = protocol["max_bytes"]
+    interval = protocol["minimum_request_interval_ms"] / 1000.0
+    title = addon.get("title", spec.get("title", name))
+    slug = "".join(part.capitalize() for part in name.split("-"))
+    slash_id = "".join(ch for ch in name.upper() if ch.isalnum())
+    slash_commands = addon["slash_commands"]
+    toc = (f"## Interface: 30300\n## Title: {title}\n## Version: {spec['version']}\n"
+           "## Notes: Server-authoritative state; client submits intent only.\n"
+           f"## X-Protocol-Version: {version}\n\n{slug}.lua\n")
+    ranks = ", ".join(f'[{row["name"]!r}] = true' for row in protocol["rank_ladder"])
+    lua = f'''-- {title}: generated from arena-counter-terminal/1.
+-- WotLK 3.3.5a Interface 30300. This addon renders server state only.
+local PREFIX = "{prefix}"
+local VERSION = "{version}"
+local MAX_BYTES = {max_bytes}
+local MIN_REQUEST_INTERVAL = {interval:.3f}
+local RESPONSE_TIMEOUT = 10
+local ADDON_VERSION = "{spec['version']}"
+local VALID_RANKS = {{{ranks}}}
+
+local frame
+local fields = {{}}
+local pending = false
+local stopped = false
+local requestAt = 0
+local lastSend = -MIN_REQUEST_INTERVAL
+local lastState = nil
+
+local function setStatus(text)
+    if fields.status then fields.status:SetText(text or "") end
+end
+
+local function parseUInt(value)
+    if type(value) ~= "string" or not value:match("^%d+$") then return nil end
+    local number = tonumber(value)
+    if not number or number < 0 or number > 2147483647 then return nil end
+    return number
+end
+
+local function splitTabs(value)
+    local result = {{}}
+    local start = 1
+    while true do
+        local at = value:find("\\t", start, true)
+        if not at then
+            result[#result + 1] = value:sub(start)
+            break
+        end
+        result[#result + 1] = value:sub(start, at - 1)
+        start = at + 1
+    end
+    return result
+end
+
+local function validFrame(value)
+    if type(value) ~= "string" or #value > MAX_BYTES then return false end
+    for index = 1, #value do
+        local byte = string.byte(value, index)
+        if byte ~= 9 and (byte < 32 or byte > 126) then return false end
+    end
+    return true
+end
+
+local function send(opcode, ...)
+    if not frame or not frame:IsShown() or (stopped and opcode ~= "HELLO") then return false end
+    local now = GetTime()
+    if now - lastSend < MIN_REQUEST_INTERVAL then
+        setStatus("Please wait before sending another request.")
+        return false
+    end
+    local parts = {{ PREFIX, opcode }}
+    for index = 1, select("#", ...) do
+        parts[#parts + 1] = tostring(select(index, ...))
+    end
+    local payload = table.concat(parts, "\\t")
+    if not validFrame(payload) then
+        setStatus("Request refused: invalid or oversized frame.")
+        return false
+    end
+    lastSend = now
+    requestAt = now
+    pending = true
+    SendAddonMessage(PREFIX, payload, "WHISPER", UnitName("player"))
+    return true
+end
+
+local function setStale(message)
+    fields.seals:SetText("—")
+    fields.rank:SetText("—")
+    fields.claim:SetText("No current server state.")
+    fields.claimButton:Disable()
+    setStatus(message or "No server response. Use Refresh to retry.")
+end
+
+local function renderState(values)
+    lastState = values
+    fields.seals:SetText(tostring(values.seals) .. " / " .. tostring(values.target))
+    fields.rank:SetText(values.rank)
+    if values.flag == "1" and values.claimsLeft > 0 then
+        fields.claim:SetText("A claim is available today.")
+        fields.claimButton:Enable()
+    else
+        fields.claim:SetText("No claim available today.")
+        fields.claimButton:Disable()
+    end
+    setStatus("Connected to server.")
+end
+
+local function dispatch(prefix, message, distribution, sender)
+    if prefix ~= PREFIX or sender ~= UnitName("player") or not validFrame(message) then return end
+    local parts = splitTabs(message)
+    if parts[1] ~= PREFIX or not parts[2] then return end
+    local opcode = parts[2]
+    pending = false
+
+    if opcode == "S" then
+        if #parts ~= 7 then setStale("Malformed state response."); return end
+        local seals = parseUInt(parts[3])
+        local target = parseUInt(parts[4])
+        local claimsLeft = parseUInt(parts[5])
+        local rank = parts[6]
+        local flag = parts[7]
+        if not seals or target ~= {protocol['target']} or claimsLeft == nil or claimsLeft > 1
+            or not VALID_RANKS[rank] or (flag ~= "0" and flag ~= "1") then
+            setStale("Invalid state response.")
+            return
+        end
+        renderState({{seals = seals, target = target, claimsLeft = claimsLeft, rank = rank, flag = flag}})
+    elseif opcode == "OK" then
+        if #parts > 3 then setStatus("Malformed success response."); return end
+        setStatus(parts[3] or "Request accepted.")
+        if lastState and fields.claimButton then fields.claimButton:Disable() end
+    elseif opcode == "ERR" then
+        if #parts ~= 4 then setStatus("Malformed error response."); return end
+        setStatus(parts[3] .. ": " .. parts[4])
+        if fields.claimButton then fields.claimButton:Disable() end
+    elseif opcode == "BYE" then
+        stopped = true
+        setStale(parts[3] or "Server disabled this feature.")
+    end
+    -- Future server opcodes are ignored. Never infer a reward or state locally.
+end
+
+local function addLine(label, key, y)
+    local left = frame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+    left:SetPoint("TOPLEFT", frame, "TOPLEFT", 16, y)
+    left:SetText(label)
+    local value = frame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    value:SetPoint("TOPLEFT", frame, "TOPLEFT", 96, y)
+    value:SetWidth(170)
+    value:SetJustifyH("LEFT")
+    value:SetText("—")
+    fields[key] = value
+end
+
+local function build()
+    frame = CreateFrame("Frame", "{slug}Frame", UIParent)
+    frame:SetWidth(290)
+    frame:SetHeight(190)
+    frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    frame:SetBackdrop({{bgFile = "Interface\\\\DialogFrame\\\\UI-DialogBox-Background",
+        edgeFile = "Interface\\\\DialogFrame\\\\UI-DialogBox-Border", tile = true,
+        tileSize = 32, edgeSize = 32, insets = {{left = 8, right = 8, top = 8, bottom = 8}}}})
+    frame:SetMovable(true)
+    frame:EnableMouse(true)
+    frame:RegisterForDrag("LeftButton")
+    frame:SetScript("OnDragStart", function(self) self:StartMoving() end)
+    frame:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+    frame:Hide()
+
+    local titleText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    titleText:SetPoint("TOP", frame, "TOP", 0, -12)
+    titleText:SetText("{title}")
+    addLine("Claims", "seals", -38)
+    addLine("Rank", "rank", -58)
+    addLine("Today", "claim", -78)
+    local status = frame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+    status:SetPoint("TOPLEFT", frame, "TOPLEFT", 16, -105)
+    status:SetWidth(250)
+    status:SetJustifyH("LEFT")
+    status:SetText("")
+    fields.status = status
+
+    local claim = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    claim:SetWidth(115); claim:SetHeight(22)
+    claim:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 18, 14)
+    claim:SetText("Claim")
+    claim:Disable()
+    claim:SetScript("OnClick", function()
+        claim:Disable()
+        setStatus("Sending claim request…")
+        if not send("CLAIM") and lastState and lastState.flag == "1" then claim:Enable() end
+    end)
+    fields.claimButton = claim
+
+    local refresh = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    refresh:SetWidth(90); refresh:SetHeight(22)
+    refresh:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -18, 14)
+    refresh:SetText("Refresh")
+    refresh:SetScript("OnClick", function()
+        stopped = false
+        send("HELLO", VERSION, ADDON_VERSION)
+    end)
+
+    RegisterAddonMessagePrefix(PREFIX)
+    frame:RegisterEvent("CHAT_MSG_ADDON")
+    frame:SetScript("OnEvent", function(_, event, responsePrefix, message, distribution, sender)
+        if event == "CHAT_MSG_ADDON" then
+            dispatch(responsePrefix, message, distribution, sender)
+        end
+    end)
+    frame:SetScript("OnUpdate", function()
+        if pending and GetTime() - requestAt >= RESPONSE_TIMEOUT then
+            pending = false
+            setStale("No server response. Use Refresh to retry.")
+        end
+    end)
+end
+
+SLASH_{slash_id}1 = "{slash_commands[0]}"
+'''
+    for index, command in enumerate(slash_commands[1:], start=2):
+        lua += f'SLASH_{slash_id}{index} = "{command}"\n'
+    lua += f'''SlashCmdList["{slash_id}"] = function()
+    if not frame then build() end
+    if frame:IsShown() then
+        frame:Hide()
+        pending = false
+    else
+        frame:Show()
+        stopped = false
+        send("HELLO", VERSION, ADDON_VERSION)
+    end
+end
+'''
+    toc = (f"## Interface: 30300\n## Title: {title}\n## Version: {spec['version']}\n"
+           "## Notes: Server-authoritative state; client submits intent only.\n"
+           f"## X-Protocol-Version: {version}\n\n{slug}.lua\n")
+    return {f"addon/{slug}/{slug}.toc": toc, f"addon/{slug}/{slug}.lua": lua}
+
+
 def addon_files(spec: dict) -> Optional[Dict[str, str]]:
-    """3.3.5a addon skeleton: .toc + Lua. Presentation only — no authority."""
+    """3.3.5a addon output; protocol features use the functional terminal emitter."""
     addon = spec.get("addon")
     if not addon:
         return None
+    if isinstance(spec.get("addon_protocol"), dict):
+        return _counter_terminal_addon_files(spec)
     name = spec["name"]
     title = addon.get("title", spec.get("title", name))
     prefix = addon.get("prefix", name.upper()[:4])

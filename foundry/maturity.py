@@ -66,7 +66,7 @@ def _observed_artifacts(package: Path) -> set[str]:
             for line in world_sql.read_text(encoding="utf-8").splitlines()):
         observed.update(("world_sql", "data_migration"))
     for path in package.rglob("*.sql"):
-        if "characters" in path.parts:
+        if "characters" in path.parts and not path.stem.startswith("99_"):
             observed.add(f"characters_sql:{path.stem}")
     if any("server" in path.parts and path.suffix in (".cpp", ".h")
            for path in package.rglob("*")):
@@ -89,7 +89,9 @@ def _has_files(package: Path, kind: str, table: Optional[str]) -> bool:
     files = [path for path in package.rglob("*") if path.is_file() and not path.is_symlink()]
     if kind in ("world_sql", "data_migration", "characters_sql"):
         if kind == "characters_sql":
-            return any("characters" in path.parts and path.suffix.lower() == ".sql" for path in files)
+            return bool(table) and any(
+                "characters" in path.parts and path.stem == table and path.suffix.lower() == ".sql"
+                for path in files)
         return (package / "sql" / "01_world.sql").is_file()
     if kind == "server_module":
         return any("server" in path.parts and path.suffix in (".cpp", ".h") for path in files)

@@ -160,6 +160,12 @@ class NegativeTests(unittest.TestCase):
         result = validate(spec, allow_unverified=True)
         self.assertEqual(result.verdicts["ids"], "FAIL")
 
+    def test_counter_terminal_target_is_bounded_by_addon_integer_decoder(self):
+        spec = json.loads((helpers.REPO / "specs" / "vault-terminal.json").read_text())
+        spec["addon_protocol"]["target"] = 2147483648
+        result = validate(spec)
+        self.assertEqual(result.verdicts["interaction"], "FAIL")
+
     def test_too_few_acceptance_checks_fails(self):
         spec = copy.deepcopy(SPEC)
         spec["acceptance"] = spec["acceptance"][:1]

@@ -133,13 +133,71 @@ jobs:
               print(f"- Manifest SHA-256: `{db['manifest_sha256']}`", file=summary)
           PY
 
+      - name: Build generated Vault Terminal package
+        run: python3 tools/foundry.py build specs/vault-terminal.json --out /tmp/vault-terminal
+
+      - name: Create isolated disposable Characters database
+        run: |
+          mysql --defaults-extra-file=/tmp/arena-foundry-mysql.cnf \
+            --execute='CREATE DATABASE arena_foundry_disposable_characters_ci CHARACTER SET utf8mb4;'
+
+      - name: Qualify the generated Characters ledger migration and read query
+        run: |
+          if ! python3 tools/foundry_characters_qualify.py /tmp/vault-terminal \
+            --database arena_foundry_disposable_characters_ci \
+            --defaults-extra-file /tmp/arena-foundry-mysql.cnf \
+            --confirm-disposable \
+            --out /tmp/vault-terminal-characters-db-proof.json \
+            > /tmp/vault-terminal-characters-db.log 2>&1; then
+            cat /tmp/vault-terminal-characters-db.log
+            python3 - <<'PY'
+          from pathlib import Path
+          lines = Path('/tmp/vault-terminal-characters-db.log').read_text(errors='replace').strip().splitlines()
+          detail = lines[-1] if lines else 'qualification command failed without diagnostics'
+          detail = detail.replace('%', '%25').replace('\\r', '%0D').replace('\\n', '%0A')
+          print(f'::error title=Vault Terminal Characters DB qualification failed::{detail}')
+          PY
+            exit 1
+          fi
+          cat /tmp/vault-terminal-characters-db.log
+
+      - name: Validate Characters proof scope and publish run summary
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          proof = json.loads(Path('/tmp/vault-terminal-characters-db-proof.json').read_text())
+          assert proof['qualification'] == 'ARENA-DB-CHARACTERS'
+          assert proof['status'] == 'PASS'
+          assert proof['trust'] == 'SYNTHETIC_DISPOSABLE_MYSQL'
+          assert proof['table'] == 'vault_terminal_claims'
+          assert proof['checks']['migration_applied_twice'] == 'PASS'
+          assert proof['checks']['concurrent_daily_increment_serialized'] == 'PASS'
+          assert proof['checks']['concurrent_target_cap_enforced'] == 'PASS'
+          assert proof['checks']['module_state_query'] == 'PASS'
+          assert proof['environment']['source_commit'] == os.environ['GITHUB_SHA']
+          print('ARENA-DB-CHARACTERS PASS: isolated synthetic schema/table checks only.')
+          print('This proof does not qualify an AzerothCore runtime, client, or gameplay.')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              print('## Vault Terminal Characters ledger', file=summary)
+              print('', file=summary)
+              print('- Table-scoped synthetic MySQL check: **PASS**', file=summary)
+              print(f"- Table: `{proof['table']}`", file=summary)
+              print(f"- MySQL: `{proof['server_version']}`", file=summary)
+              print(f"- Package manifest SHA-256: `{proof['manifest_sha256']}`", file=summary)
+              print('- No AzerothCore runtime or gameplay qualification is implied.', file=summary)
+          PY
+
       - name: Preserve package and DB qualification records
         uses: actions/upload-artifact@v4
         with:
           name: arena-db-qualification-${{ github.run_id }}
           path: |
             /tmp/frost-armory/
+            /tmp/vault-terminal/
             /tmp/arena-db-attestations.json
             /tmp/arena-qualification-report.json
+            /tmp/vault-terminal-characters-db-proof.json
           if-no-files-found: error
           retention-days: 30
