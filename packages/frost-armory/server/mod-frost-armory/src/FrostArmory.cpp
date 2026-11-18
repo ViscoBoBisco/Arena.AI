@@ -1,7 +1,8 @@
 // Frost Armory — level-scaling frost equipment progression — generated server module (Arena Foundry).
-// Evidence: ARENA-SYNTHETIC (static checks only; not compiled against a core).
+// Evidence: ARENA-SYNTHETIC until compiled against the pinned core.
 // The server owns all state; this skeleton only registers the script hook.
 #include "ScriptMgr.h"
+#include "mod-frost-armory.h"
 
 class FrostArmoryScript : public PlayerScript
 {

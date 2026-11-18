@@ -1,0 +1,9 @@
+{
+  "schema": "arena-upstream-pins/1",
+  "azerothcore_wotlk": {
+    "repository": "https://github.com/azerothcore/azerothcore-wotlk.git",
+    "revision": "6ffb62abb867dabb258de6813ff5d06d6b011543",
+    "branch_observed": "master",
+    "qualification": "Pinned source contract for generated module compilation; not a Campaign Party runtime pin."
+  }
+}

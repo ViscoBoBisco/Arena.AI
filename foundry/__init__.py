@@ -17,4 +17,4 @@ claims a level it has not earned.
 
 __version__ = "1.0.0"
 SPEC_VERSION = 1
-ADAPTER_VERSION = "1.0.0"
+ADAPTER_VERSION = "1.1.0"

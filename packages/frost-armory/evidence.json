@@ -50,8 +50,109 @@
     }
   ],
   "allow_unverified": true,
+  "compile_qualification": {
+    "checks": {
+      "compiled_translation_units": [
+        "server/mod-frost-armory/src/FrostArmory.cpp",
+        "server/mod-frost-armory/src/mod-frost-armory_loader.cpp",
+        "CMake-generated static ModulesLoader.cpp"
+      ],
+      "method": "CMake compile_commands.json plus nm -C object-symbol checks",
+      "registration_linkage": "feature registration -> module-local loader -> AzerothCore static loader"
+    },
+    "environment": {
+      "core_repository": "https://github.com/azerothcore/azerothcore-wotlk.git",
+      "core_revision": "6ffb62abb867dabb258de6813ff5d06d6b011543",
+      "qualified_commit": "7514750d0a2103ee0318b382bfad0e4ad4368fbc",
+      "run_url": "https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44201459186/job/134456328585",
+      "workflow": ".github/workflows/azerothcore-compile.yml",
+      "workflow_job_id": 134456328585,
+      "workflow_run_id": 44201459186
+    },
+    "limitations": [
+      "Targeted translation-unit compilation and registration-object linkage only; not a complete AzerothCore server build or final module link.",
+      "Does not qualify database schemas, assets, installability, client behavior, or gameplay; generated feature remains a registration skeleton."
+    ],
+    "qualification": "ARENA-COMPILE",
+    "schema": "arena-qualification/1",
+    "status": "PASS",
+    "subject": {
+      "module": "mod-frost-armory",
+      "source_sha256": {
+        "server/mod-frost-armory/src/FrostArmory.cpp": "429cc7c5f700314bb1d81dd3a13886debeefc37fa83d12237330fd9fc05e8e93",
+        "server/mod-frost-armory/src/mod-frost-armory.h": "7594fea9b9cec745d0d8d63a0d6201dd8195aa81ab6af4b2e38c771f3e5a5c66",
+        "server/mod-frost-armory/src/mod-frost-armory_loader.cpp": "a627f0ab91615ab50277dc4c4cf1022a32d2a2cf170b6a12adfb0fef695bb383"
+      },
+      "spec": "frost-armory"
+    }
+  },
+  "delivery_requirements": {
+    "artifacts": [
+      {
+        "activation": "apply_after_schema_qualification",
+        "kind": "world_sql",
+        "trust": "generated_unqualified",
+        "version": "1.0.0"
+      },
+      {
+        "activation": "apply_after_backup_and_review",
+        "kind": "data_migration",
+        "trust": "generated_unqualified",
+        "version": "1.0.0"
+      },
+      {
+        "activation": "compile_before_install",
+        "kind": "server_module",
+        "trust": "generated_unqualified",
+        "version": "1.0.0"
+      },
+      {
+        "activation": "copy_after_protocol_review",
+        "kind": "addon_files",
+        "trust": "generated_unqualified",
+        "version": "1.0.0"
+      },
+      {
+        "activation": "install_after_module_review",
+        "kind": "config",
+        "trust": "generated_unqualified",
+        "version": "1.0.0"
+      }
+    ],
+    "capabilities": [
+      {
+        "activation": "admission_gate",
+        "name": "addon_channel",
+        "required": true,
+        "trust": "host_claim_and_snapshot_required",
+        "version": "adapter:1.1.0"
+      },
+      {
+        "activation": "admission_gate",
+        "name": "config_activation",
+        "required": true,
+        "trust": "host_claim_and_snapshot_required",
+        "version": "adapter:1.1.0"
+      },
+      {
+        "activation": "admission_gate",
+        "name": "server_module",
+        "required": true,
+        "trust": "host_claim_and_snapshot_required",
+        "version": "adapter:1.1.0"
+      },
+      {
+        "activation": "admission_gate",
+        "name": "world_db",
+        "required": true,
+        "trust": "host_claim_and_snapshot_required",
+        "version": "adapter:1.1.0"
+      }
+    ],
+    "schema": "arena-delivery-requirements/1"
+  },
   "evidence_levels": {
-    "ARENA-COMPILE": "pending (module not compiled against a pinned core)",
+    "ARENA-COMPILE": "PASS; pinned-core qualification record: https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44201459186/job/134456328585",
     "ARENA-DB": "pending (requires disposable compatible database)",
     "ARENA-PACK": "bundle assembled; run foundry verify before claiming integrity qualification",
     "ARENA-STATIC": "spec validation executed; see per-check verdicts above",
@@ -62,16 +163,35 @@
   "generated_scope": {
     "addon": "presentation placeholder only; not client-runtime tested",
     "asset_ids": "unverified unless supported by local source evidence",
-    "cpp_module": "registration skeleton only; not compiled or feature-complete",
+    "cpp_module": "registration skeleton; compiled against the pinned core, not feature-complete",
     "dbc_delta": "narrow Item.dbc delta only when explicitly requested; no MPQ assembly",
     "recipes": "descriptive dependency comments; no executable profession recipe",
     "rollback": "generated; rollback not DB-qualified",
     "sql_migrations": "generated; schema/application not DB-qualified"
   },
+  "lifecycle": {
+    "installable": false,
+    "integrity": "NOT_RUN",
+    "phase": "BUILD",
+    "qualification": "NOT_RUN",
+    "release": "BLOCKED",
+    "status": "PREVIEW"
+  },
   "package_version": "1.0.0",
   "patch_cost": "client-files (addon folder; no MPQ)",
   "spec": "frost-armory",
   "spec_version": 1,
+  "unverified_asset_refs": [
+    "frostbrand-blade.display_id=41179",
+    "rimeplate-chest.display_id=41180",
+    "glacier-shard.display_id=41181",
+    "frost-essence.display_id=41182",
+    "frostbrand-proc.visual_id=1",
+    "frostbrand-proc.icon_id=1",
+    "rimeward-aura.visual_id=1",
+    "rimeward-aura.icon_id=1",
+    "armory-keeper.display_id=24954"
+  ],
   "validation": {
     "ok": false,
     "problems": [
@@ -81,13 +201,18 @@
         "verdict": "PASS"
       },
       {
+        "check": "delivery",
+        "message": "5 required artifact(s), 4 host capability gate(s)",
+        "verdict": "PASS"
+      },
+      {
         "check": "patch-cost",
-        "message": "patch cost: client-files (addon folder; no MPQ)",
+        "message": "display summary only: client-files (addon folder; no MPQ)",
         "verdict": "PASS"
       },
       {
         "check": "asset-verification",
-        "message": "9 unverified asset reference(s) (allowed by caller): item:'frostbrand-blade'.display_id=41179, item:'rimeplate-chest'.display_id=41180, item:'glacier-shard'.display_id=41181, item:'frost-essence'.display_id=41182, spell:'frostbrand-proc'.visual_id=1, spell:'frostbrand-proc'.icon_id=1, spell:'rimeward-aura'.visual_id=1, spell:'rimeward-aura'.icon_id=1...",
+        "message": "9 asset reference(s) lack verifiable local DBC provenance (allowed by caller): item:'frostbrand-blade'.display_id=41179, item:'rimeplate-chest'.display_id=41180, item:'glacier-shard'.display_id=41181, item:'frost-essence'.display_id=41182, spell:'frostbrand-proc'.visual_id=1, spell:'frostbrand-proc'.icon_id=1, spell:'rimeward-aura'.visual_id=1, spell:'rimeward-aura'.icon_id=1...",
         "verdict": "SKIPPED"
       },
       {
@@ -120,6 +245,7 @@
     "verdicts": {
       "acceptance": "PASS",
       "asset-verification": "SKIPPED",
+      "delivery": "PASS",
       "dependencies": "PASS",
       "ids": "PASS",
       "patch-cost": "PASS",

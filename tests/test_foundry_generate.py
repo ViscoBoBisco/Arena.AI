@@ -32,6 +32,9 @@ class Determinism(unittest.TestCase):
             data = (PKG / rel).read_bytes()
             import hashlib
             self.assertEqual(hashlib.sha256(data).hexdigest(), meta["sha256"], rel)
+        for rel, content in generate.module_cpp(SPEC).items():
+            if rel.startswith("server/"):
+                self.assertEqual((PKG / rel).read_text(encoding="utf-8"), content, rel)
 
 
 class RollbackSymmetry(unittest.TestCase):
@@ -69,6 +72,23 @@ class ModuleAndAddon(unittest.TestCase):
         loader = files["server/mod-frost-armory/src/mod-frost-armory_loader.cpp"]
         self.assertIn("Addmod_frost_armoryScripts()", loader)
         self.assertIn("AddFrostArmoryScripts();", loader)
+
+    def test_registration_symbol_is_declared_in_shared_header(self):
+        files = generate.module_cpp(SPEC)
+        header = files["server/mod-frost-armory/src/mod-frost-armory.h"]
+        loader = files["server/mod-frost-armory/src/mod-frost-armory_loader.cpp"]
+        feature = files["server/mod-frost-armory/src/FrostArmory.cpp"]
+        self.assertIn("void AddFrostArmoryScripts();", header)
+        self.assertIn('#include "mod-frost-armory.h"', loader)
+        self.assertIn('#include "mod-frost-armory.h"', feature)
+        self.assertIn("AddFrostArmoryScripts();", loader)
+
+    def test_leading_digit_spec_name_becomes_valid_cpp_identifier(self):
+        spec = {"name": "2nd-forge", "module": {"enabled": True}}
+        files = generate.module_cpp(spec)
+        feature = files["server/mod-2nd-forge/src/_2ndForge.cpp"]
+        self.assertIn("class _2ndForgeScript", feature)
+        self.assertIn("void Add_2ndForgeScripts()", feature)
 
     def test_addon_is_30300_and_has_no_retail_api(self):
         files = generate.addon_files(SPEC)

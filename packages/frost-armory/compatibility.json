@@ -1,11 +1,11 @@
 {
-  "adapter_version": "1.0.0",
-  "host_snapshot_hash": "75e74b740e6c8a90",
+  "adapter_version": "1.1.0",
+  "host_snapshot_hash": "8d0b8e8ae9e8c962",
   "receipt": {
-    "adapter_version": "1.0.0",
+    "adapter_version": "1.1.0",
     "idempotency_key": "frost-armory-1.0.0",
     "kind": "dry_run",
-    "snapshot_hash": "75e74b740e6c8a90",
+    "snapshot_hash": "8d0b8e8ae9e8c962",
     "status": "admitted"
   }
 }

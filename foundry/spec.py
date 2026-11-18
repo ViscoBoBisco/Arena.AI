@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import SPEC_VERSION
+from . import ADAPTER_VERSION, SPEC_VERSION
 from .ids import TABLE_LIMITS, check_id
 
 # Verdicts. Fail-closed: only PASS counts as good.
@@ -34,7 +34,7 @@ TOP_LEVEL_KEYS = {
     "spec_version", "name", "version", "title", "description",
     "id_range", "requires", "items", "spells", "quests", "creatures",
     "gameobjects", "vendors", "recipes", "events", "config",
-    "addon", "module", "dependencies", "acceptance", "notes",
+    "addon", "module", "dependencies", "acceptance", "notes", "delivery",
 }
 # object kind -> (spec key, id table it allocates from, required fields)
 KINDS = {
@@ -59,6 +59,19 @@ SQL_TABLES = {
     "gameobject", "npc_vendor", "game_event", "conditions",
     "creature_loot_template", "gameobject_loot_template", "page_text",
     "smart_scripts", "creature_text",
+}
+
+# Object kind + reference field -> asset index kind from a parsed local DBC.
+ASSET_REFERENCE_KINDS = {
+    ("item", "display_id"): "item_display",
+    ("creature", "display_id"): "creature_display",
+    ("gameobject", "display_id"): "gameobject_display",
+    ("creature", "model_id"): "creature_model",
+    ("gameobject", "model_id"): "gameobject_model",
+    ("*", "spell_id"): "spell",
+    ("*", "item_id"): "item",
+    ("*", "visual_id"): "spell_visual",
+    ("*", "icon_id"): "spell_icon",
 }
 
 
@@ -108,6 +121,31 @@ class SpecError(Exception):
     """The spec file could not be read or is not JSON at all (exit 2)."""
 
 
+def asset_evidence_matches(object_kind: str, ref_field: str, value: int,
+                           evidence, asset_index) -> bool:
+    """Check evidence against a parser-built, still-current local DBC source."""
+    from .assets import AssetIndex, DBC_KINDS
+
+    if not isinstance(asset_index, AssetIndex):
+        return False
+    expected_kind = ASSET_REFERENCE_KINDS.get((object_kind, ref_field)) \
+        or ASSET_REFERENCE_KINDS.get(("*", ref_field))
+    indexed = asset_index.get(expected_kind, {}).get(str(value)) if expected_kind else None
+    expected_evidence = indexed.get("evidence") if indexed else None
+    if not isinstance(evidence, dict) or expected_evidence is None \
+            or evidence != expected_evidence:
+        return False
+    table = expected_evidence.get("table")
+    if table not in DBC_KINDS:
+        return False
+    try:
+        source = (asset_index.source_root / table).read_bytes()
+    except OSError:
+        return False
+    import hashlib
+    return hashlib.sha256(source).hexdigest() == expected_evidence.get("sha256")
+
+
 def load_spec(path: Path) -> dict:
     try:
         text = path.read_text(encoding="utf-8-sig")
@@ -127,7 +165,7 @@ def _is_int(v) -> bool:
 
 
 def validate_spec(spec: dict, *, world_tables=None, reserved=None,
-                  allow_unverified: bool = False) -> ValidationResult:
+                  asset_index=None, allow_unverified: bool = False) -> ValidationResult:
     """Validate *spec*. ``world_tables``/``reserved`` are optional allowlists;
     when omitted, the repo catalog files are used if present."""
     invalid_root = not isinstance(spec, dict)
@@ -163,6 +201,32 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
             add(Problem("schema", FAIL, f"{field_name} must be an object"))
     if spec.get("config") is not None and not isinstance(spec.get("config"), dict):
         add(Problem("schema", FAIL, "config must be an object"))
+    delivery = spec.get("delivery")
+    if delivery is not None:
+        allowed_delivery_keys = {"client_dbc_tables", "server_dbc_tables", "characters_sql_tables"}
+        if not isinstance(delivery, dict):
+            add(Problem("schema", FAIL, "delivery must be an object"))
+        else:
+            unknown_delivery = sorted(set(delivery) - allowed_delivery_keys)
+            if unknown_delivery:
+                add(Problem("schema", FAIL,
+                            f"unknown delivery keys: {', '.join(unknown_delivery)}"))
+            for table_key in allowed_delivery_keys:
+                tables = delivery.get(table_key, [])
+                if (not isinstance(tables, list)
+                        or any(not isinstance(table, str) or not table.strip() for table in tables)
+                        or len(set(tables)) != len(tables)):
+                    add(Problem("schema", FAIL,
+                                f"delivery.{table_key} must be a unique list of non-empty strings"))
+            client_tables = set(delivery.get("client_dbc_tables", [])) \
+                if isinstance(delivery.get("client_dbc_tables", []), list) else set()
+            server_tables = set(delivery.get("server_dbc_tables", [])) \
+                if isinstance(delivery.get("server_dbc_tables", []), list) else set()
+            if client_tables != server_tables:
+                add(Problem(
+                    "delivery", FAIL,
+                    "client_dbc_tables and server_dbc_tables must declare "
+                    "the same tables for parity"))
     id_range = spec.get("id_range") or {}
     if not isinstance(id_range, dict):
         id_range = {}
@@ -175,6 +239,7 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
     keys: Dict[str, str] = {}          # key -> kind
     allocated: Dict[str, int] = {}     # key -> numeric id
     unverified: List[str] = []
+    invalid_asset_evidence: List[str] = []
     try:
         allocated = allocate_ids(spec, reserved=reserved)
     except ValueError as exc:
@@ -195,6 +260,8 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
             for req in required:
                 if req not in obj:
                     add(Problem("references", FAIL, f"{where}: missing required field '{req}'"))
+            if "dbc_row" in obj and not isinstance(obj["dbc_row"], bool):
+                add(Problem("schema", FAIL, f"{where}: dbc_row must be boolean"))
             if not isinstance(key, str) or not key:
                 continue
             if key in keys:
@@ -226,22 +293,38 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
                 add(Problem("ids", FAIL, f"{where}: {problem}"))
             if reserved and nid in reserved.get(table, set()):
                 add(Problem("ids", FAIL, f"{where}: id {nid} collides with baseline {table}"))
-            # asset references must be verified or flagged
+            # A verified flag is only an author claim. A reference qualifies
+            # only when its DBC evidence matches a parser-built local index.
             for ref_field in ("display_id", "model_id", "spell_id", "item_id",
                               "visual_id", "icon_id"):
                 ref = obj.get(ref_field)
                 if isinstance(ref, dict):
-                    if not _is_int(ref.get("value")):
+                    unknown_ref_keys = sorted(set(ref) - {"value", "verified", "evidence"})
+                    if unknown_ref_keys:
+                        add(Problem("schema", FAIL,
+                                    f"{where}: {ref_field} has unknown keys: "
+                                    + ", ".join(unknown_ref_keys)))
+                    value = ref.get("value")
+                    if not _is_int(value):
                         add(Problem("references", FAIL,
                                     f"{where}: {ref_field}.value must be an integer"))
-                    if not isinstance(ref.get("verified"), bool):
+                        continue
+                    if "verified" in ref and not isinstance(ref["verified"], bool):
                         add(Problem("references", FAIL,
-                                    f"{where}: {ref_field}.verified must be boolean"))
-                    elif not ref["verified"]:
-                        unverified.append(f"{where}.{ref_field}={ref.get('value')}")
-                elif ref is not None and not _is_int(ref):
-                    add(Problem("references", FAIL,
-                                f"{where}: {ref_field} must be an int or {{value, verified}}"))
+                                    f"{where}: {ref_field}.verified must be boolean when present"))
+                    evidence = ref.get("evidence")
+                    if evidence is None:
+                        unverified.append(f"{where}.{ref_field}={value}")
+                        continue
+                    if not asset_evidence_matches(kind, ref_field, value, evidence, asset_index):
+                        invalid_asset_evidence.append(
+                            f"{where}.{ref_field}={value} does not match a parsed local DBC source")
+                elif ref is not None:
+                    if not _is_int(ref):
+                        add(Problem("references", FAIL,
+                                    f"{where}: {ref_field} must be an integer or evidence object"))
+                    else:
+                        unverified.append(f"{where}.{ref_field}={ref}")
 
     # cross-references between objects; defensively skip malformed entries
     # after recording their schema errors above (never leak AttributeError).
@@ -299,19 +382,32 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
     else:
         add(Problem("tables", SKIPPED, "no world_tables allowlist supplied"))
 
-    # --- patch cost --------------------------------------------------------
+    # --- structured delivery contract + display-only summary --------------
+    requirements = delivery_requirements(spec)
+    if not any(p.check == "delivery" and p.verdict == FAIL for p in result.problems):
+        add(Problem("delivery", PASS,
+                    f"{len(requirements['artifacts'])} required artifact(s), "
+                    f"{len(requirements['capabilities'])} host capability gate(s)"))
     patch = patch_cost(spec)
-    add(Problem("patch-cost", PASS, f"patch cost: {patch}"))
+    add(Problem("patch-cost", PASS, f"display summary only: {patch}"))
 
-    # --- unverified assets (fail-closed) ----------------------------------
-    if unverified:
+    # --- source-backed asset provenance (fail-closed) --------------------
+    if invalid_asset_evidence:
+        add(Problem(
+            "asset-verification", FAIL,
+            f"{len(invalid_asset_evidence)} asset evidence claim(s) could not be "
+            "matched to parsed local DBC data: " + ", ".join(invalid_asset_evidence[:8])
+            + ("..." if len(invalid_asset_evidence) > 8 else "")))
+    elif unverified:
         verdict = NOT_ASSESSED if not allow_unverified else SKIPPED
         note = "allowed by caller" if allow_unverified else "blocks build"
         add(Problem("asset-verification", verdict,
-                    f"{len(unverified)} unverified asset reference(s) ({note}): "
-                    + ", ".join(unverified[:8]) + ("..." if len(unverified) > 8 else "")))
+                    f"{len(unverified)} asset reference(s) lack verifiable local DBC provenance "
+                    f"({note}): " + ", ".join(unverified[:8])
+                    + ("..." if len(unverified) > 8 else "")))
     else:
-        add(Problem("asset-verification", PASS, "all asset references verified"))
+        add(Problem("asset-verification", PASS,
+                    "all asset references match content-hashed local DBC rows"))
 
     # --- acceptance --------------------------------------------------------
     acceptance = spec.get("acceptance") or []
@@ -348,15 +444,103 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
     return result
 
 
-def patch_cost(spec: dict) -> str:
-    """Classify delivery cost from the spec's own content. Never guesses."""
+def delivery_requirements(spec: dict) -> dict:
+    """Return independent artifact and host-capability requirements.
+
+    The summary string returned by :func:`patch_cost` is for display only;
+    admission must consume this structured contract instead.
+    """
+    declared = spec.get("delivery") if isinstance(spec.get("delivery"), dict) else {}
+
+    def string_set(key: str) -> set:
+        values = declared.get(key, [])
+        if not isinstance(values, list):
+            return set()
+        return {value for value in values if isinstance(value, str)}
+
+    client_tables = string_set("client_dbc_tables")
+    server_tables = string_set("server_dbc_tables")
+    items = spec.get("items")
+    for obj in items if isinstance(items, list) else []:
+        if isinstance(obj, dict) and obj.get("dbc_row"):
+            client_tables.add("Item.dbc")
+            server_tables.add("Item.dbc")
+    spells = spec.get("spells")
+    for obj in spells if isinstance(spells, list) else []:
+        if isinstance(obj, dict) and obj.get("dbc_row"):
+            client_tables.add("Spell.dbc")
+            server_tables.add("Spell.dbc")
+
+    artifacts = []
+
+    def artifact(kind: str, *, table: Optional[str] = None, activation: str) -> None:
+        entry = {
+            "kind": kind,
+            "version": str(spec.get("version", "0.0.0")),
+            "trust": "generated_unqualified",
+            "activation": activation,
+        }
+        if table is not None:
+            entry["table"] = table
+        if entry not in artifacts:
+            artifacts.append(entry)
+
+    has_world_content = any(spec.get(spec_key) for spec_key, _table, _required in KINDS.values())
+    if has_world_content:
+        artifact("world_sql", activation="apply_after_schema_qualification")
+        artifact("data_migration", activation="apply_after_backup_and_review")
+    for table in sorted(string_set("characters_sql_tables")):
+        artifact("characters_sql", table=table, activation="apply_after_schema_qualification")
+        artifact("data_migration", table=table, activation="apply_after_backup_and_review")
+    if spec.get("module"):
+        artifact("server_module", activation="compile_before_install")
     if spec.get("addon"):
+        artifact("addon_files", activation="copy_after_protocol_review")
+    for table in sorted(client_tables):
+        artifact("client_dbc", table=table, activation="merge_into_new_patch_after_parity")
+    for table in sorted(server_tables):
+        artifact("server_dbc", table=table, activation="install_with_matching_client_dbc")
+    if client_tables:
+        artifact("mpq", activation="build_separate_archive_after_collision_review")
+    if spec.get("config") or spec.get("module"):
+        artifact("config", activation="install_after_module_review")
+
+    capability_names = set()
+    artifact_kinds = {entry["kind"] for entry in artifacts}
+    if "world_sql" in artifact_kinds:
+        capability_names.add("world_db")
+    if "characters_sql" in artifact_kinds:
+        capability_names.add("characters_db")
+    if "server_module" in artifact_kinds:
+        capability_names.add("server_module")
+    if "addon_files" in artifact_kinds:
+        capability_names.add("addon_channel")
+    if "mpq" in artifact_kinds:
+        capability_names.update(("mpq_patch", "client_server_dbc_parity"))
+    if "config" in artifact_kinds:
+        capability_names.add("config_activation")
+    capabilities = [{
+        "name": name,
+        "version": "adapter:" + ADAPTER_VERSION,
+        "required": True,
+        "trust": "host_claim_and_snapshot_required",
+        "activation": "admission_gate",
+    } for name in sorted(capability_names)]
+    return {"schema": "arena-delivery-requirements/1",
+            "artifacts": artifacts, "capabilities": capabilities}
+
+
+def patch_cost(spec: dict) -> str:
+    """Human-readable delivery summary only; never use this for admission."""
+    artifacts = {entry["kind"] for entry in delivery_requirements(spec)["artifacts"]}
+    needs_dbc = "client_dbc" in artifacts or "mpq" in artifacts
+    has_addon = "addon_files" in artifacts
+    if needs_dbc and has_addon:
+        return "mixed delivery (addon-files + dbc-rows; MPQ patch required)"
+    if needs_dbc:
+        return "dbc-rows (MPQ patch required)"
+    if has_addon:
         return "client-files (addon folder; no MPQ)"
-    for kind in ("items", "spells"):
-        objects = spec.get(kind)
-        for obj in objects if isinstance(objects, list) else []:
-            if isinstance(obj, dict) and obj.get("dbc_row"):
-                return "dbc-rows (MPQ patch required)"
     return "none (server-side only)"
 
 

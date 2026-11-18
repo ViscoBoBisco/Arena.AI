@@ -14,6 +14,7 @@ from typing import Optional, Sequence
 from . import __version__
 from .assets import AssetError, ingest_dbc_dir, ingest_inventory, search, summary
 from .package import build_package
+from .qualification import integrity_check, qualify_package, release_package
 from .spec import SpecError, load_spec, validate_spec
 
 REPO = Path(__file__).resolve().parent.parent
@@ -66,6 +67,17 @@ def _reserved_arg(args):
         return None
 
 
+def _asset_index_arg(args):
+    dbc_dir = getattr(args, "dbc_dir", None)
+    if dbc_dir is None:
+        return None
+    try:
+        return ingest_dbc_dir(dbc_dir)
+    except AssetError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return False
+
+
 def cmd_validate(args) -> int:
     spec = _load(args.spec)
     if spec is None:
@@ -73,7 +85,11 @@ def cmd_validate(args) -> int:
     reserved = _reserved_arg(args)
     if reserved is None:
         return 2
+    asset_index = _asset_index_arg(args)
+    if asset_index is False:
+        return 2
     result = validate_spec(spec, world_tables=_world_tables(), reserved=reserved,
+                           asset_index=asset_index,
                            allow_unverified=args.allow_unverified)
     print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
     return 0 if result.ok else 1
@@ -83,9 +99,12 @@ def cmd_plan(args) -> int:
     spec = _load(args.spec)
     if spec is None:
         return 2
-    from .spec import allocate_ids, patch_cost
+    from .spec import allocate_ids, delivery_requirements, patch_cost
     reserved = _reserved_arg(args)
     if reserved is None:
+        return 2
+    asset_index = _asset_index_arg(args)
+    if asset_index is False:
         return 2
     try:
         ids = allocate_ids(spec, reserved=reserved)
@@ -93,10 +112,11 @@ def cmd_plan(args) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     result = validate_spec(spec, world_tables=_world_tables(), reserved=reserved,
-                           allow_unverified=True)
+                           asset_index=asset_index, allow_unverified=True)
     print(json.dumps({
         "spec": spec.get("name"),
         "patch_cost": patch_cost(spec),
+        "delivery_requirements": delivery_requirements(spec),
         "ids": ids,
         "validation": result.to_dict(),
         "objects": {k: len(spec.get(k) or []) for k in
@@ -113,12 +133,17 @@ def cmd_build(args) -> int:
     reserved = _reserved_arg(args)
     if reserved is None:
         return 2
+    asset_index = _asset_index_arg(args)
+    if asset_index is False:
+        return 2
     result = validate_spec(spec, world_tables=_world_tables(), reserved=reserved,
+                           asset_index=asset_index,
                            allow_unverified=args.allow_unverified)
     try:
         manifest = build_package(spec, result, args.out,
                                  allow_unverified=args.allow_unverified,
                                  reserved=reserved,
+                                 asset_index=asset_index,
                                  stamp=args.stamp)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -129,55 +154,64 @@ def cmd_build(args) -> int:
 
 
 def cmd_verify(args) -> int:
-    manifest_path = args.package / "manifest.json"
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"error: {manifest_path}: {exc}", file=sys.stderr)
-        return 2
-    if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), dict):
-        print("INVALID  manifest must contain a files object")
+    result = integrity_check(args.package)
+    if not result["ok"]:
+        for problem in result["problems"]:
+            label = next((tag for tag in ("INVALID", "MISSING", "CHANGED", "UNLISTED")
+                          if problem.startswith(tag + " ")), None)
+            if label:
+                print(f"{label}  {problem[len(label) + 1:]}")
+            else:
+                print(f"INVALID  {problem}")
+        print(f"package {args.package}: FAIL ({len(result['problems'])} problem(s))")
         return 1
-
-    import hashlib
-    from pathlib import PurePosixPath
-    problems = 0
-    listed = {}
-    listed.update(manifest.get("files") or {})
-    listed.update(manifest.get("metadata_files") or {})
-    for rel, meta in listed.items():
-        path = PurePosixPath(rel)
-        if path.is_absolute() or ".." in path.parts or not path.parts or not isinstance(meta, dict):
-            print(f"INVALID  unsafe manifest path or metadata: {rel!r}")
-            problems += 1
-            continue
-        target = args.package.joinpath(*path.parts)
-        try:
-            target.resolve().relative_to(args.package.resolve())
-        except (OSError, ValueError):
-            print(f"INVALID  path escapes package: {rel}")
-            problems += 1
-            continue
-        if target.is_symlink() or not target.is_file():
-            print(f"MISSING  {rel}")
-            problems += 1
-            continue
-        digest = hashlib.sha256(target.read_bytes()).hexdigest()
-        if digest != meta.get("sha256"):
-            print(f"CHANGED  {rel}")
-            problems += 1
-
-    actual = {p.relative_to(args.package).as_posix()
-              for p in args.package.rglob("*") if p.is_file() or p.is_symlink()}
-    expected = set(listed) | {"manifest.json"}
-    for rel in sorted(actual - expected):
-        print(f"UNLISTED  {rel}")
-        problems += 1
-    if problems:
-        print(f"package {manifest.get('spec')}: FAIL ({problems} problem(s))")
-        return 1
-    count = len(listed)
+    manifest = result["manifest"]
+    count = len(manifest["files"]) + len(manifest.get("metadata_files", {}))
     print(f"package {manifest.get('spec')}: OK ({count} payload/metadata file(s) match)")
+    print("integrity only: qualification and release status are unchanged")
+    return 0
+
+
+def cmd_qualify(args) -> int:
+    import os
+    import tempfile
+
+    try:
+        args.out.resolve().relative_to(args.package.resolve())
+    except ValueError:
+        pass
+    else:
+        print("error: qualification report must be outside the package", file=sys.stderr)
+        return 2
+    try:
+        report = qualify_package(args.package, args.attestations)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(prefix=f".{args.out.name}.", dir=args.out.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(report, stream, indent=2, sort_keys=True)
+                stream.write("\n")
+            os.replace(temp_name, args.out)
+        except Exception:
+            try:
+                os.unlink(temp_name)
+            except OSError:
+                pass
+            raise
+    except (OSError, ValueError) as exc:
+        print(f"qualification failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report.get("qualified") else 1
+
+
+def cmd_release(args) -> int:
+    try:
+        receipt = release_package(args.package, args.qualification, args.out)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"release blocked: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(receipt, indent=2, sort_keys=True))
     return 0
 
 
@@ -223,11 +257,13 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("spec", type=Path)
     v.add_argument("--allow-unverified", action="store_true")
     v.add_argument("--baseline", type=Path, help="reserved-ID snapshot (arena-id-baseline/1 JSON)")
+    v.add_argument("--dbc-dir", type=Path, help="local client DBC extracts for provenance verification")
     v.set_defaults(func=cmd_validate)
 
     pl = sub.add_parser("plan", help="preview ids + patch cost without building")
     pl.add_argument("spec", type=Path)
     pl.add_argument("--baseline", type=Path, help="reserved-ID snapshot (arena-id-baseline/1 JSON)")
+    pl.add_argument("--dbc-dir", type=Path, help="local client DBC extracts for provenance verification")
     pl.set_defaults(func=cmd_plan)
 
     b = sub.add_parser("build", help="build a package bundle from a spec")
@@ -235,12 +271,27 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--out", type=Path, required=True)
     b.add_argument("--allow-unverified", action="store_true")
     b.add_argument("--baseline", type=Path, help="reserved-ID snapshot (arena-id-baseline/1 JSON)")
+    b.add_argument("--dbc-dir", type=Path, help="local client DBC extracts for provenance verification")
     b.add_argument("--stamp", action="store_true")
     b.set_defaults(func=cmd_build)
 
-    vf = sub.add_parser("verify", help="verify a built package against its manifest")
+    vf = sub.add_parser("verify", help="verify package integrity only")
     vf.add_argument("package", type=Path)
     vf.set_defaults(func=cmd_verify)
+
+    q = sub.add_parser("qualify", help="evaluate qualification gates without modifying the package")
+    q.add_argument("package", type=Path)
+    q.add_argument("--attestations", type=Path,
+                   help="external qualification records bound to this manifest")
+    q.add_argument("--out", type=Path, required=True,
+                   help="write the manifest-bound qualification report here")
+    q.set_defaults(func=cmd_qualify)
+
+    rel = sub.add_parser("release", help="copy only a qualified, integrity-checked package")
+    rel.add_argument("package", type=Path)
+    rel.add_argument("--qualification", type=Path, required=True)
+    rel.add_argument("--out", type=Path, required=True)
+    rel.set_defaults(func=cmd_release)
 
     a = sub.add_parser("assets", help="index + search client assets")
     a.add_argument("--dbc-dir", type=Path)

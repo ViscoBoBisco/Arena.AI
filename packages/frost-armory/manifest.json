@@ -1,9 +1,74 @@
 {
   "client_build": "3.3.5a.12340",
+  "delivery_requirements": {
+    "artifacts": [
+      {
+        "activation": "apply_after_schema_qualification",
+        "kind": "world_sql",
+        "trust": "generated_unqualified",
+        "version": "1.0.0"
+      },
+      {
+        "activation": "apply_after_backup_and_review",
+        "kind": "data_migration",
+        "trust": "generated_unqualified",
+        "version": "1.0.0"
+      },
+      {
+        "activation": "compile_before_install",
+        "kind": "server_module",
+        "trust": "generated_unqualified",
+        "version": "1.0.0"
+      },
+      {
+        "activation": "copy_after_protocol_review",
+        "kind": "addon_files",
+        "trust": "generated_unqualified",
+        "version": "1.0.0"
+      },
+      {
+        "activation": "install_after_module_review",
+        "kind": "config",
+        "trust": "generated_unqualified",
+        "version": "1.0.0"
+      }
+    ],
+    "capabilities": [
+      {
+        "activation": "admission_gate",
+        "name": "addon_channel",
+        "required": true,
+        "trust": "host_claim_and_snapshot_required",
+        "version": "adapter:1.1.0"
+      },
+      {
+        "activation": "admission_gate",
+        "name": "config_activation",
+        "required": true,
+        "trust": "host_claim_and_snapshot_required",
+        "version": "adapter:1.1.0"
+      },
+      {
+        "activation": "admission_gate",
+        "name": "server_module",
+        "required": true,
+        "trust": "host_claim_and_snapshot_required",
+        "version": "adapter:1.1.0"
+      },
+      {
+        "activation": "admission_gate",
+        "name": "world_db",
+        "required": true,
+        "trust": "host_claim_and_snapshot_required",
+        "version": "adapter:1.1.0"
+      }
+    ],
+    "schema": "arena-delivery-requirements/1"
+  },
   "files": {
     "README.md": {
-      "sha256": "ab27f9b3b5d3e4dc714b75a907686f4722f67c54e8edc46aa98be50e23a69e05",
-      "size": 2250
+      "sha256": "26e75326a6bcad2db2db8b328a0ec3ec25a369b3da70767c1396ea530d212298",
+      "size": 2414
     },
     "addon/FrostArmory/FrostArmory.lua": {
       "sha256": "13162b043225c320f2b4c630a139932f9dccec0ceab9333090e736e55cf882ca",
@@ -26,20 +91,24 @@
       "size": 60
     },
     "server/mod-frost-armory/README.md": {
-      "sha256": "843be15ae7e83b85a9ece3dead5d09c56727c2e72667717e07574002d2adf191",
-      "size": 265
+      "sha256": "11ac923f8b1cd9a995917e630d3722d58812504cdd0cba55561f702de02c5256",
+      "size": 363
     },
     "server/mod-frost-armory/conf/mod-frost-armory.conf.dist": {
       "sha256": "1044a53450fc4b6a3884459e1b2de1bba749cc636bbdacd8f1d82f7430367376",
       "size": 105
     },
     "server/mod-frost-armory/src/FrostArmory.cpp": {
-      "sha256": "08f562ccaab910d67471cd6fc3cd92005e3e4108c351a08720f71ef4e7318b32",
-      "size": 738
+      "sha256": "429cc7c5f700314bb1d81dd3a13886debeefc37fa83d12237330fd9fc05e8e93",
+      "size": 757
+    },
+    "server/mod-frost-armory/src/mod-frost-armory.h": {
+      "sha256": "7594fea9b9cec745d0d8d63a0d6201dd8195aa81ab6af4b2e38c771f3e5a5c66",
+      "size": 225
     },
     "server/mod-frost-armory/src/mod-frost-armory_loader.cpp": {
-      "sha256": "376d210246e2463bc0bf052eb2516bb0294f9e0049ec12b4ea9598937f695a98",
-      "size": 176
+      "sha256": "a627f0ab91615ab50277dc4c4cf1022a32d2a2cf170b6a12adfb0fef695bb383",
+      "size": 174
     },
     "spec.json": {
       "sha256": "48f0bfc60365ae2b82be2f0923d6e6c690cedd8edb356ea6356fba1d3297f6d2",
@@ -57,12 +126,12 @@
   "id_baseline_sha256": "a7830c7e18af09980141e9ac392ff1859640264acc4a835866ff8c0b8a3b222f",
   "metadata_files": {
     "compatibility.json": {
-      "sha256": "2a762ba6814a9932bcbae193aecc775894dd42d4c9078def180aa7af3955e9cf",
+      "sha256": "a062f42692f01e40ac84518513c4f1793c7c5c2711e2d0df3a3fb05041dba7b4",
       "size": 263
     },
     "evidence.json": {
-      "sha256": "d2e20b2f967393e29a9b97e9a89aaf19733d28a272b9a95b173021aeea9e079b",
-      "size": 4691
+      "sha256": "a8fcf2b4947963a475c56bed9a5e2473ebe34e1b90c7774a9dc4e25b6c4f0145",
+      "size": 9198
     }
   },
   "package_version": "1.0.0",
@@ -71,7 +140,7 @@
   "spec": "frost-armory",
   "spec_version": 1,
   "summary": {
-    "bytes": 15643,
-    "files": 13
+    "bytes": 16147,
+    "files": 14
   }
 }
