@@ -39,7 +39,8 @@ DBC_KINDS = {
     "Emotes.dbc": "emote",
     "AnimationData.dbc": "animation",
     "SkillLine.dbc": "skill",
-    "FactionTemplate.dbc": "faction",
+    "Faction.dbc": "reputation_faction",
+    "FactionTemplate.dbc": "faction_template",
 }
 
 

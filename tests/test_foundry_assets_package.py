@@ -38,6 +38,22 @@ class Assets(unittest.TestCase):
             self.assertEqual(patch_cost(index, "item_display", 999999), "dbc-rows")
             self.assertEqual(patch_cost(index, "new_art", 1), "assets")
 
+    def test_reputation_factions_and_hostility_templates_are_distinct_assets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Deliberately synthetic fixture IDs: this tests table identity, not game faction IDs.
+            helpers.write_dbc(root / "Faction.dbc", 57, [(900001, *([0] * 56))])
+            helpers.write_dbc(root / "FactionTemplate.dbc", 14, [(900002, *([0] * 13))])
+            index = ingest_dbc_dir(root)
+            self.assertIn("900001", index["reputation_faction"])
+            self.assertIn("900002", index["faction_template"])
+            self.assertNotIn("900001", index["faction_template"])
+            self.assertNotIn("900002", index["reputation_faction"])
+            self.assertEqual(index["reputation_faction"]["900001"]["evidence"]["table"],
+                             "Faction.dbc")
+            self.assertEqual(index["faction_template"]["900002"]["evidence"]["table"],
+                             "FactionTemplate.dbc")
+
     def test_dbc_dir_ingest(self):
         with tempfile.TemporaryDirectory() as tmp:
             helpers.write_dbc(Path(tmp) / "ItemDisplayInfo.dbc", 25,

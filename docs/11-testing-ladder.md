@@ -7,7 +7,7 @@ question than the last, and each finding a different *kind* of defect:
 | Tier | Question | Finds | Runtime |
 |---|---|---|---|
 | **1 — intern** | *does it run?* | crashes, typos, undecodable files, dead links | ~1 s (10 tests) |
-| **2 — engineer** | *does it behave at the edges?* | inconsistent exit codes, off-by-one ranges, specs that disagree with code | ~3 s (81 tests) |
+| **2 — engineer** | *does it behave at the edges?* | inconsistent exit codes, off-by-one ranges, specs that disagree with code | ~3 s (82 tests) |
 | **3 — master** | *is the test capable of failing?* | decorative checks, unsafe writes, invented schema, scale limits | ~6 s (34 tests) |
 
 ```bash
