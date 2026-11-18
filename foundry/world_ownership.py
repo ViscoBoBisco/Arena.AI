@@ -258,6 +258,15 @@ def _insert_identity_values(cursor, statement: str, identity, expected: dict) ->
             actual_value = actual_value["$decimal"]
         if value is None:
             match = actual_value is None
+        elif (isinstance(value, str) and isinstance(actual_value, dict)
+              and isinstance(actual_value.get("$iso8601"), str)):
+            try:
+                expected_time = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                actual_time = datetime.fromisoformat(
+                    actual_value["$iso8601"].replace("Z", "+00:00"))
+                match = expected_time == actual_time
+            except ValueError:
+                match = actual_value == _json_value(value)
         elif isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
             try:
                 match = Decimal(str(actual_value)) == Decimal(str(value))

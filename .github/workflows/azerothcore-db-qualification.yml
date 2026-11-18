@@ -78,6 +78,8 @@ jobs:
           ARENA_MYSQL_PASSWORD: arena-foundry-ci-only
           ARENA_PINNED_CORE_SOURCE: /tmp/acore-pinned
           ARENA_WORLD_SCHEMA_PROOF: /tmp/arena-world-schema-proof.json
+          ARENA_WORLD_FIXTURE_PACKAGE: /tmp/arena-world-seven-table-package
+          ARENA_WORLD_QUALIFICATION_ATTESTATIONS: /tmp/arena-world-qualification-attestations.json
         run: |
           set -o pipefail
           cat > /tmp/arena-foundry-mysql.cnf <<'EOF'
@@ -89,16 +91,37 @@ jobs:
           chmod 600 /tmp/arena-foundry-mysql.cnf
           mysql --defaults-extra-file=/tmp/arena-foundry-mysql.cnf \
             --execute='CREATE DATABASE arena_foundry_disposable_pinned_ci CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'
-          python3 -m unittest tests.test_foundry_world_schema -v 2>&1 | tee /tmp/arena-world-schema-test.log
+          set +e
+          python3 -m unittest tests.test_foundry_world_schema -v \
+            > /tmp/arena-world-schema-test.log 2>&1
+          schema_test_status=$?
+          set -e
+          cat /tmp/arena-world-schema-test.log
+          if [ "$schema_test_status" -ne 0 ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+          lines = Path('/tmp/arena-world-schema-test.log').read_text(errors='replace').strip().splitlines()
+          detail = '\\n'.join(lines[-45:]) if lines else 'pinned World schema integration failed without diagnostics'
+          detail = detail.replace('%', '%25').replace('\\r', '%0D').replace('\\n', '%0A')
+          print(f'::error title=Pinned World schema integration::{detail}')
+          PY
+            exit "$schema_test_status"
+          fi
           python3 - <<'PY'
           import hashlib
           import json
           from pathlib import Path
           proof = json.loads(Path('/tmp/arena-world-schema-proof.json').read_text())
-          proof_hash = proof.pop('runtime_schema_sha256')
+          proof_hash = proof.pop('evidence_sha256')
           canonical = json.dumps(proof, sort_keys=True, separators=(',', ':'), default=str).encode()
           assert hashlib.sha256(canonical).hexdigest() == proof_hash
-          proof['runtime_schema_sha256'] = proof_hash
+          proof['evidence_sha256'] = proof_hash
+          schema_keys = ('schema', 'database', 'trust', 'source', 'created_tables',
+                         'runtime_tables', 'base_data_imported')
+          schema_body = {key: proof[key] for key in schema_keys}
+          schema_hash = hashlib.sha256(json.dumps(
+              schema_body, sort_keys=True, separators=(',', ':'), default=str).encode()).hexdigest()
+          assert schema_hash == proof['runtime_schema_sha256']
           assert proof['schema'] == 'arena-world-schema-source/1'
           assert proof['trust'] == 'SYNTHETIC_DISPOSABLE_MYSQL_PINNED_SCHEMA'
           assert proof['source']['revision'] == '6ffb62abb867dabb258de6813ff5d06d6b011543'
@@ -107,7 +130,11 @@ jobs:
           assert all(table['engine'] == 'innodb' for table in proof['runtime_tables'].values())
           assert proof['process_recovery']['status'] == 'PASS'
           assert proof['process_recovery']['child_exit_code'] == 73
-          assert proof['process_recovery']['uncommitted_world_row_and_journal_absent_after_restart'] == 'PASS'
+          assert proof['world_row_checks']['status'] == 'PASS'
+          assert set(proof['world_row_checks']['tables']) == set(proof['created_tables'])
+          assert all(table_checks == {'apply': 'PASS', 'rollback': 'PASS'}
+                     for table_checks in proof['world_row_checks']['tables'].values())
+          assert proof['process_recovery']['uncommitted_rows_and_journal_state_changes_absent'] == 'PASS'
           assert proof['process_recovery']['same_request_receipt_replayed'] == 'PASS'
           print('Pinned DDL source hashes, runtime World-table keys, and process recovery verified.')
           with open(__import__('os').environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
@@ -119,6 +146,46 @@ jobs:
               print('- Evidence is synthetic disposable MySQL schema only; no base data, server boot, gameplay, or live qualification.', file=summary)
           PY
 
+      - name: Create source-bound ARENA-DB attestation and reconnect the qualification gate
+        env:
+          ARENA_MYSQL_HOST: 127.0.0.1
+          ARENA_MYSQL_PORT: 3306
+          ARENA_MYSQL_DATABASE: arena_foundry_disposable_pinned_ci
+          ARENA_MYSQL_USER: root
+          ARENA_MYSQL_PASSWORD: arena-foundry-ci-only
+        run: |
+          python3 tools/foundry_world_qualify.py /tmp/arena-world-seven-table-package \
+            --database arena_foundry_disposable_pinned_ci \
+            --core-source /tmp/acore-pinned \
+            --schema-proof /tmp/arena-world-schema-proof.json \
+            --recovery-proof /tmp/arena-world-schema-proof.json \
+            --defaults-extra-file /tmp/arena-foundry-mysql.cnf \
+            --confirm-disposable \
+            --out /tmp/arena-world-cli-attestations.json
+          set +e
+          python3 tools/foundry.py qualify /tmp/arena-world-seven-table-package \
+            --attestations /tmp/arena-world-cli-attestations.json \
+            --out /tmp/arena-world-qualification-report.json \
+            > /tmp/arena-world-qualification.log 2>&1
+          qualify_status=$?
+          set -e
+          if [ "$qualify_status" -ne 1 ]; then
+            cat /tmp/arena-world-qualification.log
+            echo "Expected the world DB gate to pass while runtime/release gates remain blocked."
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('/tmp/arena-world-qualification-report.json').read_text())
+          assert report['status'] == 'BLOCKED'
+          assert report['qualified'] is False
+          gates = {item['name']: item['status'] for item in report['gates']}
+          assert gates['database_migrations:world'] == 'PASS'
+          assert gates['database_migrations'] == 'PASS'
+          print('ARENA-DB world migration gate PASS for this exact synthetic package; release remains BLOCKED.')
+          PY
+
       - name: Preserve pinned World schema and process recovery proof
         uses: actions/upload-artifact@v4
         with:
@@ -126,6 +193,11 @@ jobs:
           path: |
             /tmp/arena-world-schema-proof.json
             /tmp/arena-world-schema-test.log
+            /tmp/arena-world-seven-table-package/
+            /tmp/arena-world-qualification-attestations.json
+            /tmp/arena-world-cli-attestations.json
+            /tmp/arena-world-qualification-report.json
+            /tmp/arena-world-qualification.log
           if-no-files-found: error
           retention-days: 30
 
@@ -137,7 +209,7 @@ jobs:
           from foundry.spec import load_spec, validate_spec
           result = validate_spec(load_spec(Path('specs/frost-armory.json')), allow_unverified=True)
           assert result.verdicts['emitter-coverage'] == 'FAIL'
-          print('World DB qualification is intentionally blocked; no database was contacted.')
+          print('Unsupported Frost Armory content remains fail-closed; its declarations were not sent to the disposable DB.')
           PY
 
       - name: Build generated Vault Terminal package

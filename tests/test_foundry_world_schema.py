@@ -1,10 +1,11 @@
-"""Exact pinned AzerothCore DDL and abrupt-process-restart recovery tests.
+"""Exact pinned AzerothCore DDL and seven-table ownership recovery tests.
 
-The integration path is opt-in and must point at a fresh, empty database whose
+The integration path is opt-in and must target a fresh, empty database whose
 name is explicitly disposable. It never drops databases or World rows.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import multiprocessing
@@ -17,9 +18,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import helpers  # noqa: E402
 sys.path.insert(0, str(helpers.REPO))
+from foundry.assets import ingest_dbc_dir  # noqa: E402
+from foundry.db_qualification import _DB_SCHEMA_TABLES, expected_world_rows  # noqa: E402
 from foundry.package import build_package  # noqa: E402
 from foundry.spec import validate_spec  # noqa: E402
 from foundry.world_ownership import OwnershipError, operate_on_package  # noqa: E402
+from foundry.world_qualification import qualify_owned_world_package  # noqa: E402
+from foundry.db_qualification import write_attestations  # noqa: E402
+from foundry.qualification import _valid_database_attestation, integrity_check  # noqa: E402
 from foundry.world_schema import (  # noqa: E402
     _extract_create_table, initialize_pinned_empty_world_schema,
 )
@@ -32,7 +38,7 @@ _ENABLED = all(os.environ.get(key) is not None for key in _REQUIRED)
 
 
 def _crash_during_apply(database: str, package: str, env: dict) -> None:
-    """Die after MySQL executes the first World INSERT but before commit."""
+    """Die after vendor INSERT, with five supported-table writes uncommitted."""
     for key, value in env.items():
         os.environ[key] = value
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -50,8 +56,7 @@ def _crash_during_apply(database: str, package: str, env: dict) -> None:
 
         def execute(self, sql, params=None):
             result = self.inner.execute(sql, params) if params is not None else self.inner.execute(sql)
-            if sql.lstrip().upper().startswith("INSERT INTO `ITEM_TEMPLATE`") or \
-                    sql.lstrip().upper().startswith("INSERT INTO ITEM_TEMPLATE"):
+            if sql.lstrip().upper().startswith("INSERT INTO NPC_VENDOR"):
                 os._exit(73)
             return result
 
@@ -68,6 +73,21 @@ def _crash_during_apply(database: str, package: str, env: dict) -> None:
     operate_on_package(CrashConnection(), Path(package), action="apply",
                        request_id="process-crash-restart-apply")
     os._exit(74)  # the expected interruption point must be reached
+
+
+def _row_count(cursor, identity) -> int:
+    table, keys = identity
+    where = " AND ".join(f"`{column}`=%s" for column, _ in keys)
+    cursor.execute(f"SELECT COUNT(*) FROM `{table}` WHERE {where}",
+                   tuple(value for _, value in keys))
+    return int(cursor.fetchone()[0])
+
+
+def _assert_identity_counts(testcase, connection, identities, expected):
+    with connection.cursor() as cursor:
+        for identity in identities:
+            testcase.assertEqual(_row_count(cursor, identity), expected,
+                                 f"unexpected count for {identity!r}")
 
 
 class PinnedDDLUnit(unittest.TestCase):
@@ -97,25 +117,54 @@ class PinnedWorldSchemaCrashRecovery(unittest.TestCase):
         if not cls.database.startswith("arena_foundry_disposable_"):
             raise AssertionError("integration target must use disposable database prefix")
         cls.temp = tempfile.TemporaryDirectory(prefix="arena-pinned-world-")
-        cls.package = Path(cls.temp.name) / "pinned-world-fixture"
+        cls.package = Path(os.environ.get("ARENA_WORLD_FIXTURE_PACKAGE",
+                                         str(Path(cls.temp.name) / "pinned-world-fixture")))
+        if cls.package.exists():
+            raise AssertionError(f"refusing to overwrite package fixture: {cls.package}")
+        cls.package.parent.mkdir(parents=True, exist_ok=True)
+        dbc_dir = Path(cls.temp.name) / "dbc"
+        helpers.write_dbc(dbc_dir / "CreatureDisplayInfo.dbc", 2, [(1, 0)])
+        cls.asset_index = ingest_dbc_dir(dbc_dir)
         spec = {
-            "spec_version": 1, "name": "pinned-world-fixture", "version": "1.0.0",
-            "title": "Pinned World schema process recovery fixture",
+            "spec_version": 1, "name": "world-seven-table-fixture", "version": "1.0.0",
+            "title": "World seven-table ownership fixture",
             "description": "Synthetic disposable DB fixture; no installable gameplay.",
-            "id_range": {"start": 902000, "end": 902001},
+            "id_range": {"start": 903000, "end": 903100},
             "requires": {"core": f"azerothcore-wotlk@{_PIN}", "client_build": "3.3.5a.12340"},
-            "items": [{"key": "process-recovery-item", "name": "Process recovery fixture",
-                       "description": "Exact pinned DDL test."}],
+            "items": [{"key": "fixture-item", "name": "Fixture item",
+                       "description": "Synthetic exact-schema integration."}],
+            "spells": [{"key": "fixture-spell", "name": "Fixture spell"}],
+            "quests": [{"key": "fixture-quest", "title": "Fixture quest",
+                         "objectives": "Synthetic integration only."}],
+            "creatures": [{"key": "fixture-creature", "name": "Fixture creature",
+                            "display_id": {"value": 1,
+                                           "evidence": cls.asset_index["creature_display"]["1"]["evidence"]}}],
+            "vendors": [{"key": "fixture-vendor", "creature_key": "fixture-creature",
+                         "rows": [{"item_key": "fixture-item", "slot": 1}]}],
+            "events": [{"key": "fixture-event", "name": "Fixture event", "id": 241,
+                        "start_time": "2026-01-01 00:00:00",
+                        "end_time": "2026-12-31 00:00:00"}],
             "acceptance": [
-                {"check": "DDL compatibility", "expected": "pass"},
-                {"check": "crash recovery", "expected": "pass"},
-                {"check": "rollback ownership", "expected": "pass"},
+                {"check": "all seven generated table writes", "expected": "pass"},
+                {"check": "process crash and restart recovery", "expected": "pass"},
+                {"check": "foreign collision and owned rollback", "expected": "pass"},
             ],
         }
-        result = validate_spec(spec, world_tables={"item_template"})
+        cls.spec = spec
+        world_tables = set(_DB_SCHEMA_TABLES)
+        result = validate_spec(spec, world_tables=world_tables,
+                               asset_index=cls.asset_index)
         if not result.ok:
-            raise AssertionError(f"fixture spec failed validation: {result.essential_blocked}")
-        build_package(spec, result, cls.package)
+            raise AssertionError(f"fixture spec must validate: {result.essential_blocked}")
+        build_package(spec, result, cls.package, asset_index=cls.asset_index)
+        allocation = json.loads((cls.package / "id-allocation.json").read_text(encoding="utf-8"))
+        cls.identities = expected_world_rows(spec, allocation)
+        cls.identities_by_table = {table: [row for row in cls.identities if row[0] == table]
+                                   for table in _DB_SCHEMA_TABLES}
+        if set(table for table, _ in cls.identities) != set(_DB_SCHEMA_TABLES):
+            raise AssertionError("fixture must emit at least one row for every supported World table")
+        cls.event_id = allocation["allocations"]["fixture-event"]
+        cls.item_id = allocation["allocations"]["fixture-item"]
         conn = cls.connect()
         try:
             cls.schema_proof = initialize_pinned_empty_world_schema(
@@ -128,8 +177,6 @@ class PinnedWorldSchemaCrashRecovery(unittest.TestCase):
         if proof_path:
             Path(proof_path).write_text(json.dumps(cls.schema_proof, indent=2, sort_keys=True) + "\n",
                                         encoding="utf-8")
-        cls.entry = next(iter(json.loads((cls.package / "id-allocation.json").read_text())[
-            "allocations"].values()))
 
     @classmethod
     def tearDownClass(cls):
@@ -171,7 +218,66 @@ class PinnedWorldSchemaCrashRecovery(unittest.TestCase):
             self.assertEqual(proof["runtime_tables"][table]["engine"], "innodb")
             self.assertEqual(proof["runtime_tables"][table]["primary_key"], expected_keys[table])
 
-    def test_real_process_death_mid_transaction_rolls_back_then_restart_recovers(self):
+    def test_all_seven_tables_apply_retry_collision_and_owned_rollback(self):
+        conn = self.connect()
+        try:
+            # The event row is emitted last; a foreign key collision there must
+            # roll back inserts/journal entries already attempted for six other tables.
+            with conn.cursor() as cursor:
+                cursor.execute("INSERT INTO game_event(eventEntry) VALUES(%s)", (self.event_id,))
+            with self.assertRaisesRegex(OwnershipError, "pre-existing unowned row collision"):
+                operate_on_package(conn, self.package, action="apply",
+                                   request_id="seven-table-foreign-collision")
+            with conn.cursor() as cursor:
+                for identity in self.identities:
+                    self.assertEqual(_row_count(cursor, identity),
+                                     1 if identity[0] == "game_event" else 0)
+                cursor.execute("SELECT COUNT(*) FROM arena_foundry_world_rows")
+                self.assertEqual(cursor.fetchone()[0], 0, "collision left partial ownership rows")
+                cursor.execute("SELECT COUNT(*) FROM arena_foundry_world_receipts "
+                               "WHERE request_id='seven-table-foreign-collision'")
+                self.assertEqual(cursor.fetchone()[0], 0, "failed transaction left a receipt")
+                cursor.execute("DELETE FROM game_event WHERE eventEntry=%s", (self.event_id,))
+
+            first = operate_on_package(conn, self.package, action="apply",
+                                       request_id="seven-table-apply-1")
+            self.assertEqual((first["rows"], first["changed_rows"]), (7, 7))
+            replay = operate_on_package(conn, self.package, action="apply",
+                                        request_id="seven-table-apply-1")
+            self.assertTrue(replay["replayed"])
+            idempotent = operate_on_package(conn, self.package, action="apply",
+                                           request_id="seven-table-apply-2")
+            self.assertEqual(idempotent["changed_rows"], 0)
+            _assert_identity_counts(self, conn, self.identities, 1)
+
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT name FROM item_template WHERE entry=%s", (self.item_id,))
+                original_name = cursor.fetchone()[0]
+                cursor.execute("UPDATE item_template SET name='foreign edit' WHERE entry=%s",
+                               (self.item_id,))
+            with self.assertRaisesRegex(OwnershipError, "changed since apply"):
+                operate_on_package(conn, self.package, action="rollback",
+                                   request_id="seven-table-edited-rollback")
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT name FROM item_template WHERE entry=%s", (self.item_id,))
+                self.assertEqual(cursor.fetchone()[0], "foreign edit")
+                cursor.execute("UPDATE item_template SET name=%s WHERE entry=%s",
+                               (original_name, self.item_id))
+            rolled = operate_on_package(conn, self.package, action="rollback",
+                                        request_id="seven-table-rollback-1")
+            self.assertEqual(rolled["changed_rows"], 7)
+            _assert_identity_counts(self, conn, self.identities, 0)
+            reapplied = operate_on_package(conn, self.package, action="apply",
+                                           request_id="seven-table-reapply")
+            self.assertEqual(reapplied["changed_rows"], 7)
+            rolled_again = operate_on_package(conn, self.package, action="rollback",
+                                              request_id="seven-table-rollback-2")
+            self.assertEqual(rolled_again["changed_rows"], 7)
+            _assert_identity_counts(self, conn, self.identities, 0)
+        finally:
+            conn.close()
+
+    def test_process_death_mid_multi_table_transaction_recovers_all_rows(self):
         env = {key: os.environ[key] for key in _REQUIRED}
         env["ARENA_MYSQL_PORT"] = os.environ.get("ARENA_MYSQL_PORT", "3306")
         proc = multiprocessing.get_context("fork").Process(
@@ -182,53 +288,90 @@ class PinnedWorldSchemaCrashRecovery(unittest.TestCase):
             proc.kill()
             proc.join(timeout=5)
             self.fail("process-crash fixture hung instead of terminating")
-        self.assertEqual(proc.exitcode, 73, "child must terminate at the injected World INSERT")
+        self.assertEqual(proc.exitcode, 73, "worker must die immediately after npc_vendor insert")
 
         conn = self.connect()
         try:
+            _assert_identity_counts(self, conn, self.identities, 0)
             with conn.cursor() as cursor:
-                cursor.execute("SELECT COUNT(*) FROM item_template WHERE entry=%s", (self.entry,))
-                self.assertEqual(cursor.fetchone()[0], 0, "uncommitted World row survived client death")
-                cursor.execute("SELECT COUNT(*) FROM arena_foundry_world_rows WHERE table_name='item_template'")
-                self.assertEqual(cursor.fetchone()[0], 0, "ownership journal partially committed")
-                cursor.execute("SELECT COUNT(*) FROM arena_foundry_world_receipts WHERE request_id=%s",
-                               ("process-crash-restart-apply",))
-                self.assertEqual(cursor.fetchone()[0], 0, "receipt partially committed")
+                cursor.execute("SELECT COUNT(*) FROM arena_foundry_world_rows WHERE state='APPLIED'")
+                self.assertEqual(cursor.fetchone()[0], 0,
+                                 "crashed operation left any row marked applied")
+                cursor.execute("SELECT COUNT(*) FROM arena_foundry_world_receipts "
+                               "WHERE request_id='process-crash-restart-apply'")
+                self.assertEqual(cursor.fetchone()[0], 0, "uncommitted receipt survived process death")
             outcome = operate_on_package(conn, self.package, action="apply",
                                          request_id="process-crash-restart-apply")
-            self.assertEqual(outcome["changed_rows"], 1)
+            self.assertEqual(outcome["changed_rows"], 7)
             repeated = operate_on_package(conn, self.package, action="apply",
                                           request_id="process-crash-restart-apply")
             self.assertTrue(repeated["replayed"])
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT COUNT(*) FROM item_template WHERE entry=%s", (self.entry,))
-                self.assertEqual(cursor.fetchone()[0], 1)
+            _assert_identity_counts(self, conn, self.identities, 1)
             rolled = operate_on_package(conn, self.package, action="rollback",
                                         request_id="process-crash-restart-rollback")
-            self.assertEqual(rolled["changed_rows"], 1)
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT COUNT(*) FROM item_template WHERE entry=%s", (self.entry,))
-                self.assertEqual(cursor.fetchone()[0], 0, "owned row did not cleanly roll back")
+            self.assertEqual(rolled["changed_rows"], 7)
+            _assert_identity_counts(self, conn, self.identities, 0)
             proof = dict(self.schema_proof)
+            proof["world_row_checks"] = {
+                "status": "PASS",
+                "tables": {table: {"apply": "PASS", "rollback": "PASS"}
+                           for table in sorted(self.identities_by_table)},
+                "foreign_collision_at_last_table_rolled_back_prior_writes": "PASS",
+                "changed_row_refused_rollback_without_deleting_operator_edit": "PASS",
+            }
             proof["process_recovery"] = {
                 "status": "PASS",
                 "child_exit_code": proc.exitcode,
-                "crash_after_first_insert_before_commit": "PASS",
-                "uncommitted_world_row_and_journal_absent_after_restart": "PASS",
-                "same_request_retry_committed_once": "PASS",
+                "crash_after_npc_vendor_insert_before_commit": "PASS",
+                "uncommitted_rows_and_journal_state_changes_absent": "PASS",
+                "same_request_restart_reapplied_seven_rows": "PASS",
                 "same_request_receipt_replayed": "PASS",
-                "owned_rollback_removed_unchanged_row": "PASS",
+                "owned_rollback_removed_all_seven_rows": "PASS",
             }
-            proof.pop("runtime_schema_sha256", None)
-            proof["runtime_schema_sha256"] = hashlib.sha256(
+            proof["evidence_sha256"] = hashlib.sha256(
                 json.dumps(proof, sort_keys=True, separators=(",", ":"), default=str)
                 .encode("utf-8")).hexdigest()
+            type(self).schema_proof = proof
             proof_path = os.environ.get("ARENA_WORLD_SCHEMA_PROOF")
             if proof_path:
                 Path(proof_path).write_text(json.dumps(proof, indent=2, sort_keys=True) + "\n",
                                             encoding="utf-8")
         finally:
             conn.close()
+
+    def test_source_schema_receipt_attestation_passes_world_gate_and_rejects_forgery(self):
+        conn = self.connect()
+        try:
+            attestations = qualify_owned_world_package(
+                conn, self.package, self.database, Path(_SOURCE), self.schema_proof,
+                self.schema_proof, request_prefix="integration-test-q")
+        finally:
+            conn.close()
+        manifest_sha = integrity_check(self.package)["manifest_sha256"]
+        self.assertTrue(_valid_database_attestation(attestations, manifest_sha, self.package))
+        output = os.environ.get("ARENA_WORLD_QUALIFICATION_ATTESTATIONS")
+        if output:
+            write_attestations(Path(output), attestations)
+
+        forged = copy.deepcopy(attestations)
+        proof = forged["database_qualification"]
+        proof["schema_source"]["tables"]["data/sql/base/db_world/item_template.sql"] = "0" * 64
+        forged["levels"]["ARENA-DB"]["evidence"] = "sha256:" + hashlib.sha256(
+            (json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n").encode()).hexdigest()
+        self.assertFalse(_valid_database_attestation(forged, manifest_sha, self.package),
+                         "rehashed proof with drifted pinned source hash must fail closed")
+
+        forged = copy.deepcopy(attestations)
+        proof = forged["database_qualification"]
+        receipt = proof["receipts"][0]
+        receipt["result_json"] = receipt["result_json"].replace('"changed_rows":7', '"changed_rows":6')
+        receipt["result_json_sha256"] = hashlib.sha256(receipt["result_json"].encode()).hexdigest()
+        proof["receipt_set_sha256"] = hashlib.sha256(json.dumps(
+            proof["receipts"], sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+        forged["levels"]["ARENA-DB"]["evidence"] = "sha256:" + hashlib.sha256(
+            (json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n").encode()).hexdigest()
+        self.assertFalse(_valid_database_attestation(forged, manifest_sha, self.package),
+                         "receipt row-count drift must fail closed after attacker rehashes proof")
 
 
 if __name__ == "__main__":

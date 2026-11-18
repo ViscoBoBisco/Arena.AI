@@ -33,6 +33,8 @@
         "foundry/core-pins.json",
         "tests/test_foundry_world_ownership.py",
         "foundry/world_schema.py",
+        "foundry/world_qualification.py",
+        "tools/foundry_world_qualify.py",
         "tests/test_foundry_world_schema.py"
       ],
       "manifest_id_needs": [
@@ -44,8 +46,8 @@
       ],
       "implementation_state": "SYNTHETIC",
       "outstanding_tests": [
-        "Exercise all supported generated tables against exact pinned AzerothCore World schema and engine definitions",
-        "Prove server-process crash/restart recovery and bind qualification attestation to journal receipt plus exact source/schema hashes"
+        "Run hosted MySQL integration against exact pinned World DDL for apply/retry/foreign collision/full-row rollback/process crash across all seven supported generated tables",
+        "Verify the v3 source/schema/receipt-bound attestation promotes only the World database gate through foundry qualify"
       ],
       "risks": [
         "Legacy World SQL qualification remains fail-closed",
@@ -53,7 +55,7 @@
         "Changed manifests/versions are refused rather than upgraded",
         "Never use against production or populated shared DBs"
       ],
-      "next_milestone": "Extend exact-schema write/rollback recovery coverage to every supported generated table and implement durable qualification attestation bound to source/schema/receipt hashes before enabling the ARENA-DB gate.",
+      "next_milestone": "Run and repair the integrated exact-schema seven-table MySQL/restart/receipt-attestation CI; only then begin the Portable Hole commodity vertical on the qualified ownership contracts.",
       "completed_evidence": [
         {
           "kind": "SYNTHETIC_DISPOSABLE_MYSQL",

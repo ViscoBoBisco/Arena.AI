@@ -429,6 +429,9 @@ def _pinned_schema_source(core_source: Path) -> dict:
         if not content:
             raise ValueError(f"pinned world-schema source is empty: {rel}")
         table_hashes[rel] = hashlib.sha256(content).hexdigest()
+    expected_hashes = pin.get("world_schema_sha256")
+    if not isinstance(expected_hashes, dict) or table_hashes != expected_hashes:
+        raise ValueError("pinned World schema source hashes differ from the checked-in revision contract")
     return {
         "schema": "arena-db-schema-source/1",
         "repository": pin.get("repository"),
