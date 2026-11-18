@@ -112,6 +112,8 @@ class ModuleAndAddon(unittest.TestCase):
         self.assertIn("total_claims < 50", templates[2][0])
         self.assertIn("status = 'PENDING'", templates[3][0])
         self.assertIn("OnPlayerBeforeSendChatMessage", source)
+        self.assertIn("type != CHAT_MSG_WHISPER", source)
+        self.assertIn("Only the documented self-WHISPER transport is actionable", source)
         self.assertNotIn("TODO", source)
         self.assertIn('"VT1\\t"', source)
         self.assertNotIn('RegisterAddonMessagePrefix', lua)
