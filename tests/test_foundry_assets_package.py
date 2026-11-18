@@ -106,11 +106,8 @@ class Packaging(unittest.TestCase):
             self.assertEqual(built.returncode, 0, built.stderr)
             evidence = json.loads((out / "evidence.json").read_text(encoding="utf-8"))
             record = evidence["compile_qualification"]
-            if record is None:
-                self.assertIn("pending", evidence["evidence_levels"]["ARENA-COMPILE"])
-                self.assertIn("not compiled or runtime-qualified",
-                              evidence["generated_scope"]["cpp_module"])
-                return
+            self.assertIsNotNone(record,
+                                 "the current Vault Terminal source has a pinned-core CI qualification")
             canonical = json.loads((helpers.REPO / "foundry" / "qualifications" /
                                     "vault-terminal-azerothcore-module.json").read_text())
             self.assertEqual(record, canonical)
