@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import tempfile
@@ -104,13 +105,19 @@ class Packaging(unittest.TestCase):
             built = helpers.run_tool(FOUNDRY, "build", spec, "--out", out)
             self.assertEqual(built.returncode, 0, built.stderr)
             evidence = json.loads((out / "evidence.json").read_text(encoding="utf-8"))
+            self.assertIsNotNone(evidence["compile_qualification"],
+                                 "the current Vault Terminal source has a pinned-core CI qualification")
             record = evidence["compile_qualification"]
-            if record is None:
-                self.assertIn("pending", evidence["evidence_levels"]["ARENA-COMPILE"])
-                self.assertIn("not compiled or runtime-qualified",
-                              evidence["generated_scope"]["cpp_module"])
-                return
+            canonical = json.loads((helpers.REPO / "foundry" / "qualifications" /
+                                    "vault-terminal-azerothcore-module.json").read_text())
+            self.assertEqual(record, canonical)
             self.assertIsInstance(record["environment"]["workflow_run_id"], int)
+            self.assertEqual(record["subject"]["source_sha256"], {
+                f"server/mod-vault-terminal/src/{path.name}": hashlib.sha256(
+                    path.read_bytes()).hexdigest()
+                for path in (out / "server/mod-vault-terminal/src").iterdir()
+                if path.suffix in (".cpp", ".h")
+            })
             self.assertEqual(record["environment"]["core_revision"],
                              "6ffb62abb867dabb258de6813ff5d06d6b011543")
             self.assertEqual(evidence["evidence_levels"]["ARENA-COMPILE"].split(";", 1)[0], "PASS")
