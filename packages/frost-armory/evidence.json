@@ -169,6 +169,14 @@
     "rollback": "generated; rollback not DB-qualified",
     "sql_migrations": "generated; schema/application not DB-qualified"
   },
+  "lifecycle": {
+    "installable": false,
+    "integrity": "NOT_RUN",
+    "phase": "BUILD",
+    "qualification": "NOT_RUN",
+    "release": "BLOCKED",
+    "status": "PREVIEW"
+  },
   "package_version": "1.0.0",
   "patch_cost": "client-files (addon folder; no MPQ)",
   "spec": "frost-armory",

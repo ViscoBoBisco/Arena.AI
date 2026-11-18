@@ -5,9 +5,12 @@ The Foundry is the first reusable compiler slice in Arena. It is a local-first P
 ## Current pipeline
 
 ```text
-JSON spec v1 -> schema/reference/ID checks -> plan -> SQL, C++, Lua, config, DBC delta
-            -> package manifest + compatibility dry-run + evidence -> verify
+JSON spec v1 -> validate/plan -> build preview -> verify integrity -> qualify -> release copy
 ```
+
+The phases are intentionally independent. `build` never marks a bundle installable. `verify` checks package bytes only and does not upgrade evidence. `qualify` writes a separate manifest-bound report with a complete, delivery-derived gate set; `release` refuses blocked, incomplete, stale, or tampered reports and atomically copies only a qualified package, then rechecks the staged copy. A release copy is not an install or gameplay claim.
+
+Qualification fails closed on missing manifest-bound attestations. Applicable surfaces require separate evidence: disposable-database apply/rollback for migrations, pinned-core compile evidence for server modules, per-table merge evidence for MPQ delivery, independent evidence for every acceptance statement, and live client/Playerbots gameplay. Declared generated placeholders/skeletons block release even when a compile check passes. The report and external attestation JSON are evidence records, not cryptographic signatures; downstream release operators remain responsible for validating their provenance.
 
 Commands (all use exit codes 0 success, 1 validation/integrity failure, 2 usage or input error):
 
@@ -18,6 +21,8 @@ python3 tools/foundry.py assets --dbc-dir /path/to/local/dbc --query frost
 python3 tools/foundry.py assets --inventory local-assets.json --query frost --kind item_display
 python3 tools/foundry.py build specs/frost-armory.json --out /tmp/frost-armory --allow-unverified
 python3 tools/foundry.py verify /tmp/frost-armory
+python3 tools/foundry.py qualify /tmp/frost-armory
+python3 tools/foundry.py release /tmp/frost-armory --out /tmp/releases/frost-armory
 ```
 
 `validate` is fail-closed. Only `PASS` qualifies. Missing required database/client evidence is never silently treated as success: checks can be `FAIL`, `SKIPPED`, or `NOT_ASSESSED`. `--allow-unverified` does not convert an unknown asset into a verified one; it explicitly allows building a handoff preview, records the `SKIPPED` verdict and leaves the overall qualification unsuccessful. Without the flag, the build is blocked. The allowance is a development escape hatch, not a release approval.
@@ -60,7 +65,7 @@ The generated artifacts are **not all production implementations** yet. SQL gene
 | Level | What earns it | Frost Armory status on this branch |
 |---|---|---|
 | `ARENA-STATIC` | schema, structural and repository checks | Spec structure checks run; stock asset verification remains `NOT_ASSESSED` |
-| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | All 247 repository tests pass at the current working tree; generated bundle does not attest test execution |
+| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | All 251 repository tests pass at the current working tree; generated bundle does not attest test execution |
 | `ARENA-DB` | apply and rollback on a disposable compatible DB | Pending; no disposable AzerothCore database was provisioned |
 | `ARENA-COMPILE` | module compile/API check against pinned compatible AzerothCore | **PASS** for exact Frost Armory source hashes and AzerothCore `6ffb62abb867dabb258de6813ff5d06d6b011543`; [CI run](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44201459186/job/134456328585). This is a targeted object/linkage check, not a full server build or gameplay qualification. |
 | `ARENA-PACK` | reproducible package and independent integrity verification | `foundry verify packages/frost-armory` passes in this workspace; package evidence marks verification as an external required step, not a self-claim |

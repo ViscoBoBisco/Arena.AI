@@ -1,0 +1,346 @@
+"""Independent package integrity, qualification, and release gates.
+
+Build creates a preview bundle. Verify checks only byte integrity. Qualify
+binds a qualification report to one manifest, and release only copies a bundle
+whose report passes every policy gate. None of these steps mutates the bundle.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import tempfile
+from pathlib import Path, PurePosixPath
+from typing import Any, Dict, List, Optional
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _read_json(path: Path) -> dict:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: expected a JSON object")
+    return data
+
+
+def integrity_check(package: Path) -> Dict[str, Any]:
+    """Hash package payload/metadata without implying qualification."""
+    manifest_path = package / "manifest.json"
+    try:
+        manifest = _read_json(manifest_path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return {"ok": False, "problems": [f"cannot read manifest: {exc}"],
+                "manifest": None, "manifest_sha256": None}
+    manifest_sha256 = _sha256(manifest_path.read_bytes())
+    files = manifest.get("files")
+    metadata_files = manifest.get("metadata_files", {})
+    if not isinstance(files, dict) or not isinstance(metadata_files, dict):
+        return {"ok": False, "problems": ["manifest files and metadata_files must be objects"],
+                "manifest": manifest, "manifest_sha256": manifest_sha256}
+
+    problems: List[str] = []
+    if set(files) & set(metadata_files):
+        problems.append("manifest payload and metadata file paths overlap")
+    listed = dict(files)
+    listed.update(metadata_files)
+    for rel, meta in listed.items():
+        if not isinstance(rel, str):
+            problems.append(f"INVALID {rel!r}: manifest path must be a string")
+            continue
+        path = PurePosixPath(rel)
+        if path.is_absolute() or ".." in path.parts or not path.parts or not isinstance(meta, dict):
+            problems.append(f"INVALID {rel!r}: unsafe path or malformed metadata")
+            continue
+        if (not isinstance(meta.get("sha256"), str)
+                or len(meta["sha256"]) != 64
+                or not isinstance(meta.get("size"), int)
+                or isinstance(meta.get("size"), bool)
+                or meta["size"] < 0):
+            problems.append(f"INVALID {rel}: malformed hash or size")
+            continue
+        target = package.joinpath(*path.parts)
+        try:
+            target.resolve().relative_to(package.resolve())
+        except (OSError, ValueError):
+            problems.append(f"INVALID {rel}: path escapes package")
+            continue
+        if target.is_symlink() or not target.is_file():
+            problems.append(f"MISSING {rel}")
+            continue
+        data = target.read_bytes()
+        if _sha256(data) != meta.get("sha256") or len(data) != meta.get("size"):
+            problems.append(f"CHANGED {rel}")
+
+    actual = {p.relative_to(package).as_posix()
+              for p in package.rglob("*") if p.is_file() or p.is_symlink()}
+    expected = set(listed) | {"manifest.json"}
+    for rel in sorted(actual - expected):
+        problems.append(f"UNLISTED {rel}")
+    return {"ok": not problems, "problems": problems, "manifest": manifest,
+            "manifest_sha256": _sha256(manifest_path.read_bytes())}
+
+
+def _passed_record(record: Any) -> bool:
+    return (isinstance(record, dict) and record.get("status") == "PASS"
+            and isinstance(record.get("evidence"), str)
+            and bool(record["evidence"].strip()))
+
+
+def qualify_package(package: Path, attestations_path: Optional[Path] = None) -> dict:
+    """Produce a manifest-bound report; records cannot override package defects."""
+    integrity = integrity_check(package)
+    report = {
+        "schema": "arena-qualification-report/1",
+        "package": str(package),
+        "manifest_sha256": integrity.get("manifest_sha256"),
+        "integrity": "PASS" if integrity["ok"] else "FAIL",
+        "status": "BLOCKED",
+        "qualified": False,
+        "gates": [],
+        "blocked_reasons": [],
+    }
+
+    def gate(name: str, ok: bool, detail: str) -> None:
+        report["gates"].append({"name": name, "status": "PASS" if ok else "BLOCKED",
+                                "detail": detail})
+        if not ok:
+            report["blocked_reasons"].append(f"{name}: {detail}")
+
+    gate("integrity", integrity["ok"],
+         "manifest and every listed package byte match" if integrity["ok"]
+         else "; ".join(integrity["problems"]))
+    if not integrity["ok"]:
+        return report
+
+    try:
+        evidence = _read_json(package / "evidence.json")
+        manifest = integrity["manifest"]
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        gate("evidence", False, f"cannot read package evidence: {exc}")
+        return report
+
+    try:
+        attestations = _read_json(attestations_path) if attestations_path else {}
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        attestations = {}
+        report["attestations_error"] = str(exc)
+    subject = attestations.get("subject") if isinstance(attestations, dict) else None
+    attested = (isinstance(attestations, dict)
+                and attestations.get("schema") == "arena-qualification-attestations/1"
+                and isinstance(subject, dict)
+                and subject.get("manifest_sha256") == integrity["manifest_sha256"])
+    report["attestations_sha256"] = (
+        _sha256(attestations_path.read_bytes()) if attested and attestations_path else None)
+    gate("attestation_binding", attested,
+         "attestations bind to this manifest" if attested
+         else "manifest-bound qualification attestations are required")
+
+    validation = evidence.get("validation", {})
+    verdicts = validation.get("verdicts", {}) if isinstance(validation, dict) else {}
+    gate("spec_validation", isinstance(validation, dict) and validation.get("ok") is True,
+         "all essential spec checks passed" if isinstance(validation, dict)
+         and validation.get("ok") is True else "spec validation is not fully PASS")
+    lifecycle = evidence.get("lifecycle", {})
+    lifecycle_ok = (isinstance(lifecycle, dict)
+                    and lifecycle.get("installable") is False
+                    and lifecycle.get("release") == "BLOCKED")
+    gate("build_is_not_release", lifecycle_ok,
+         "build output is explicitly marked non-installable pending release" if lifecycle_ok
+         else "package lacks fail-closed build lifecycle markers")
+    preview_ok = evidence.get("allow_unverified") is False
+    gate("preview_allowance", preview_ok,
+         "no unverified-preview allowance was used" if preview_ok
+         else "--allow-unverified packages cannot be released")
+    assets_ok = (verdicts.get("asset-verification") == "PASS"
+                 and not evidence.get("unverified_asset_refs"))
+    gate("asset_provenance", assets_ok,
+         "all referenced assets have matching source evidence" if assets_ok
+         else "missing or unverified asset provenance")
+
+    delivery = manifest.get("delivery_requirements", {})
+    artifact_list = delivery.get("artifacts", []) if isinstance(delivery, dict) else []
+    delivery_ok = (
+        isinstance(delivery, dict)
+        and delivery.get("schema") == "arena-delivery-requirements/1"
+        and isinstance(artifact_list, list)
+        and all(isinstance(item, dict) and isinstance(item.get("kind"), str)
+                for item in artifact_list)
+    )
+    gate("delivery_contract", delivery_ok,
+         "well-formed mandatory artifact requirements are present" if delivery_ok
+         else "delivery requirements are missing or malformed")
+    artifact_kinds = {
+        item.get("kind") for item in artifact_list
+        if isinstance(item, dict) and isinstance(item.get("kind"), str)
+    }
+    external_levels = attestations.get("levels", {}) if attested else {}
+    if not isinstance(external_levels, dict):
+        external_levels = {}
+
+    if artifact_kinds & {"world_sql", "data_migration", "characters_sql"}:
+        db_pass = _passed_record(external_levels.get("ARENA-DB"))
+        gate("database_migrations", db_pass,
+             "disposable-schema/apply/rollback evidence required" if not db_pass
+             else "database qualification record supplied")
+    if "server_module" in artifact_kinds:
+        compile_record = evidence.get("compile_qualification")
+        compile_pass = (isinstance(compile_record, dict)
+                        and compile_record.get("qualification") == "ARENA-COMPILE"
+                        and compile_record.get("status") == "PASS")
+        gate("server_module", compile_pass,
+             "matching pinned-core compile record required" if not compile_pass
+             else "pinned-core translation units qualified")
+
+    raw_scope = evidence.get("generated_scope")
+    scope_ok = isinstance(raw_scope, dict) and bool(raw_scope)
+    gate("implementation_scope", scope_ok,
+         "generated implementation surfaces are declared" if scope_ok
+         else "implementation scope is missing or malformed")
+    scope = raw_scope if isinstance(raw_scope, dict) else {}
+    for key, value in sorted(scope.items()):
+        description = str(value).lower()
+        if any(marker in description for marker in ("placeholder", "skeleton", "descriptive")):
+            gate(f"implementation:{key}", False,
+                 f"generated scope is still a placeholder: {value}")
+    if "mpq" in artifact_kinds:
+        artifact_records = attestations.get("artifacts", []) if attested else []
+        if not isinstance(artifact_records, list):
+            artifact_records = []
+        required_mpq = [item for item in artifact_list
+                        if isinstance(item, dict) and item.get("kind") == "mpq"]
+        mpq_checks = []
+        for required in required_mpq:
+            matching = [record for record in artifact_records
+                        if isinstance(record, dict)
+                        and record.get("kind") == "mpq"
+                        and record.get("table") == required.get("table")]
+            mpq_checks.append(bool(matching) and all(_passed_record(r) for r in matching))
+        mpq_pass = bool(mpq_checks) and all(mpq_checks)
+        gate("mpq_delivery", mpq_pass,
+             "each required MPQ/table merge needs evidence" if not mpq_pass
+             else "MPQ merge records supplied for every required table")
+
+    acceptance = evidence.get("acceptance", [])
+    if not isinstance(acceptance, list) or not acceptance:
+        acceptance = []
+        gate("acceptance_manifest", False, "package acceptance list is missing or malformed")
+    acceptance_records = attestations.get("acceptance", []) if attested else []
+    if not isinstance(acceptance_records, list):
+        acceptance_records = []
+    for item in acceptance:
+        statement = item.get("statement") if isinstance(item, dict) else str(item)
+        record = next((r for r in acceptance_records
+                       if isinstance(r, dict) and r.get("statement") == statement), None)
+        gate(f"acceptance:{statement}", _passed_record(record),
+             "independent acceptance evidence required" if not _passed_record(record)
+             else "acceptance evidence supplied")
+    live_pass = _passed_record(external_levels.get("CAMPAIGN-LIVE"))
+    gate("live_gameplay", live_pass,
+         "client/Playerbots runtime qualification required" if not live_pass
+         else "live gameplay qualification record supplied")
+
+    report["qualified"] = not report["blocked_reasons"]
+    report["status"] = "QUALIFIED" if report["qualified"] else "BLOCKED"
+    return report
+
+
+def _required_gate_names(evidence: dict, manifest: dict) -> set:
+    """Derive the complete gate set so a truncated report cannot authorize release."""
+    required = {
+        "integrity", "attestation_binding", "spec_validation", "build_is_not_release",
+        "preview_allowance", "asset_provenance", "delivery_contract",
+        "implementation_scope", "live_gameplay",
+    }
+    delivery = manifest.get("delivery_requirements", {})
+    artifacts = delivery.get("artifacts", []) if isinstance(delivery, dict) else []
+    kinds = {item.get("kind") for item in artifacts
+             if isinstance(item, dict) and isinstance(item.get("kind"), str)}
+    if kinds & {"world_sql", "data_migration", "characters_sql"}:
+        required.add("database_migrations")
+    if "server_module" in kinds:
+        required.add("server_module")
+    if "mpq" in kinds:
+        required.add("mpq_delivery")
+    scope = evidence.get("generated_scope", {})
+    if isinstance(scope, dict):
+        for key, value in scope.items():
+            description = str(value).lower()
+            if any(marker in description for marker in ("placeholder", "skeleton", "descriptive")):
+                required.add(f"implementation:{key}")
+    acceptance = evidence.get("acceptance", [])
+    if isinstance(acceptance, list) and acceptance:
+        for item in acceptance:
+            statement = item.get("statement") if isinstance(item, dict) else str(item)
+            required.add(f"acceptance:{statement}")
+    else:
+        required.add("acceptance_manifest")
+    return required
+
+
+def release_package(package: Path, qualification_path: Path, out_dir: Path) -> dict:
+    """Atomically copy only an integrity-checked package with a bound PASS report."""
+    report = _read_json(qualification_path)
+    integrity = integrity_check(package)
+    if not integrity["ok"]:
+        raise ValueError("package integrity failed: " + "; ".join(integrity["problems"]))
+    gates = report.get("gates", [])
+    try:
+        evidence = _read_json(package / "evidence.json")
+        required_gates = _required_gate_names(evidence, integrity["manifest"])
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"package evidence is not releasable: {exc}") from exc
+    gate_names = [gate.get("name") for gate in gates if isinstance(gate, dict)] \
+        if isinstance(gates, list) else []
+    if (report.get("schema") != "arena-qualification-report/1"
+            or report.get("qualified") is not True
+            or report.get("status") != "QUALIFIED"
+            or report.get("integrity") != "PASS"
+            or report.get("blocked_reasons") != []
+            or not isinstance(gates, list) or not gates
+            or any(not isinstance(gate, dict) or gate.get("status") != "PASS"
+                   or not isinstance(gate.get("detail"), str) or not gate["detail"].strip()
+                   for gate in gates)
+            or len(gate_names) != len(set(gate_names))
+            or set(gate_names) != required_gates
+            or report.get("manifest_sha256") != integrity["manifest_sha256"]):
+        raise ValueError("qualification report is blocked, incomplete, or does not bind to this package manifest")
+
+    package = package.resolve()
+    if out_dir.exists() or out_dir.is_symlink():
+        raise ValueError(f"release output already exists: {out_dir}")
+    out_dir = out_dir.resolve()
+    if out_dir == package:
+        raise ValueError("release output must differ from the preview package")
+    try:
+        out_dir.relative_to(package)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("release output cannot be inside the preview package")
+    if out_dir.exists() or out_dir.is_symlink():
+        raise ValueError(f"release output already exists: {out_dir}")
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=f".{out_dir.name}.stage-", dir=out_dir.parent))
+    try:
+        stage.rmdir()
+        shutil.copytree(package, stage)
+        staged_integrity = integrity_check(stage)
+        if (not staged_integrity["ok"]
+                or staged_integrity["manifest_sha256"] != integrity["manifest_sha256"]):
+            raise ValueError("staged release copy failed integrity recheck")
+        os.replace(stage, out_dir)
+    except Exception:
+        if stage.exists():
+            shutil.rmtree(stage, ignore_errors=True)
+        raise
+    return {
+        "schema": "arena-release-receipt/1",
+        "status": "RELEASED",
+        "package": str(out_dir),
+        "manifest_sha256": integrity["manifest_sha256"],
+        "qualification_sha256": _sha256(qualification_path.read_bytes()),
+    }
