@@ -143,11 +143,23 @@ jobs:
 
       - name: Qualify the generated Characters ledger migration and read query
         run: |
-          python3 tools/foundry_characters_qualify.py /tmp/vault-terminal \
+          if ! python3 tools/foundry_characters_qualify.py /tmp/vault-terminal \
             --database arena_foundry_disposable_characters_ci \
             --defaults-extra-file /tmp/arena-foundry-mysql.cnf \
             --confirm-disposable \
-            --out /tmp/vault-terminal-characters-db-proof.json
+            --out /tmp/vault-terminal-characters-db-proof.json \
+            > /tmp/vault-terminal-characters-db.log 2>&1; then
+            cat /tmp/vault-terminal-characters-db.log
+            python3 - <<'PY'
+          from pathlib import Path
+          lines = Path('/tmp/vault-terminal-characters-db.log').read_text(errors='replace').strip().splitlines()
+          detail = lines[-1] if lines else 'qualification command failed without diagnostics'
+          detail = detail.replace('%', '%25').replace('\\r', '%0D').replace('\\n', '%0A')
+          print(f'::error title=Vault Terminal Characters DB qualification failed::{detail}')
+          PY
+            exit 1
+          fi
+          cat /tmp/vault-terminal-characters-db.log
 
       - name: Validate Characters proof scope and publish run summary
         run: |
