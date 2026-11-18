@@ -12,6 +12,7 @@ import helpers  # noqa: E402
 sys.path.insert(0, str(helpers.REPO))
 from foundry.adapter import FakeHost  # noqa: E402
 from foundry.spec import delivery_requirements  # noqa: E402
+from foundry.maturity import expected_artifacts  # noqa: E402
 
 
 def intent(**over):
@@ -27,6 +28,39 @@ def intent(**over):
                                                  {"kind": "data_migration"}]}}
     base["payload"].update(payload_overrides)
     base.update(over)
+    payload = base["payload"]
+    requirements = payload.get("delivery_requirements") or delivery_requirements(
+        payload.get("feature_spec", {}))
+    payload["delivery_requirements"] = requirements
+    required = expected_artifacts(requirements)
+    available = (payload.get("available_artifacts")
+                 if "available_artifacts" in payload_overrides else None)
+    if available is None:
+        available = [{"kind": item["kind"], **({"table": item["table"]}
+                     if "table" in item else {})} for item in required
+                     if item["requires_install"]]
+    generated = payload.get("generated_artifacts")
+    if generated is None:
+        generated = list(available)
+        generated_keys = {(item["kind"], item.get("table")) for item in generated}
+        generated.extend(
+            {"kind": item["kind"], **({"table": item["table"]}
+             if "table" in item else {})}
+            for item in required if not item["requires_install"]
+            and (item["kind"], item.get("table")) not in generated_keys)
+    payload["available_artifacts"] = available
+    payload["generated_artifacts"] = generated
+    if "artifact_inventory" not in payload:
+        available_keys = {(item["kind"], item.get("table")) for item in available}
+        generated_keys = {(item["kind"], item.get("table")) for item in generated}
+        payload["artifact_inventory"] = [{
+            "identity": item["identity"], "kind": item["kind"],
+            **({"table": item["table"]} if "table" in item else {}),
+            "generated": (item["kind"], item.get("table")) in generated_keys,
+            "available": (item["kind"], item.get("table")) in available_keys,
+            "qualified": False, "requires_install": item["requires_install"],
+            "installed": False,
+        } for item in required]
     return base
 
 
@@ -36,6 +70,7 @@ class Admission(unittest.TestCase):
         self.assertEqual(host.admit(intent())["status"], "admitted")
         self.assertEqual(host.apply(intent())["status"], "applied")
         self.assertIn(901000, host.snapshot()["reserved_ids"]["item_template"])
+        self.assertEqual(host.snapshot()["installed_artifacts"], ["data_migration", "world_sql"])
 
     def test_replay_returns_original_receipt(self):
         host = FakeHost()
@@ -90,9 +125,149 @@ class Admission(unittest.TestCase):
                                                "items": [{"key": "blade", "dbc_row": True}]},
                               "delivery_requirements": requirements,
                               "available_artifacts": supplied})
+        for item in bad["payload"]["artifact_inventory"]:
+            if item["kind"] in ("client_dbc", "server_dbc"):
+                item["qualified"] = True
         result = host.admit(bad)
         self.assertEqual(result["code"], "ARTIFACT_MISSING")
         self.assertIn("mpq", result["message"])
+
+    def test_matching_materialized_dbc_pair_can_be_admitted_only_after_qualification(self):
+        feature_spec = {"spec_version": 1, "version": "1.0.0",
+                       "items": [{"key": "blade", "dbc_row": True}]}
+        requirements = delivery_requirements(feature_spec)
+        payload = intent(payload={"feature_spec": feature_spec,
+                                  "delivery_requirements": requirements})["payload"]
+        for item in payload["artifact_inventory"]:
+            if item["kind"] in ("client_dbc", "server_dbc"):
+                item["qualified"] = True
+        caps = {key: value for key, value in FakeHost().capabilities().items()
+                if key != "adapter_version"}
+        caps["client_server_dbc_parity"] = True
+        caps["mpq_patch"] = True
+        digest = "a" * 64
+        host = FakeHost(capabilities=caps,
+                        dbc_hashes={"client": {"Item.dbc": digest},
+                                    "server": {"Item.dbc": digest}})
+        payload.update({"patch_cost": "display only", "schema_version": "1.0.0",
+                        "unverified": []})
+        self.assertEqual(host.admit({"idempotency_key": "qualified-dbc",
+                                     "kind": "install_package", "payload": payload})["status"],
+                         "admitted")
+
+    def test_mixed_addon_item_dbc_requires_materialized_pair_mpq_and_parity(self):
+        feature_spec = {"spec_version": 1, "version": "1.0.0",
+                       "addon": {"title": "UI"},
+                       "items": [{"key": "blade", "dbc_row": True}]}
+        requirements = delivery_requirements(feature_spec)
+        payload = intent(payload={"feature_spec": feature_spec,
+                                  "delivery_requirements": requirements})["payload"]
+        for item in payload["artifact_inventory"]:
+            if item["kind"] in ("client_dbc", "server_dbc"):
+                item["qualified"] = True
+        caps = {key: value for key, value in FakeHost().capabilities().items()
+                if key != "adapter_version"}
+        caps.update({"client_server_dbc_parity": True, "mpq_patch": True})
+        digest = "c" * 64
+        host = FakeHost(capabilities=caps,
+                        dbc_hashes={"client": {"Item.dbc": digest},
+                                    "server": {"Item.dbc": digest}})
+        payload.update({"patch_cost": "client files only", "schema_version": "1.0.0",
+                        "unverified": []})
+        self.assertEqual(host.admit({"idempotency_key": "addon-dbc-qualified",
+                                     "kind": "install_package", "payload": payload})["status"],
+                         "admitted")
+
+    def test_two_table_contract_with_unsupported_spell_table_fails_closed(self):
+        feature_spec = {"spec_version": 1, "version": "1.0.0",
+                       "delivery": {"client_dbc_tables": ["Item.dbc", "Spell.dbc"],
+                                    "server_dbc_tables": ["Item.dbc", "Spell.dbc"]}}
+        payload = intent(payload={"feature_spec": feature_spec,
+                                  "delivery_requirements": delivery_requirements(feature_spec)})["payload"]
+        result = FakeHost().admit({"idempotency_key": "two-table-unsupported",
+                                   "kind": "dry_run", "payload": payload})
+        self.assertEqual(result["code"], "NOT_ASSESSED")
+        self.assertIn("Spell.dbc", result["message"])
+
+    def test_duplicate_artifact_labels_are_rejected(self):
+        bad = intent()
+        bad["payload"]["available_artifacts"].append(
+            dict(bad["payload"]["available_artifacts"][0]))
+        result = FakeHost().admit(bad)
+        self.assertEqual(result["code"], "ARTIFACT_INVENTORY_MISMATCH")
+
+    def test_unsupported_spell_dbc_output_cannot_be_admitted(self):
+        feature_spec = {"spec_version": 1, "version": "1.0.0",
+                       "spells": [{"key": "spell", "dbc_row": True}]}
+        payload = intent(payload={"feature_spec": feature_spec,
+                                  "delivery_requirements": delivery_requirements(feature_spec)})["payload"]
+        payload.update({"schema_version": "1.0.0", "unverified": []})
+        result = FakeHost().admit({"idempotency_key": "unsupported-spell-dbc",
+                                   "kind": "install_package", "payload": payload})
+        self.assertEqual(result["code"], "NOT_ASSESSED")
+        self.assertIn("Spell.dbc row emitter", result["message"])
+
+    def test_delta_does_not_substitute_for_either_materialized_dbc_side(self):
+        feature_spec = {"spec_version": 1, "version": "1.0.0",
+                       "items": [{"key": "blade", "dbc_row": True}]}
+        caps = {key: value for key, value in FakeHost().capabilities().items()
+                if key != "adapter_version"}
+        caps["client_server_dbc_parity"] = True
+        caps["mpq_patch"] = True
+        digest = "a" * 64
+        host = FakeHost(capabilities=caps,
+                        dbc_hashes={"client": {"Item.dbc": digest},
+                                    "server": {"Item.dbc": digest}})
+        for missing_side in ("client_dbc", "server_dbc"):
+            with self.subTest(missing_side=missing_side):
+                payload = intent(payload={
+                    "feature_spec": feature_spec,
+                    "delivery_requirements": delivery_requirements(feature_spec),
+                })["payload"]
+                for item in payload["artifact_inventory"]:
+                    if item["kind"] in ("client_dbc", "server_dbc"):
+                        item["qualified"] = True
+                    if item["identity"] == f"{missing_side}:Item.dbc":
+                        item["available"] = False
+                        item["generated"] = False
+                payload["available_artifacts"] = [
+                    {"kind": item["kind"], **({"table": item["table"]}
+                     if "table" in item else {})}
+                    for item in payload["artifact_inventory"] if item["available"]]
+                payload["generated_artifacts"] = [
+                    {"kind": item["kind"], **({"table": item["table"]}
+                     if "table" in item else {})}
+                    for item in payload["artifact_inventory"] if item["generated"]]
+                payload.update({"patch_cost": "none", "schema_version": "1.0.0",
+                                "unverified": []})
+                result = host.admit({"idempotency_key": f"missing-{missing_side}",
+                                     "kind": "install_package", "payload": payload})
+                self.assertEqual(result["code"], "ARTIFACT_MISSING")
+                self.assertIn(f"{missing_side}:Item.dbc", result["message"])
+
+    def test_forged_available_artifact_labels_cannot_override_inventory(self):
+        feature_spec = {"spec_version": 1, "version": "1.0.0",
+                       "items": [{"key": "blade", "dbc_row": True}]}
+        requirements = delivery_requirements(feature_spec)
+        payload = intent(payload={"feature_spec": feature_spec,
+                                  "delivery_requirements": requirements})["payload"]
+        # Claim both DBC outputs in the legacy label list, while the byte-derived
+        # inventory contains only the canonical delta intermediate.
+        payload["available_artifacts"] = [
+            {"kind": item["kind"], **({"table": item["table"]} if "table" in item else {})}
+            for item in requirements["artifacts"]]
+        payload.update({"patch_cost": "none", "schema_version": "1.0.0", "unverified": []})
+        caps = {key: value for key, value in FakeHost().capabilities().items()
+                if key != "adapter_version"}
+        caps["client_server_dbc_parity"] = True
+        caps["mpq_patch"] = True
+        digest = "a" * 64
+        host = FakeHost(capabilities=caps,
+                        dbc_hashes={"client": {"Item.dbc": digest},
+                                    "server": {"Item.dbc": digest}})
+        result = host.admit({"idempotency_key": "forged-dbc-labels",
+                             "kind": "dry_run", "payload": payload})
+        self.assertEqual(result["code"], "ARTIFACT_INVENTORY_MISMATCH")
 
     def test_missing_or_different_client_server_hashes_fail_parity(self):
         requirements = delivery_requirements({"spec_version": 1,
@@ -158,6 +333,7 @@ class Admission(unittest.TestCase):
         host.apply(intent(idempotency_key="pkg-1.0.0-rollback",
                           kind="rollback_package"))
         self.assertNotIn(901000, host.snapshot()["reserved_ids"].get("item_template", []))
+        self.assertEqual(host.snapshot()["installed_artifacts"], [])
 
 
 if __name__ == "__main__":

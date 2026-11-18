@@ -1,4 +1,4 @@
-"""Campaign Party adapter contract v1.1 + fake integration host.
+"""Campaign Party adapter contract v1.2 + fake integration host.
 
 The contract is the stable seam between Arena (offline content engineering)
 and Campaign Party (the downstream runtime). Arena never imports Campaign
@@ -56,6 +56,7 @@ class FakeHost:
         self._mpq = list(mpq_inventory or ["patch-4.MPQ"])
         self._applied: Dict[str, dict] = {}   # idempotency_key -> receipt
         self._admitted: List[dict] = []
+        self._installed_artifacts = set()
 
     # -- contract surface --------------------------------------------------
     def capabilities(self) -> dict:
@@ -68,6 +69,7 @@ class FakeHost:
             "reserved_ids": {k: sorted(v) for k, v in self._reserved.items()},
             "dbc_hashes": dict(self._dbc_hashes),
             "mpq_inventory": list(self._mpq),
+            "installed_artifacts": sorted(self._installed_artifacts),
             "applied": sorted(self._applied),
         }
 
@@ -100,6 +102,29 @@ class FakeHost:
         if delivery_requirements(feature_spec) != requirements:
             return self._error("REQUIREMENTS_INVALID",
                                "delivery requirements do not match the embedded feature spec")
+        unsupported = []
+        if feature_spec.get("gameobjects"):
+            unsupported.append("gameobject emitter")
+        if feature_spec.get("recipes"):
+            unsupported.append("recipe emitter")
+        spells = feature_spec.get("spells")
+        if isinstance(spells, list) and any(
+                isinstance(item, dict) and item.get("dbc_row") is True for item in spells):
+            unsupported.append("Spell.dbc row emitter")
+        declared_delivery = feature_spec.get("delivery")
+        if isinstance(declared_delivery, dict):
+            dbc_tables = set()
+            for field in ("client_dbc_tables", "server_dbc_tables"):
+                values = declared_delivery.get(field)
+                if isinstance(values, list):
+                    dbc_tables.update(value for value in values if isinstance(value, str))
+            unsupported_tables = dbc_tables - {"Item.dbc"}
+            if unsupported_tables:
+                unsupported.append("unsupported DBC table(s): "
+                                   + ", ".join(sorted(unsupported_tables)))
+        if unsupported:
+            return self._error("NOT_ASSESSED",
+                               "package declares unsupported output(s): " + ", ".join(unsupported))
         for capability in requirements["capabilities"]:
             if (not isinstance(capability, dict)
                     or not isinstance(capability.get("name"), str)
@@ -127,30 +152,77 @@ class FakeHost:
                                for table in tables)):
                     return self._error("DBC_PARITY_MISSING",
                                        "required client/server DBC hashes are absent or differ")
-        available = payload.get("available_artifacts")
-        if not isinstance(available, list):
-            return self._error("REQUIREMENTS_INVALID", "available_artifacts must be a list")
-        available_keys = set()
-        for entry in available:
+        from .maturity import expected_artifacts
+        try:
+            expected = expected_artifacts(requirements)
+        except ValueError as exc:
+            return self._error("REQUIREMENTS_INVALID", str(exc))
+        inventory = payload.get("artifact_inventory")
+        if not isinstance(inventory, list):
+            return self._error("REQUIREMENTS_INVALID", "artifact_inventory must be a list")
+        required_by_identity = {item["identity"]: item for item in expected}
+        observed_by_identity = {}
+        for entry in inventory:
             if (not isinstance(entry, dict)
+                    or not isinstance(entry.get("identity"), str)
+                    or entry["identity"] in observed_by_identity
                     or not isinstance(entry.get("kind"), str)
                     or (entry.get("table") is not None
-                        and not isinstance(entry.get("table"), str))):
-                return self._error("REQUIREMENTS_INVALID", "malformed available artifact")
-            available_keys.add((entry["kind"], entry.get("table")))
-        for artifact in requirements["artifacts"]:
-            if (not isinstance(artifact, dict)
-                    or not isinstance(artifact.get("kind"), str)
-                    or not isinstance(artifact.get("version"), str)
-                    or not isinstance(artifact.get("trust"), str)
-                    or not isinstance(artifact.get("activation"), str)
-                    or (artifact.get("table") is not None
-                        and not isinstance(artifact.get("table"), str))):
-                return self._error("REQUIREMENTS_INVALID", "malformed artifact requirement")
-            if (artifact["kind"], artifact.get("table")) not in available_keys:
+                        and not isinstance(entry.get("table"), str))
+                    or any(not isinstance(entry.get(flag), bool) for flag in
+                           ("generated", "available", "qualified", "requires_install", "installed"))):
+                return self._error("REQUIREMENTS_INVALID", "malformed or duplicate artifact inventory entry")
+            identity = entry["identity"]
+            declared = required_by_identity.get(identity)
+            if (declared is None or entry.get("kind") != declared["kind"]
+                    or entry.get("table") != declared.get("table")
+                    or entry["requires_install"] != declared["requires_install"]):
+                return self._error("REQUIREMENTS_INVALID",
+                                   "artifact inventory identity does not match delivery requirements")
+            observed_by_identity[identity] = entry
+        if set(observed_by_identity) != set(required_by_identity):
+            return self._error("ARTIFACT_MISSING", "artifact inventory omits a declared artifact")
+        available = payload.get("available_artifacts")
+        generated = payload.get("generated_artifacts")
+        def labels(value):
+            if not isinstance(value, list):
+                return None
+            result = []
+            for entry in value:
+                if (not isinstance(entry, dict) or not isinstance(entry.get("kind"), str)
+                        or (entry.get("table") is not None
+                            and not isinstance(entry.get("table"), str))):
+                    return None
+                result.append((entry["kind"], entry.get("table")))
+            return result if len(result) == len(set(result)) else None
+        available_labels, generated_labels = labels(available), labels(generated)
+        inventory_available = sorted(
+            ((entry["kind"], entry.get("table")) for entry in inventory if entry["available"]),
+            key=lambda item: (item[0], item[1] or ""))
+        inventory_generated = sorted(
+            ((entry["kind"], entry.get("table")) for entry in inventory if entry["generated"]),
+            key=lambda item: (item[0], item[1] or ""))
+        if (available_labels is None or generated_labels is None
+                or sorted(available_labels, key=lambda item: (item[0], item[1] or ""))
+                != inventory_available
+                or sorted(generated_labels, key=lambda item: (item[0], item[1] or ""))
+                != inventory_generated):
+            return self._error("ARTIFACT_INVENTORY_MISMATCH",
+                               "available/generated artifact labels do not match the lifecycle inventory")
+        for artifact in expected:
+            entry = observed_by_identity[artifact["identity"]]
+            if entry["installed"]:
+                return self._error("REQUIREMENTS_INVALID",
+                                   "package inventory cannot claim host installation state")
+            if artifact["requires_install"] and not entry["available"]:
                 return self._error("ARTIFACT_MISSING",
-                                   f"required artifact missing: {artifact['kind']}"
-                                   + (f" ({artifact['table']})" if artifact.get("table") else ""))
+                                   f"required installable artifact missing: {artifact['identity']}")
+            if not artifact["requires_install"] and not entry["generated"]:
+                return self._error("ARTIFACT_MISSING",
+                                   f"required intermediate artifact missing: {artifact['identity']}")
+            if artifact["kind"] in ("client_dbc", "server_dbc") and not entry["qualified"]:
+                return self._error("NOT_ASSESSED",
+                                   f"DBC artifact lacks independent qualification: {artifact['identity']}")
         # Collision checks apply to installs. Rollback is allowed to release
         # exactly the identifiers it names, but may not silently free IDs the
         # host never reserved for this installation.
@@ -194,12 +266,19 @@ class FakeHost:
         receipt = self.admit(intent)
         if receipt.get("status") != "admitted":
             return receipt
+        payload = intent.get("payload") or {}
         if intent.get("kind") == "install_package":
-            for table, ids in (intent.get("payload") or {}).get("ids", {}).items():
+            for table, ids in payload.get("ids", {}).items():
                 self._reserved.setdefault(table, set()).update(ids)
+            self._installed_artifacts.update(
+                item["identity"] for item in payload.get("artifact_inventory", [])
+                if item["requires_install"])
         elif intent.get("kind") == "rollback_package":
-            for table, ids in (intent.get("payload") or {}).get("ids", {}).items():
+            for table, ids in payload.get("ids", {}).items():
                 self._reserved.get(table, set()).difference_update(ids)
+            self._installed_artifacts.difference_update(
+                item["identity"] for item in payload.get("artifact_inventory", [])
+                if item["requires_install"])
         final = {**receipt, "status": "applied",
                  "snapshot_hash": self.snapshot_hash()}
         self._applied[key] = final

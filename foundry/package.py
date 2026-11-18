@@ -34,6 +34,7 @@ from . import generate
 from .adapter import FakeHost
 from .spec import (ValidationResult, allocate_ids, asset_evidence_matches,
                    delivery_requirements, patch_cost)
+from .maturity import derive_inventory
 
 EVIDENCE_LEVELS = (
     "ARENA-STATIC", "ARENA-SYNTHETIC", "ARENA-DB", "ARENA-COMPILE",
@@ -176,23 +177,19 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
                 by_table.setdefault(table, []).append(ids[obj["key"]])
     unverified = _unverified_refs(spec, asset_index=asset_index)
     requirements = delivery_requirements(spec)
-    available_artifacts = []
-    if "sql/01_world.sql" in files and any(
-            spec.get(spec_key) for spec_key, _table, _req in _kind_tables().values()):
-        available_artifacts.extend(({"kind": "world_sql"}, {"kind": "data_migration"}))
-    if any(path.startswith("server/") for path in files):
-        available_artifacts.append({"kind": "server_module"})
-    if any(path.startswith("addon/") for path in files):
-        available_artifacts.append({"kind": "addon_files"})
-    for rel in files:
-        if rel.startswith("sql/characters/") and rel.endswith(".sql") and "/99_" not in rel:
-            available_artifacts.append({"kind": "characters_sql", "table": Path(rel).stem})
-    if any(path.startswith("conf/") or path.endswith(".conf.dist") for path in files):
-        available_artifacts.append({"kind": "config"})
-    for path, content in files.items():
-        if path.startswith("dbc/") and path.endswith(".delta.json"):
-            table = json.loads(content.decode("utf-8")).get("table")
-            available_artifacts.append({"kind": "client_dbc", "table": table})
+    qualified_inventory = {
+        "server_module": bool(compile_qualification),
+    }
+    artifact_inventory = derive_inventory(
+        files, requirements, qualified=qualified_inventory)
+    available_artifacts = [
+        {"kind": item["kind"], **({"table": item["table"]} if "table" in item else {})}
+        for item in artifact_inventory if item["available"]
+    ]
+    generated_artifacts = [
+        {"kind": item["kind"], **({"table": item["table"]} if "table" in item else {})}
+        for item in artifact_inventory if item["generated"]
+    ]
     host = host or FakeHost(reserved_ids=reserved)
     intent = {
         "idempotency_key": f"{spec['name']}-{spec['version']}",
@@ -202,7 +199,9 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
             "patch_cost": patch_cost(spec),
             "feature_spec": spec,
             "delivery_requirements": requirements,
+            "generated_artifacts": generated_artifacts,
             "available_artifacts": available_artifacts,
+            "artifact_inventory": artifact_inventory,
             "ids": by_table,
             "schema_version": "1.0.0",
             "unverified": unverified,
@@ -219,6 +218,7 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
         "validation": result.to_dict(),
         "patch_cost": patch_cost(spec),
         "delivery_requirements": requirements,
+        "artifact_inventory": artifact_inventory,
         "allow_unverified": allow_unverified,
         "unverified_asset_refs": unverified,
         "lifecycle": {
@@ -255,7 +255,7 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
                 if spec.get("addon_protocol") else
                 "presentation placeholder only; not client-runtime tested"),
             "recipes": "descriptive dependency comments; no executable profession recipe",
-            "dbc_delta": "narrow Item.dbc delta only when explicitly requested; no MPQ assembly",
+            "dbc_delta": "canonical delta is a non-installable intermediate; full client and server DBC materializations with verified parity are required before admission",
             "asset_ids": "unverified unless supported by local source evidence",
         },
         "evidence_levels": {

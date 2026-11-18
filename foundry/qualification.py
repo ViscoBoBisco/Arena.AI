@@ -315,9 +315,9 @@ def _valid_characters_database_attestation(proof: Any, manifest_sha256: str,
 
 _ARTIFACT_KINDS = {
     "world_sql", "data_migration", "characters_sql", "server_module", "addon_files",
-    "client_dbc", "server_dbc", "mpq", "config",
+    "client_dbc", "server_dbc", "dbc_delta", "mpq", "config",
 }
-_TABLE_SCOPED_ARTIFACTS = {"characters_sql", "client_dbc", "server_dbc", "mpq"}
+_TABLE_SCOPED_ARTIFACTS = {"characters_sql", "client_dbc", "server_dbc", "dbc_delta"}
 
 
 def _valid_delivery_contract(delivery: Any) -> bool:
@@ -339,8 +339,10 @@ def _valid_delivery_contract(delivery: Any) -> bool:
                and item["kind"] in _ARTIFACT_KINDS
                and isinstance(item.get("version"), str)
                and isinstance(item.get("activation"), str)
+               and ("requires_install" not in item or isinstance(item.get("requires_install"), bool))
                and ("table" not in item
                     or isinstance(item.get("table"), str) and bool(item["table"].strip()))
+               and (item["kind"] != "mpq" or "table" not in item)
                and (item["kind"] not in _TABLE_SCOPED_ARTIFACTS
                     or isinstance(item.get("table"), str) and bool(item["table"].strip()))
                for item in artifacts):
@@ -350,7 +352,8 @@ def _valid_delivery_contract(delivery: Any) -> bool:
         return False
     client_tables = {item["table"] for item in artifacts if item["kind"] == "client_dbc"}
     server_tables = {item["table"] for item in artifacts if item["kind"] == "server_dbc"}
-    if client_tables != server_tables:
+    delta_tables = {item["table"] for item in artifacts if item["kind"] == "dbc_delta"}
+    if client_tables != server_tables or delta_tables - client_tables:
         return False
     if any(item["kind"] == "mpq" for item in artifacts) and not client_tables:
         return False
@@ -536,7 +539,8 @@ def qualify_package(package: Path, attestations_path: Optional[Path] = None,
                     records_by_table[table][0], integrity["manifest_sha256"], package, table))
         for table in character_tables
     }
-    compile_pass = False
+    compile_pass = ("server_module" in artifact_kinds
+                    and _compile_qualification_matches(package, evidence))
     external_levels = attestations.get("levels", {}) if attested else {}
     if not isinstance(external_levels, dict):
         external_levels = {}
@@ -547,6 +551,7 @@ def qualify_package(package: Path, attestations_path: Optional[Path] = None,
     dbc_tables = sorted({item["table"] for item in artifact_list
                          if isinstance(item, dict) and item.get("kind") == "client_dbc"
                          and isinstance(item.get("table"), str)})
+    dbc_parity_passed = set()
     for table in dbc_tables:
         parity_records = [record for record in external_artifacts
                           if isinstance(record, dict)
@@ -557,6 +562,26 @@ def qualify_package(package: Path, attestations_path: Optional[Path] = None,
         gate(f"dbc_parity:{table}", parity_pass,
              f"client/server DBC hash-parity evidence required for {table}" if not parity_pass
              else f"client/server DBC hashes match for {table}")
+        if parity_pass and assets_ok:
+            dbc_parity_passed.add(table)
+
+    qualified_artifacts = {}
+    for item in artifact_list:
+        if not isinstance(item, dict):
+            continue
+        kind, table = item.get("kind"), item.get("table")
+        identity = f"{kind}:{table}" if table else kind
+        if kind == "server_module":
+            qualified_artifacts[identity] = compile_pass
+        elif kind in ("client_dbc", "server_dbc"):
+            qualified_artifacts[identity] = table in dbc_parity_passed
+        elif kind == "world_sql":
+            qualified_artifacts[identity] = world_db_pass
+        elif kind == "characters_sql":
+            qualified_artifacts[identity] = characters_db_pass.get(table, False)
+        elif kind == "data_migration":
+            qualified_artifacts[identity] = (characters_db_pass.get(table, False)
+                                              if table else world_db_pass)
 
     database_kinds = {"world_sql", "data_migration", "characters_sql"}
     if artifact_kinds & database_kinds:
@@ -600,7 +625,8 @@ def qualify_package(package: Path, attestations_path: Optional[Path] = None,
         maturity = evaluate_maturity(
             package, delivery, evidence, attestations,
             world_db_pass=world_db_pass, characters_db_pass=characters_db_pass,
-            compile_pass=compile_pass, assets_pass=assets_ok)
+            compile_pass=compile_pass, assets_pass=assets_ok,
+            qualified_artifacts=qualified_artifacts)
     except ValueError as exc:
         maturity = {"schema": "arena-artifact-maturity/1",
                     "trust": "EXTERNAL_UNTRUSTED", "inventory_issues": [], "artifacts": []}
