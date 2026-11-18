@@ -127,7 +127,11 @@ def qualify_owned_world_package(connection, package: Path, database: str,
             or len(database) > 64):
         raise ValueError("World qualification requires an explicitly disposable database")
     source = _pinned_schema_source(Path(core_source))
-    if not _runtime_hash_valid(schema_proof, "runtime_schema_sha256"):
+    schema_fields = ("schema", "database", "trust", "source", "created_tables",
+                     "runtime_tables", "base_data_imported")
+    schema_body = {key: schema_proof.get(key) for key in schema_fields}
+    if (not isinstance(schema_proof.get("runtime_schema_sha256"), str)
+            or _canonical_hash(schema_body) != schema_proof.get("runtime_schema_sha256")):
         raise ValueError("pinned runtime schema proof digest is invalid")
     if schema_proof.get("database") != database or schema_proof.get("source") != source:
         raise ValueError("pinned schema proof belongs to another database or source revision")
