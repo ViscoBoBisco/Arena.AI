@@ -603,12 +603,14 @@ def delivery_requirements(spec: dict) -> dict:
 
     artifacts = []
 
-    def artifact(kind: str, *, table: Optional[str] = None, activation: str) -> None:
+    def artifact(kind: str, *, table: Optional[str] = None, activation: str,
+                 requires_install: bool = True) -> None:
         entry = {
             "kind": kind,
             "version": str(spec.get("version", "0.0.0")),
             "trust": "generated_unqualified",
             "activation": activation,
+            "requires_install": requires_install,
         }
         if table is not None:
             entry["table"] = table
@@ -634,6 +636,10 @@ def delivery_requirements(spec: dict) -> dict:
         artifact("client_dbc", table=table, activation="merge_into_new_patch_after_parity")
     for table in sorted(server_tables):
         artifact("server_dbc", table=table, activation="install_with_matching_client_dbc")
+    for table in sorted(client_tables):
+        artifact("dbc_delta", table=table,
+                 activation="materialize_client_and_server_then_verify_parity",
+                 requires_install=False)
     if client_tables:
         artifact("mpq", activation="build_separate_archive_after_collision_review")
     if spec.get("config") or spec.get("module"):

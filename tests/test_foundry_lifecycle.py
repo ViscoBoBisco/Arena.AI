@@ -321,7 +321,10 @@ class LifecyclePhases(unittest.TestCase):
                 {"kind": "mpq", "version": "1", "activation": "merge"},
             ],
         }
-        self.assertFalse(_valid_delivery_contract(base))
+        self.assertTrue(_valid_delivery_contract(base))
+        ambiguous_mpq = json.loads(json.dumps(base))
+        ambiguous_mpq["artifacts"][-1]["table"] = "Item.dbc"
+        self.assertFalse(_valid_delivery_contract(ambiguous_mpq))
         malformed_kind = json.loads(json.dumps(base))
         malformed_kind["artifacts"][0]["kind"] = ["client_dbc"]
         self.assertFalse(_valid_delivery_contract(malformed_kind))

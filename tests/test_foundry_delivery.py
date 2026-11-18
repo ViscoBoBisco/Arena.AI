@@ -59,6 +59,19 @@ class DeliveryRequirements(unittest.TestCase):
                         <= kinds)
         self.assertIn("world_db", {entry["name"] for entry in requirements["capabilities"]})
 
+    def test_delta_is_declared_as_noninstallable_and_requires_both_materializations(self):
+        requirements = delivery_requirements({
+            "spec_version": 1,
+            "items": [{"key": "blade", "dbc_row": True}],
+        })
+        by_identity = {(item["kind"], item.get("table")): item
+                       for item in requirements["artifacts"]}
+        self.assertFalse(by_identity[("dbc_delta", "Item.dbc")]["requires_install"])
+        self.assertTrue(by_identity[("client_dbc", "Item.dbc")]["requires_install"])
+        self.assertTrue(by_identity[("server_dbc", "Item.dbc")]["requires_install"])
+        self.assertEqual(by_identity[("dbc_delta", "Item.dbc")]["activation"],
+                         "materialize_client_and_server_then_verify_parity")
+
     def test_dbc_row_opt_in_must_be_boolean(self):
         result = validate_spec({"spec_version": 1,
                                 "items": [{"key": "blade", "name": "Blade",

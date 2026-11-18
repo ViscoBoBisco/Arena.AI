@@ -8,10 +8,13 @@ qualification records.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Optional
 
 SCHEMA = "arena-artifact-maturity/1"
+_DBC_TABLE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}\.dbc$")
+_SQL_TABLE_RE = re.compile(r"^[a-z][a-z0-9_]{0,53}$")
 
 # These are the minimum independently falsifiable behaviors for each emitted
 # surface. Adding an artifact kind without defining its requirements is an error.
@@ -23,6 +26,7 @@ REQUIRED_BEHAVIORS = {
     "addon_files": ("source_present", "generated", "schema_valid", "runtime_exercised"),
     "client_dbc": ("source_present", "generated", "schema_valid", "asset_verified"),
     "server_dbc": ("source_present", "generated", "schema_valid", "asset_verified"),
+    "dbc_delta": ("source_present", "generated", "schema_valid"),
     "mpq": ("generated", "schema_valid", "asset_verified"),
     "config": ("source_present", "generated", "schema_valid"),
 }
@@ -47,12 +51,29 @@ def expected_artifacts(delivery: Any) -> list[dict[str, Any]]:
             raise ValueError(f"unrecognized or malformed artifact kind: {item!r}")
         if item.get("table") is not None and not isinstance(item.get("table"), str):
             raise ValueError(f"malformed artifact table: {item!r}")
+        if item["kind"] in ("client_dbc", "server_dbc", "dbc_delta") \
+                and (not isinstance(item.get("table"), str)
+                     or not _DBC_TABLE_RE.fullmatch(item["table"])):
+            raise ValueError(f"invalid DBC table identity: {item!r}")
+        if item["kind"] == "characters_sql" or \
+                item["kind"] == "data_migration" and item.get("table") is not None:
+            if (not isinstance(item.get("table"), str)
+                    or not _SQL_TABLE_RE.fullmatch(item["table"])):
+                raise ValueError(f"invalid Characters table identity: {item!r}")
+        if "requires_install" in item and not isinstance(item.get("requires_install"), bool):
+            raise ValueError(f"malformed requires_install flag: {item!r}")
+        requires_install = item.get("requires_install", True)
+        if item["kind"] == "dbc_delta" and requires_install:
+            raise ValueError("DBC delta intermediates must not be installable artifacts")
+        if item["kind"] in ("client_dbc", "server_dbc") and not requires_install:
+            raise ValueError("materialized client/server DBCs must be required install artifacts")
         ident = _identity(item)
         if ident in seen:
             raise ValueError(f"duplicate artifact identity: {ident}")
         seen.add(ident)
         result.append({"identity": ident, "kind": item["kind"],
                        **({"table": item["table"]} if "table" in item else {}),
+                       "requires_install": item.get("requires_install", True),
                        "required_behaviors": list(REQUIRED_BEHAVIORS[item["kind"]])})
     return sorted(result, key=lambda item: item["identity"])
 
@@ -68,6 +89,7 @@ def _observed_artifacts(package: Path) -> set[str]:
     for path in package.rglob("*.sql"):
         if "characters" in path.parts and not path.stem.startswith("99_"):
             observed.add(f"characters_sql:{path.stem}")
+            observed.add(f"data_migration:{path.stem}")
     if any("server" in path.parts and path.suffix in (".cpp", ".h")
            for path in package.rglob("*")):
         observed.add("server_module")
@@ -75,36 +97,81 @@ def _observed_artifacts(package: Path) -> set[str]:
            for path in package.rglob("*")):
         observed.add("addon_files")
     for path in package.rglob("*.delta.json"):
-        if "dbc" in path.parts:
+        if path.parent.name == "dbc":
             table = path.name.removesuffix(".delta.json")
-            observed.add(f"client_dbc:{table}")
-    if any(path.suffix.lower() in (".conf", ".dist") for path in package.rglob("*")):
-        observed.add("config")
+            observed.add(f"dbc_delta:{table}")
+    for side in ("client", "server"):
+        for path in (package / side / "dbc").glob("*.dbc") if (package / side / "dbc").is_dir() else ():
+            observed.add(f"{side}_dbc:{path.name}")
     if any(path.suffix.lower() == ".mpq" for path in package.rglob("*")):
         observed.add("mpq")
+    if any(path.suffix.lower() in (".conf", ".dist") for path in package.rglob("*")):
+        observed.add("config")
     return observed
 
 
-def _has_files(package: Path, kind: str, table: Optional[str]) -> bool:
-    files = [path for path in package.rglob("*") if path.is_file() and not path.is_symlink()]
-    if kind in ("world_sql", "data_migration", "characters_sql"):
-        if kind == "characters_sql":
-            return bool(table) and any(
-                "characters" in path.parts and path.stem == table and path.suffix.lower() == ".sql"
-                for path in files)
-        return (package / "sql" / "01_world.sql").is_file()
-    if kind == "server_module":
-        return any("server" in path.parts and path.suffix in (".cpp", ".h") for path in files)
-    if kind == "addon_files":
-        return any("addon" in path.parts and path.suffix.lower() in (".lua", ".toc") for path in files)
-    if kind in ("client_dbc", "server_dbc"):
-        return bool(table) and any(
-            path.name == f"{table}.delta.json" for path in files)
-    if kind == "mpq":
-        return any(path.suffix.lower() == ".mpq" for path in files)
-    if kind == "config":
-        return any(path.suffix.lower() in (".conf", ".dist") for path in files)
-    return False
+def derive_inventory(source, delivery: dict, *, qualified: Optional[dict] = None,
+                     installed: Optional[set[str]] = None) -> list[dict]:
+    """Recompute artifact lifecycle state from package paths, not spec prose.
+
+    ``source`` is either a package directory or a mapping of package-relative
+    paths to bytes. A delta JSON is an available generated intermediate; it is
+    never treated as a materialized client/server DBC or installed output.
+    """
+    inventory = expected_artifacts(delivery)
+    qualified = qualified or {}
+    installed = installed or set()
+
+    if isinstance(source, dict):
+        paths = set(source)
+    else:
+        root = Path(source)
+        paths = {path.relative_to(root).as_posix() for path in root.rglob("*")
+                 if path.is_file() and not path.is_symlink()}
+
+    def exists(path: str) -> bool:
+        return path in paths
+
+    def has(artifact: dict) -> bool:
+        kind, table = artifact["kind"], artifact.get("table")
+        if kind == "world_sql" or kind == "data_migration" and not table:
+            return exists("sql/01_world.sql")
+        if kind in ("data_migration", "characters_sql"):
+            return bool(table) and exists(f"sql/characters/{table}.sql")
+        if kind == "server_module":
+            return any(path.startswith("server/") and path.endswith((".cpp", ".h"))
+                       for path in paths)
+        if kind == "addon_files":
+            return any(path.startswith("addon/") and path.lower().endswith((".lua", ".toc"))
+                       for path in paths)
+        if kind == "config":
+            return any(path.startswith("conf/") and path.lower().endswith((".conf", ".dist"))
+                       for path in paths)
+        if kind == "client_dbc":
+            return bool(table) and exists(f"client/dbc/{table}")
+        if kind == "server_dbc":
+            return bool(table) and exists(f"server/dbc/{table}")
+        if kind == "dbc_delta":
+            return bool(table) and exists(f"dbc/{table}.delta.json")
+        if kind == "mpq":
+            return any(path.lower().endswith(".mpq") for path in paths)
+        return False
+
+    records = []
+    for artifact in inventory:
+        present = has(artifact)
+        identity = artifact["identity"]
+        records.append({
+            "identity": identity,
+            "kind": artifact["kind"],
+            **({"table": artifact["table"]} if "table" in artifact else {}),
+            "generated": present,
+            "available": present,
+            "qualified": bool(qualified.get(identity, False)),
+            "requires_install": artifact["requires_install"],
+            "installed": identity in installed,
+        })
+    return records
 
 
 def _external_behavior_passes(records: Any, artifact: dict, behavior: str) -> bool:
@@ -125,7 +192,8 @@ def _external_behavior_passes(records: Any, artifact: dict, behavior: str) -> bo
 
 def evaluate(package: Path, delivery: dict, evidence: dict, attestations: dict,
              *, world_db_pass: bool, characters_db_pass: dict[str, bool],
-             compile_pass: bool, assets_pass: bool) -> dict:
+             compile_pass: bool, assets_pass: bool,
+             qualified_artifacts: Optional[dict[str, bool]] = None) -> dict:
     """Evaluate requirements from observed files and qualification evidence.
 
     User-supplied JSON evidence remains EXTERNAL_UNTRUSTED. This matrix records
@@ -135,11 +203,29 @@ def evaluate(package: Path, delivery: dict, evidence: dict, attestations: dict,
     declared = {artifact["identity"] for artifact in inventory}
     observed = _observed_artifacts(package)
     inventory_issues = sorted(observed - declared)
+    computed = derive_inventory(
+        package, delivery,
+        qualified={"server_module": compile_pass, **(qualified_artifacts or {})})
+    claimed = evidence.get("artifact_inventory")
+    if claimed is not None:
+        def byte_claim(record):
+            if not isinstance(record, dict):
+                return None
+            return (record.get("identity"), record.get("kind"), record.get("table"),
+                    record.get("generated"), record.get("available"),
+                    record.get("requires_install"), record.get("installed"))
+        if (not isinstance(claimed, list)
+                or sorted(map(byte_claim, claimed), key=str)
+                != sorted(map(byte_claim, computed), key=str)):
+            inventory_issues.append("artifact_inventory does not match package bytes")
+            inventory_issues.sort()
+    state_by_identity = {item["identity"]: item for item in computed}
     records = attestations.get("artifacts", [])
     evaluated = []
     for artifact in inventory:
         kind = artifact["kind"]
-        present = _has_files(package, kind, artifact.get("table"))
+        state = state_by_identity[artifact["identity"]]
+        present = state["generated"]
         statuses = {"source_present": "PASS" if present else "BLOCKED",
                     "generated": "PASS" if present else "BLOCKED"}
         for behavior in artifact["required_behaviors"]:
@@ -168,6 +254,7 @@ def evaluate(package: Path, delivery: dict, evidence: dict, attestations: dict,
         "schema": SCHEMA,
         "trust": "EXTERNAL_UNTRUSTED" if attestations else "LOCAL_REPRODUCED",
         "inventory_issues": inventory_issues,
+        "artifact_inventory": computed,
         "artifacts": evaluated,
     }
 

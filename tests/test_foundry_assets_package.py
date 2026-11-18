@@ -14,6 +14,7 @@ import helpers  # noqa: E402
 
 sys.path.insert(0, str(helpers.REPO))
 from foundry.assets import ingest_dbc_dir, ingest_inventory, patch_cost, search  # noqa: E402
+from foundry.maturity import evaluate as evaluate_maturity  # noqa: E402
 
 FOUNDRY = helpers.REPO / "tools" / "foundry.py"
 # Packaging behavior is tested against only emitter-supported declarations;
@@ -164,7 +165,34 @@ class Packaging(unittest.TestCase):
             manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
             self.assertIn("mixed", manifest["patch_cost"])
             kinds = {entry["kind"] for entry in manifest["delivery_requirements"]["artifacts"]}
-            self.assertTrue({"addon_files", "client_dbc", "server_dbc", "mpq"} <= kinds)
+            self.assertTrue({"addon_files", "client_dbc", "server_dbc", "dbc_delta", "mpq"} <= kinds)
+            evidence = json.loads((out / "evidence.json").read_text(encoding="utf-8"))
+            inventory = {item["identity"]: item for item in evidence["artifact_inventory"]}
+            self.assertEqual(inventory["dbc_delta:Item.dbc"], {
+                "identity": "dbc_delta:Item.dbc", "kind": "dbc_delta", "table": "Item.dbc",
+                "generated": True, "available": True, "qualified": False,
+                "requires_install": False, "installed": False,
+            })
+            for kind in ("client_dbc", "server_dbc"):
+                self.assertFalse(inventory[f"{kind}:Item.dbc"]["generated"])
+                self.assertFalse(inventory[f"{kind}:Item.dbc"]["available"])
+                self.assertTrue(inventory[f"{kind}:Item.dbc"]["requires_install"])
+            maturity = evaluate_maturity(out, evidence["delivery_requirements"], evidence, {},
+                                         world_db_pass=False, characters_db_pass={},
+                                         compile_pass=False, assets_pass=False)
+            dbc_status = {item["identity"]: item["status"] for item in maturity["artifacts"]
+                          if item["kind"] in ("client_dbc", "server_dbc", "dbc_delta")}
+            self.assertEqual(dbc_status["dbc_delta:Item.dbc"]["generated"], "PASS")
+            self.assertEqual(dbc_status["client_dbc:Item.dbc"]["generated"], "BLOCKED")
+            self.assertEqual(dbc_status["server_dbc:Item.dbc"]["generated"], "BLOCKED")
+            forged = json.loads(json.dumps(evidence))
+            next(item for item in forged["artifact_inventory"]
+                 if item["identity"] == "server_dbc:Item.dbc")["available"] = True
+            forged_result = evaluate_maturity(
+                out, forged["delivery_requirements"], forged, {}, world_db_pass=False,
+                characters_db_pass={}, compile_pass=False, assets_pass=False)
+            self.assertIn("artifact_inventory does not match package bytes",
+                          forged_result["inventory_issues"])
             compat = json.loads((out / "compatibility.json").read_text(encoding="utf-8"))
             self.assertEqual(compat["receipt"]["status"], "error")
             self.assertEqual(compat["receipt"]["code"], "CAPABILITY_MISSING")
@@ -184,6 +212,10 @@ class Packaging(unittest.TestCase):
                 helpers.write_dbc(dbc_dir / table, fields, rows)
             asset_index = ingest_dbc_dir(dbc_dir)
             spec = json.loads(SPEC.read_text(encoding="utf-8"))
+            # This supported Item.dbc case is source-verified below from the
+            # synthetic local DBC directory; the delta must still not count as
+            # either a materialized client or server DBC.
+            spec["items"][0]["dbc_row"] = True
             for collection, field, kind in (
                     ("items", "display_id", "item_display"),
                     ("spells", "visual_id", "spell_visual"),
@@ -201,6 +233,15 @@ class Packaging(unittest.TestCase):
             self.assertEqual(evidence["validation"]["verdicts"]["asset-verification"], "PASS")
             self.assertEqual(evidence["unverified_asset_refs"], [])
             self.assertFalse(evidence["allow_unverified"])
+            artifact_state = {item["identity"]: item
+                              for item in evidence["artifact_inventory"]}
+            self.assertTrue(artifact_state["dbc_delta:Item.dbc"]["generated"])
+            self.assertTrue(artifact_state["dbc_delta:Item.dbc"]["available"])
+            for side in ("client_dbc", "server_dbc"):
+                self.assertFalse(artifact_state[f"{side}:Item.dbc"]["generated"])
+                self.assertFalse(artifact_state[f"{side}:Item.dbc"]["available"])
+            compatibility = json.loads((out / "compatibility.json").read_text(encoding="utf-8"))
+            self.assertNotEqual(compatibility["receipt"]["status"], "admitted")
 
             # Explicit preview allowance may skip absent evidence, never bad evidence.
             spec["items"][0]["display_id"]["evidence"]["sha256"] = "0" * 64
