@@ -34,7 +34,8 @@ reference existing client assets. **Assets** = client patch containing new M2/BL
 | Title | **Rows** — `CharTitles.dbc` | `CharTitles` DB / achievement | no |
 | Achievement | **Rows** — `Achievement.dbc`, `Achievement_Criteria.dbc` | `achievement_*` tables | no |
 | Talent / glyph / spellbook layout | **Rows** — `Talent.dbc`, `TalentTab.dbc`, `GlyphProperties.dbc`, `SkillLineAbility.dbc` | trainer/learn logic | no |
-| Reputation faction | **Rows** — `Faction.dbc` + `FactionTemplate.dbc` (name/icon) | `creature_onkill_reputation`, etc. | no |
+| Reputation identity | [`Faction.dbc` layout](https://github.com/azerothcore/azerothcore-wotlk/blob/6ffb62abb867dabb258de6813ff5d06d6b011543/src/server/shared/DataStores/DBCfmt.h) (native reputation ID, eligibility masks, names) | `character_reputation`, `creature_onkill_reputation`, etc. | no |
+| Creature hostility template | [`FactionTemplate.dbc` layout](https://github.com/azerothcore/azerothcore-wotlk/blob/6ffb62abb867dabb258de6813ff5d06d6b011543/src/server/shared/DataStores/DBCfmt.h) (unit affiliation and friendly/hostile masks; not a reputation ID) | `creature_template.faction` and core hostility resolution | no |
 | Area/zone name, subzone | **Rows** — `AreaTable.dbc` | `areatable_dbc` overlay, spawns | no |
 | Taxi route | **Rows** — `TaxiPath.dbc`, `TaxiPathNode.dbc` | `taxi_path` overlay | no |
 | Battleground / arena | **No** for mechanics; **Rows** (`BattlemasterList.dbc`, `Map.dbc`) if it must appear in the PvP UI as its own entry | `battleground_template`, `game_graveyard*` | no |

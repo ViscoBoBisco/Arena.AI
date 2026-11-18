@@ -369,6 +369,24 @@ class RepoHasNoRetailOnlyApi(unittest.TestCase):
 
 
 class DocsPointHere(unittest.TestCase):
+    def test_client_acceptance_handoff_matches_generated_package_and_config(self):
+        import json
+        from foundry.generate import config_files
+
+        spec = json.loads((helpers.REPO / "specs" / "vault-terminal.json").read_text())
+        config = config_files(spec)["conf/vault-terminal.conf"]
+        handoff = (helpers.REPO / "docs" / "17-vault-terminal-client-acceptance.md").read_text()
+        self.assertIn("/tmp/vault-terminal/conf/vault-terminal.conf", handoff)
+        self.assertIn("VaultTerminal.Enable = 1", config)
+        self.assertIn("`VaultTerminal.Enable = 1`", handoff)
+        self.assertIn("Do not use `vault_terminal.Enable`", handoff)
+        self.assertIn("/tmp/vault-terminal/sql/characters/vault_terminal_claims.sql", handoff)
+        self.assertIn("vault_terminal_claims_requests", handoff)
+        self.assertIn("HELLO<TAB>2", handoff)
+        self.assertIn("DENIED_COOLDOWN", handoff)
+        self.assertIn("must not mint a new ID", handoff)
+        self.assertIn("NOT_ASSESSED", handoff)
+
     def test_readme_and_novel_chapter_link_the_example(self):
         readme = (helpers.REPO / "README.md").read_text(encoding="utf-8")
         novel = (helpers.REPO / "docs" / "10-novel-alterations.md").read_text(encoding="utf-8")
