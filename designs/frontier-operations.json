@@ -1,0 +1,73 @@
+{
+  "schema": "arena-feature-design/1",
+  "name": "frontier-operations",
+  "maturity": "DESIGN_ONLY_NOT_A_FOUNDRY_SPEC",
+  "status": "SYNTHETIC_MODEL_ONLY; no AzerothCore content, module, SQL, addon, assets, or gameplay integration is implemented",
+  "vertical": {
+    "title": "The Surveyor's Last Route",
+    "setting_candidate": "Un'Goro Crater; all exact locations, creatures, objects, text, and display assets require local build-12340 verification",
+    "player_loop": [
+      "Start an operation on demand.",
+      "Investigate three field sites in any order; each site is visited once and grants a server-validated clue.",
+      "Rescue a missing surveyor after all three clues are recorded.",
+      "Activate two field beacons as a bounded, objective-based defense; no real-time waiting or kill quota is required.",
+      "Choose one deterministic regional outcome: restore a route or archive the findings.",
+      "Receive an abstract completion proof; actual reward identities and delivery remain unimplemented and unverified."
+    ],
+    "experience_goal": "Make an existing large open zone playable as a short exploration/rescue/defense mission without new maps, art, scheduled availability, or repeated grind.",
+    "solo_and_group": "Designed for one through five real players, but party credit, Playerbot participation, and shared progression are not implemented or qualified. The reference model represents one character-owned operation only.",
+    "reward_policy": [
+      "Outcome choice is deterministic and mutually exclusive.",
+      "No random reward roll, daily reset, auction-house requirement, paid-like convenience, or real-time lockout.",
+      "No item, currency, quest, or inventory reward is granted by the reference model."
+    ]
+  },
+  "state_contract": {
+    "states": ["SURVEY", "RESCUE", "DEFENSE", "OUTCOME", "COMPLETE"],
+    "transitions": [
+      {"from": "SURVEY", "action": "record_site", "guard": "site is approved and not already recorded; any order", "to": "SURVEY or RESCUE", "effect": "add one validated clue; after exactly three distinct clues, enter RESCUE"},
+      {"from": "RESCUE", "action": "rescue_surveyor", "guard": "all three clues are recorded", "to": "DEFENSE", "effect": "record the rescue proof once"},
+      {"from": "DEFENSE", "action": "activate_beacon", "guard": "surveyor is rescued; beacon is approved and not already activated", "to": "DEFENSE or OUTCOME", "effect": "record two distinct beacon proofs; no kill count or wall-clock timer"},
+      {"from": "OUTCOME", "action": "choose_outcome", "guard": "choice is restore_route or archive_findings", "to": "COMPLETE", "effect": "persist one immutable choice and completion proof"}
+    ],
+    "mutation_safety": [
+      "Every successful mutation is bound to an expected state revision and unique request ID.",
+      "A retry with the same request ID and identical action replays the prior receipt without a second mutation.",
+      "Reusing a request ID for a different action is rejected.",
+      "A stale revision is rejected rather than merged implicitly.",
+      "The Python reference is single-process, in-memory and sequential; production persistence must enforce idempotency, revision checks, state transitions, and reward grants transactionally in AzerothCore-owned storage."
+    ]
+  },
+  "authority_and_integration": {
+    "azerothcore": "Must own objective validation, persistent operation state, quest/item/inventory/reward authority, and concurrent-safe idempotent mutations.",
+    "playerbots": "Own bot navigation, combat, and execution. This mission makes no claim that bots can traverse the chosen area or operate any chosen object.",
+    "campaign_party": "Own party identity, permissions, membership changes, and command routing. No party API or schema is assumed by this design.",
+    "addon": "May display progress and submit untrusted intent only; it cannot authoritatively award clues, completion, or rewards.",
+    "assets": "Use only stock assets verified against supplied build-12340 data; no numeric asset IDs are specified or claimed. Keep user-owned patches untouched."
+  },
+  "implementation_order": [
+    "Review stock zone content and select usable survey sites, a rescue location, beacons, and text using local data; record source evidence for every ID.",
+    "Agree on a downstream-safe character/party ownership and migration contract without inventing Campaign Party APIs.",
+    "Implement server-authoritative persistent state and idempotent objective/reward transactions in AzerothCore-owned storage.",
+    "Generate SQL/addon/module artifacts only after schemas, IDs, install order, ownership, conflict checks, migration, rollback, and compatibility are reviewed.",
+    "Qualify in layers: synthetic model, static/schema checks, disposable DB apply/reapply/rollback, pinned-core compile, then real client/server/Playerbot/party acceptance."
+  ],
+  "acceptance": [
+    "All three sites can be completed in any order; duplicate site completion cannot grant an additional clue.",
+    "Rescue, defense, and outcome choice cannot be performed before their prerequisites.",
+    "Two approved beacons complete the defense objective without a real-time wait or kill-count gate.",
+    "Duplicate identical request retries produce one state transition; conflicting request-ID reuse and stale revisions are rejected.",
+    "Outcome choice is saved once and cannot be silently replaced; no unverified item or currency is granted.",
+    "A restart, concurrent mutation, rollback, inventory failure, party membership change, and bot execution are explicitly tested before live qualification."
+  ],
+  "qualification": {
+    "design_review": "PASS: design artifact only",
+    "reference_model": "SYNTHETIC_ONLY",
+    "target_assets": "NOT_ASSESSED",
+    "database_schema_and_migration": "NOT_ASSESSED",
+    "server_module_compile": "NOT_ASSESSED",
+    "client_addon_runtime": "NOT_ASSESSED",
+    "playerbots_and_party": "NOT_ASSESSED",
+    "live_gameplay": "NOT_ASSESSED"
+  }
+}

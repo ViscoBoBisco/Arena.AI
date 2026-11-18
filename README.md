@@ -75,10 +75,11 @@ explicit `--allow-unverified`; it is not release approval.
 
 ```
 README.md                     this page
-docs/                         knowledge base, Foundry/adapter contracts, world-scale design (01–14)
+docs/                         knowledge base, Foundry/adapter contracts, world-scale design (01–16)
 foundry/                      spec validation, ID policy, assets, generators, adapter, bundler, CLI
 specs/                        versioned declarative feature specifications
-designs/                      creative world-scale campaign blueprint; explicitly not compiler input
+designs/                      creative campaign and feature contracts; explicitly not Foundry input
+prototypes/frontier-operations/ synthetic in-memory mission state oracle; not installable gameplay
 packages/                     reproducible generated handoff bundles (evidence attached)
 catalog/alterations.json      110 levers: what you can change, what players see, patch cost
 tools/
@@ -121,6 +122,7 @@ Makefile                      `make check`, `make preflight CLIENT=… SERVER=�
 | [13 — Campaign Party adapter](docs/13-campaign-party-adapter.md) | Versioned offline admission seam, fake host, safety semantics and real-baseline requirements |
 | [14 — World Atlas frontier](docs/14-world-atlas-frontier.md) | Source-backed feasibility for old-world flight, iconic legendary equipment, level scaling, new professions/vocations, and a world-spanning five-character campaign |
 | [15 — Catalytic crafting](docs/15-catalytic-crafting.md) | Design-only recipe augmentation: deterministic batch boosts, rare-material imprints, transaction safety, core hooks and qualification limits |
+| [16 — Frontier Operations](docs/16-frontier-operations.md) | A bounded open-zone mission contract and synthetic state-machine prototype; no in-game integration claimed |
 
 ## Glossary
 
