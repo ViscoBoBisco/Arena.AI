@@ -123,6 +123,7 @@ Makefile                      `make check`, `make preflight CLIENT=… SERVER=�
 | [14 — World Atlas frontier](docs/14-world-atlas-frontier.md) | Source-backed feasibility for old-world flight, iconic legendary equipment, level scaling, new professions/vocations, and a world-spanning five-character campaign |
 | [15 — Catalytic crafting](docs/15-catalytic-crafting.md) | Design-only recipe augmentation: deterministic batch boosts, rare-material imprints, transaction safety, core hooks and qualification limits |
 | [16 — Frontier Operations](docs/16-frontier-operations.md) | A bounded open-zone mission contract and synthetic state-machine prototype; no in-game integration claimed |
+| [17 — Vault Terminal client acceptance](docs/17-vault-terminal-client-acceptance.md) | Manual build-12340 client test plan; separates client evidence from Lua-shim, compile, and disposable-DB checks |
 
 ## Glossary
 

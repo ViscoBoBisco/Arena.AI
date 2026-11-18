@@ -24,6 +24,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
+      - name: Install Lua 5.1 test runtime
+        run: python3 -m pip install --disable-pip-version-check lupa==2.6
+
       - name: Tool selftest (synthetic DBC fixtures)
         run: python3 tools/selftest.py
 
