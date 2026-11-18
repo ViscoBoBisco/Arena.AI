@@ -105,6 +105,8 @@ class ModuleAndAddon(unittest.TestCase):
         self.assertNotIn("DROP TABLE", sql)
         templates = generate.characters_claim_transaction_sql(spec)
         self.assertEqual(len(templates), 4)
+        self.assertIn("INSERT IGNORE INTO `vault_terminal_claims`", templates[0][0])
+        self.assertIn("INSERT IGNORE INTO `vault_terminal_claims_requests`", templates[1][0])
         self.assertIn("total_claims < 50", templates[2][0])
         self.assertIn("status = 'PENDING'", templates[3][0])
         self.assertIn("OnPlayerBeforeSendChatMessage", source)

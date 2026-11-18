@@ -40,7 +40,7 @@ Protocol error codes include `BUSY`, `COOLDOWN`, `VERSION`, `DENIED`, `INTERNAL`
 
 ## Reliability and concurrency
 
-The server serializes a character's claim transaction in InnoDB. It locks/updates the character counter, checks the target and database-server day, and inserts the immutable request receipt in the same transaction. Therefore:
+The server serializes a character's claim transaction in InnoDB. Every request acquires the per-character counter row before inserting or updating a request receipt, giving concurrent claims a consistent lock order. It checks the target and database-server day and writes the immutable request receipt in the same transaction. Therefore:
 
 1. A repeated `(character GUID, request ID)` returns the same stored receipt and cannot increment twice.
 2. Distinct simultaneous requests compete against the same locked counter; the target cap and daily limit cannot be passed by a race.

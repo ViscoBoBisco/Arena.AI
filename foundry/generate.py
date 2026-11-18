@@ -212,14 +212,16 @@ def characters_claim_transaction_sql(spec: dict) -> list[tuple[str, tuple[str, .
     target = protocol["target"]
     receipt_table = f"{table}_requests"
     return [
-        (f"INSERT IGNORE INTO `{receipt_table}` "
-         "(guid, request_id, status, total_claims, claim_day) "
-         "VALUES ({}, '{}', 'PENDING', 0, CURRENT_DATE())",
-         ("guid", "request_id")),
+        # Lock/create the per-character serialization row before touching a request-keyed receipt.
+        # This gives every claim the same lock order and avoids cross-request receipt/state deadlocks.
         (f"INSERT IGNORE INTO `{table}` "
          "(guid, total_claims, last_claim_day, last_request_id) "
          "VALUES ({}, 0, NULL, NULL)",
          ("guid",)),
+        (f"INSERT IGNORE INTO `{receipt_table}` "
+         "(guid, request_id, status, total_claims, claim_day) "
+         "VALUES ({}, '{}', 'PENDING', 0, CURRENT_DATE())",
+         ("guid", "request_id")),
         (f"UPDATE `{table}` SET "
          "last_request_id = IF((last_claim_day IS NULL OR last_claim_day <> CURRENT_DATE()) "
          f"AND total_claims < {target}, '{{}}', last_request_id), "
