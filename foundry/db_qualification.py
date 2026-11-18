@@ -1,0 +1,396 @@
+"""Disposable-schema migration qualification for Foundry-generated SQL.
+
+This module executes only the package's generated world migration/rollback in
+an explicitly named disposable database. It refuses key collisions before the
+first write, checks all generated identities, and binds the resulting evidence
+to the package manifest hash.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import tempfile
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Set, Tuple
+
+from .qualification import integrity_check
+
+RowIdentity = Tuple[str, Tuple[Tuple[str, int], ...]]
+QueryRunner = Callable[[str], str]
+
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _json_object(path: Path) -> dict:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"{path}: expected a JSON object")
+    return value
+
+
+def _item_ref(value: Any):
+    return value.get("value") if isinstance(value, dict) else value
+
+
+def _identity(table: str, **where: int) -> RowIdentity:
+    if not _IDENT.fullmatch(table) or not where:
+        raise ValueError("invalid generated row identity")
+    if any(not _IDENT.fullmatch(column) or not isinstance(value, int)
+           or isinstance(value, bool) or value < 0 for column, value in where.items()):
+        raise ValueError("generated row identity must use non-negative integer keys")
+    normalized = {column.lower(): value for column, value in where.items()}
+    if len(normalized) != len(where):
+        raise ValueError("duplicate row identity key after case normalization")
+    return table.lower(), tuple(sorted(normalized.items()))
+
+
+def expected_world_rows(spec: dict, allocations: dict) -> Set[RowIdentity]:
+    """Describe every world row this Foundry generator promises to insert."""
+    ids = allocations.get("allocations")
+    if not isinstance(ids, dict):
+        raise ValueError("ID allocation file has no allocations object")
+
+    def assigned(key: Any) -> int:
+        value = ids.get(key) if isinstance(key, str) else None
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"missing or invalid allocated ID for {key!r}")
+        return value
+
+    rows: Set[RowIdentity] = set()
+    for item in spec.get("items") or []:
+        rows.add(_identity("item_template", entry=assigned(item["key"])))
+    for spell in spec.get("spells") or []:
+        rows.add(_identity("spell_dbc", Id=assigned(spell["key"])))
+    for quest in spec.get("quests") or []:
+        rows.add(_identity("quest_template", Id=assigned(quest["key"])))
+    for creature in spec.get("creatures") or []:
+        creature_id = assigned(creature["key"])
+        rows.add(_identity("creature_template", entry=creature_id))
+        if _item_ref(creature.get("display_id")) is not None:
+            rows.add(_identity("creature_template_model", CreatureID=creature_id))
+    for vendor in spec.get("vendors") or []:
+        creature_id = assigned(vendor["creature_key"])
+        for stock in vendor.get("rows") or []:
+            rows.add(_identity("npc_vendor", entry=creature_id,
+                               item=assigned(stock["item_key"])))
+    for event in spec.get("events") or []:
+        rows.add(_identity("game_event", eventEntry=assigned(event["key"])))
+    return rows
+
+
+def _without_inline_comment(line: str) -> str:
+    quote = None
+    escaped = False
+    for index, char in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in ("'", "`"):
+            quote = char
+        elif (line[index:index + 2] == "--"
+              and (index == 0 or line[index - 1].isspace())):
+            return line[:index].rstrip()
+    return line
+
+
+def validate_generated_sql(text: str, *, rollback: bool) -> List[str]:
+    """Accept only the generator's one-statement-per-line DML subset."""
+    allowed = ("DELETE FROM",) if rollback else ("DELETE FROM", "INSERT INTO")
+    statements = []
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = _without_inline_comment(raw).strip()
+        if not line:
+            continue
+        if not line.startswith(allowed) or not line.endswith(";"):
+            raise ValueError(f"generated SQL line {number} is outside the allowed DML subset")
+        quote = None
+        escaped = False
+        for index, char in enumerate(line):
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if quote:
+                if char == quote:
+                    quote = None
+                continue
+            if char in ("'", "`"):
+                quote = char
+            elif char == ";" and index != len(line) - 1:
+                raise ValueError(f"generated SQL line {number} contains multiple statements")
+        if quote:
+            raise ValueError(f"generated SQL line {number} has an unterminated quote")
+        statements.append(line)
+    if not statements:
+        raise ValueError("generated SQL contains no executable statements")
+    return statements
+
+
+_INSERT_KEYS = {
+    "item_template": ("entry",),
+    "spell_dbc": ("id",),
+    "quest_template": ("id",),
+    "creature_template": ("entry",),
+    "creature_template_model": ("creatureid",),
+    "npc_vendor": ("entry", "item"),
+    "game_event": ("evententry",),
+}
+_DELETE_RE = re.compile(r"^DELETE FROM `?(\w+)`? WHERE (.+);$", re.IGNORECASE)
+_INSERT_RE = re.compile(
+    r"^INSERT INTO `?(\w+)`?\s*\(([^)]*)\)\s*VALUES\s*\((.*)\);$",
+    re.IGNORECASE,
+)
+
+
+def _parse_predicate(table: str, text: str) -> RowIdentity:
+    clauses = re.split(r"\s+AND\s+", text, flags=re.IGNORECASE)
+    pairs = []
+    for clause in clauses:
+        match = re.fullmatch(r"`?([A-Za-z_]\w*)`?\s*=\s*(\d+)", clause.strip())
+        if not match:
+            raise ValueError(f"unsupported generated SQL predicate for {table}: {text}")
+        pairs.append(match.groups())
+    where = {column: int(value) for column, value in pairs}
+    if len(where) != len(pairs):
+        raise ValueError(f"duplicate key column in generated SQL predicate for {table}")
+    return _identity(table, **where)
+
+
+def _split_values(text: str) -> List[str]:
+    values = []
+    start = 0
+    quote = None
+    escaped = False
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char == "'":
+            quote = char
+        elif char == ",":
+            values.append(text[start:index].strip())
+            start = index + 1
+    if quote:
+        raise ValueError("unterminated string in generated INSERT")
+    values.append(text[start:].strip())
+    return values
+
+
+def _parse_insert(line: str) -> RowIdentity:
+    match = _INSERT_RE.fullmatch(line)
+    if not match:
+        raise ValueError("unsupported generated INSERT statement")
+    table, column_text, value_text = match.groups()
+    columns = [column.strip().strip("`").lower() for column in column_text.split(",")]
+    values = _split_values(value_text)
+    if len(columns) != len(values) or len(columns) != len(set(columns)):
+        raise ValueError(f"generated INSERT column/value mismatch for {table}")
+    key_columns = _INSERT_KEYS.get(table.lower())
+    if not key_columns or not set(key_columns) <= set(columns):
+        raise ValueError(f"unsupported generated INSERT target: {table}")
+    keys = {}
+    for column in key_columns:
+        value = values[columns.index(column)]
+        if not value.isdigit():
+            raise ValueError(f"generated INSERT has a non-integer key for {table}.{column}")
+        keys[column] = int(value)
+    return _identity(table, **keys)
+
+
+def inspect_generated_sql(migration: List[str], rollback: List[str],
+                          expected: Set[RowIdentity], spec: dict,
+                          allocations: dict) -> Tuple[Set[RowIdentity], Set[RowIdentity]]:
+    """Check SQL touches only expected package rows and rollback mirrors its deletes."""
+    migration_deletes = set()
+    rollback_deletes = set()
+    inserts = set()
+    for statements, output in ((migration, migration_deletes), (rollback, rollback_deletes)):
+        for line in statements:
+            match = _DELETE_RE.fullmatch(line)
+            if not match:
+                if output is rollback_deletes:
+                    raise ValueError("rollback contains a non-DELETE statement")
+                inserts.add(_parse_insert(line))
+                continue
+            table, predicate = match.groups()
+            output.add(_parse_predicate(table, predicate))
+    known_creature_models = {
+        _identity("creature_template_model", CreatureID=allocations["allocations"][creature["key"]])
+        for creature in spec.get("creatures") or []
+        if isinstance(allocations.get("allocations", {}).get(creature.get("key")), int)
+        and not isinstance(allocations["allocations"][creature["key"]], bool)
+    }
+    if inserts != expected:
+        raise ValueError("migration INSERT identities do not exactly match spec/ID allocation")
+    if not inserts <= migration_deletes:
+        raise ValueError("migration INSERT is missing a preceding matching cleanup predicate")
+    extra_deletes = migration_deletes - inserts
+    if not extra_deletes <= known_creature_models:
+        raise ValueError("migration deletes rows outside its declared generated identities")
+    if migration_deletes != rollback_deletes:
+        raise ValueError("rollback DELETE identities do not mirror migration cleanup identities")
+    return migration_deletes, inserts
+
+
+def _count_query(identity: RowIdentity) -> str:
+    table, where = identity
+    clauses = " AND ".join(f"`{column}` = {value}" for column, value in where)
+    return f"SELECT COUNT(*) FROM `{table}` WHERE {clauses};"
+
+
+def _count(runner: QueryRunner, identity: RowIdentity) -> int:
+    output = runner(_count_query(identity)).strip()
+    try:
+        value = int(output)
+    except ValueError as exc:
+        raise RuntimeError(f"database returned a non-count for {identity[0]}: {output!r}") from exc
+    if value < 0:
+        raise RuntimeError("database returned a negative row count")
+    return value
+
+
+def _assert_rows(runner: QueryRunner, rows: Set[RowIdentity], expected: int) -> None:
+    mismatches = []
+    for identity in sorted(rows):
+        actual = _count(runner, identity)
+        if actual != expected:
+            table, where = identity
+            label = ", ".join(f"{column}={value}" for column, value in where)
+            mismatches.append(f"{table}({label}) expected {expected}, found {actual}")
+    if mismatches:
+        raise RuntimeError("; ".join(mismatches))
+
+
+def qualify_database(package: Path, database: str, runner: QueryRunner) -> dict:
+    """Run apply/idempotence/rollback/reapply/rollback and return attestations."""
+    if not isinstance(database, str) or not database.startswith("arena_foundry_disposable_"):
+        raise ValueError("database must use the arena_foundry_disposable_ prefix")
+    if not _IDENT.fullmatch(database) or len(database) > 64:
+        raise ValueError("database name must be a simple MySQL SQL identifier (max 64 characters)")
+
+    integrity = integrity_check(package)
+    if not integrity["ok"]:
+        raise ValueError("package integrity failed: " + "; ".join(integrity["problems"]))
+    manifest = integrity["manifest"]
+    requirements = manifest.get("delivery_requirements", {})
+    artifacts = requirements.get("artifacts", []) if isinstance(requirements, dict) else []
+    if not any(isinstance(item, dict) and item.get("kind") == "world_sql"
+               for item in artifacts):
+        raise ValueError("package does not declare world SQL delivery")
+
+    spec = _json_object(package / "spec.json")
+    allocation = _json_object(package / "id-allocation.json")
+    migration_path = package / "sql" / "01_world.sql"
+    rollback_path = package / "sql" / "99_rollback.sql"
+    migration = migration_path.read_text(encoding="utf-8")
+    rollback = rollback_path.read_text(encoding="utf-8")
+    migration_statements = validate_generated_sql(migration, rollback=False)
+    rollback_statements = validate_generated_sql(rollback, rollback=True)
+    rows = expected_world_rows(spec, allocation)
+    if not rows:
+        raise ValueError("package declares SQL delivery but has no supported generated world rows")
+    migration_deletes, inserted_rows = inspect_generated_sql(
+        migration_statements, rollback_statements, rows, spec, allocation)
+    cleanup_only = migration_deletes - inserted_rows
+
+    selected_database = runner("SELECT DATABASE();").strip()
+    if selected_database != database:
+        raise RuntimeError(f"connected database {selected_database!r} does not match {database!r}")
+    server_version = runner("SELECT VERSION();").strip()
+    if not server_version:
+        raise RuntimeError("database did not report a server version")
+
+    # Refuse to overwrite even one pre-existing row in any generated DELETE predicate.
+    _assert_rows(runner, migration_deletes, 0)
+    mutated = False
+    try:
+        mutated = True
+        runner(migration)
+        _assert_rows(runner, inserted_rows, 1)
+        _assert_rows(runner, cleanup_only, 0)
+        runner(migration)
+        _assert_rows(runner, inserted_rows, 1)
+        _assert_rows(runner, cleanup_only, 0)
+        runner(rollback)
+        _assert_rows(runner, migration_deletes, 0)
+        mutated = True
+        runner(migration)
+        _assert_rows(runner, inserted_rows, 1)
+        _assert_rows(runner, cleanup_only, 0)
+        runner(rollback)
+        _assert_rows(runner, migration_deletes, 0)
+        mutated = False
+    except Exception as exc:
+        cleanup_note = ""
+        if mutated:
+            try:
+                runner(rollback)
+                _assert_rows(runner, rows, 0)
+            except Exception as cleanup_exc:  # keep original failure plus cleanup status
+                cleanup_note = f"; cleanup rollback also failed: {cleanup_exc}"
+        raise RuntimeError(f"database qualification failed: {exc}{cleanup_note}") from exc
+
+    proof = {
+        "schema": "arena-db-qualification/1",
+        "manifest_sha256": integrity["manifest_sha256"],
+        "database": database,
+        "server_version": server_version,
+        "migration_sha256": hashlib.sha256(migration.encode("utf-8")).hexdigest(),
+        "rollback_sha256": hashlib.sha256(rollback.encode("utf-8")).hexdigest(),
+        "checked_rows": len(migration_deletes),
+        "sequence": ["apply", "verify", "apply-idempotently", "verify", "rollback",
+                     "verify-empty", "reapply-after-rollback", "verify", "rollback",
+                     "verify-empty"],
+    }
+    proof_bytes = (json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    proof_sha256 = hashlib.sha256(proof_bytes).hexdigest()
+    return {
+        "schema": "arena-qualification-attestations/1",
+        "subject": {"manifest_sha256": integrity["manifest_sha256"]},
+        "levels": {
+            "ARENA-DB": {
+                "status": "PASS",
+                "evidence": f"sha256:{proof_sha256}",
+            }
+        },
+        "acceptance": [],
+        "artifacts": [],
+        "database_qualification": proof,
+    }
+
+
+def write_attestations(path: Path, attestations: dict) -> None:
+    """Atomically write evidence without overwriting existing attestation files."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = (json.dumps(attestations, indent=2, sort_keys=True) + "\n").encode()
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass

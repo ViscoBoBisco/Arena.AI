@@ -12,6 +12,24 @@ The phases are intentionally independent. `build` never marks a bundle installab
 
 Qualification fails closed on missing manifest-bound attestations. Applicable surfaces require separate evidence: disposable-database apply/rollback for migrations, the canonical pinned-core compile record plus exact packaged source hashes for server modules, client/server DBC hash parity and per-table merge evidence for MPQ delivery, independent evidence for every acceptance statement, and live client/Playerbots gameplay. Declared generated placeholders/skeletons block release even when a compile check passes. The report and external attestation JSON are evidence records, not cryptographic signatures; downstream release operators remain responsible for validating their provenance.
 
+## Disposable database migration check
+
+`tools/foundry_db_qualify.py` can produce an `ARENA-DB` attestation when run against an initialized, disposable AzerothCore world schema. It refuses database names without the `arena_foundry_disposable_` prefix, requires an explicit confirmation flag, verifies that every generated row key is initially unused, accepts only the Foundry DML subset, checks inserted row identities, then exercises apply twice, rollback, reapply, and rollback again. It attempts cleanup after an interrupted apply and emits no PASS attestation on failure. This is a harness, not a database claim: it must be run against the actual compatible schema, and does not qualify stock assets, MPQ delivery, acceptance, or live gameplay.
+
+```sh
+# First initialize this throwaway schema from the pinned compatible AzerothCore SQL base.
+python3 tools/foundry_db_qualify.py packages/frost-armory \
+  --database arena_foundry_disposable_frost \
+  --defaults-extra-file ~/.my.cnf \
+  --confirm-disposable \
+  --out /tmp/frost-db-attestations.json
+python3 tools/foundry.py qualify packages/frost-armory \
+  --attestations /tmp/frost-db-attestations.json \
+  --out /tmp/frost-qualification.json
+```
+
+Never point this command at production or a populated shared database. The credential option file should be user-readable only; credentials are not passed on the command line or copied into the attestation.
+
 Commands (all use exit codes 0 success, 1 validation/integrity failure, 2 usage or input error):
 
 ```sh
@@ -65,7 +83,7 @@ The generated artifacts are **not all production implementations** yet. SQL gene
 | Level | What earns it | Frost Armory status on this branch |
 |---|---|---|
 | `ARENA-STATIC` | schema, structural and repository checks | Spec structure checks run; stock asset verification remains `NOT_ASSESSED` |
-| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | All 253 repository tests pass at the current working tree; generated bundle does not attest test execution |
+| `ARENA-SYNTHETIC` | generated fixtures, negative tests, fake-host behavior | All 259 repository tests pass at the current working tree; generated bundle does not attest test execution |
 | `ARENA-DB` | apply and rollback on a disposable compatible DB | Pending; no disposable AzerothCore database was provisioned |
 | `ARENA-COMPILE` | module compile/API check against pinned compatible AzerothCore | **PASS** for exact Frost Armory source hashes and AzerothCore `6ffb62abb867dabb258de6813ff5d06d6b011543`; [CI run](https://github.com/ViscoBoBisco/Arena.AI/actions/runs/44201459186/job/134456328585). This is a targeted object/linkage check, not a full server build or gameplay qualification. |
 | `ARENA-PACK` | reproducible package and independent integrity verification | `foundry verify packages/frost-armory` passes in this workspace; package evidence marks verification as an external required step, not a self-claim |
