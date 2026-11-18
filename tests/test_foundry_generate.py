@@ -67,6 +67,33 @@ class RollbackSymmetry(unittest.TestCase):
 
 
 class ModuleAndAddon(unittest.TestCase):
+    def test_counter_terminal_outputs_functional_protocol_and_durable_ledger(self):
+        spec = json.loads((helpers.REPO / "specs" / "vault-terminal.json").read_text())
+        module = generate.module_cpp(spec)
+        source = module["server/mod-vault-terminal/src/VaultTerminal.cpp"]
+        addon = generate.addon_files(spec)
+        lua = addon["addon/VaultTerminal/VaultTerminal.lua"]
+        toc = addon["addon/VaultTerminal/VaultTerminal.toc"]
+        sql = generate.characters_sql_files(spec)[
+            "sql/characters/vault_terminal_claims.sql"]
+        protocol = json.loads(generate.protocol_files(spec)[
+            "protocol/vault-terminal.json"])
+
+        self.assertIn('constexpr char const* CLAIM_TABLE = "vault_terminal_claims";', source)
+        self.assertIn('"INSERT IGNORE INTO `" + std::string(CLAIM_TABLE)', source)
+        self.assertIn("PRIMARY KEY (`guid`, `claim_day`)", sql)
+        self.assertIn("OnPlayerBeforeSendChatMessage", source)
+        self.assertNotIn("TODO", source)
+        self.assertIn('"VT1\\t"', source)
+        self.assertIn('RegisterAddonMessagePrefix(PREFIX)', lua)
+        self.assertIn('SLASH_VAULTTERMINAL1 = "/vt"', lua)
+        self.assertIn('SLASH_VAULTTERMINAL2 = "/vaultterminal"', lua)
+        self.assertIn("## Interface: 30300", toc.splitlines())
+        self.assertIn("arena-counter-terminal/1", lua)
+        self.assertEqual(protocol["client_opcodes"], ["HELLO", "STATE", "CLAIM", "PING"])
+        self.assertEqual(toc.splitlines()[-1], "VaultTerminal.lua")
+        self.assertTrue(toc.endswith("\n"))
+
     def test_loader_symbol_matches_directory(self):
         files = generate.module_cpp(SPEC)
         loader = files["server/mod-frost-armory/src/mod-frost-armory_loader.cpp"]

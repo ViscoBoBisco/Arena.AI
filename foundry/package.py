@@ -155,6 +155,10 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
         put(rel, content)
     for rel, content in (generate.addon_files(spec) or {}).items():
         put(rel, content)
+    for rel, content in generate.characters_sql_files(spec).items():
+        put(rel, content)
+    for rel, content in generate.protocol_files(spec).items():
+        put(rel, content)
     for rel, content in generate.config_files(spec).items():
         put(rel, content)
     compile_qualification = _matching_compile_qualification(spec, files)
@@ -177,6 +181,9 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
         available_artifacts.append({"kind": "server_module"})
     if any(path.startswith("addon/") for path in files):
         available_artifacts.append({"kind": "addon_files"})
+    for rel in files:
+        if rel.startswith("sql/characters/") and rel.endswith(".sql") and "/99_" not in rel:
+            available_artifacts.append({"kind": "characters_sql", "table": Path(rel).stem})
     if any(path.startswith("conf/") or path.endswith(".conf.dist") for path in files):
         available_artifacts.append({"kind": "config"})
     for path, content in files.items():
@@ -231,10 +238,19 @@ def build_package(spec: dict, result: ValidationResult, out_dir: Path, *,
             "sql_migrations": "generated; schema/application not DB-qualified",
             "rollback": "generated; rollback not DB-qualified",
             "cpp_module": (
+                "server-authoritative daily-counter protocol and persistent ledger logic; "
+                "compiled against the pinned core but not runtime-qualified"
+                if compile_qualification and spec.get("addon_protocol") else
+                "server-authoritative daily-counter protocol and persistent ledger logic; "
+                "not compiled or runtime-qualified"
+                if spec.get("addon_protocol") else
                 "registration skeleton; compiled against the pinned core, not feature-complete"
                 if compile_qualification else
                 "registration skeleton only; not compiled or feature-complete"),
-            "addon": "presentation placeholder only; not client-runtime tested",
+            "addon": (
+                "functional protocol UI and request client; not tested in the 3.3.5a game client"
+                if spec.get("addon_protocol") else
+                "presentation placeholder only; not client-runtime tested"),
             "recipes": "descriptive dependency comments; no executable profession recipe",
             "dbc_delta": "narrow Item.dbc delta only when explicitly requested; no MPQ assembly",
             "asset_ids": "unverified unless supported by local source evidence",
@@ -326,6 +342,40 @@ def _readme(spec: dict, result: ValidationResult,
         f"ARENA-COMPILE qualified for the exact generated module sources against "
         f"the pinned core ({compile_qualification['environment']['run_url']})"
         if compile_qualification else "ARENA-COMPILE pending")
+    has_world_content = any(spec.get(key) for key in
+                            ("items", "spells", "quests", "creatures", "gameobjects",
+                             "vendors", "recipes", "events"))
+    module_dir = f"mod-{spec['name']}"
+    install_commands = []
+    if has_world_content:
+        install_commands.append("mysql -u acore -p acore_world < sql/01_world.sql")
+    protocol = spec.get("addon_protocol")
+    if isinstance(protocol, dict):
+        table = protocol["claims_table"]
+        install_commands.append(
+            f"mysql -u acore -p acore_characters < sql/characters/{table}.sql")
+        install_commands.extend((
+            f"cp -a server/{module_dir} /path/to/azerothcore/modules/",
+            f"cp -a addon/{''.join(p.capitalize() for p in spec['name'].split('-'))} "
+            "/path/to/WotLK/Interface/AddOns/",
+            "# Merge the generated module config and AddonChannel = 1 into worldserver.conf.",
+            "# Reconfigure/rebuild AzerothCore with the module enabled, then restart worldserver.",
+        ))
+    elif spec.get("module"):
+        install_commands.append(f"cp -a server/{module_dir} /path/to/azerothcore/modules/")
+    if not install_commands:
+        install_commands.append("# No install-time database or runtime artifacts are declared.")
+    rollback_commands = []
+    if has_world_content:
+        rollback_commands.append("mysql -u acore -p acore_world < sql/99_rollback.sql")
+    if isinstance(protocol, dict):
+        rollback_commands.extend((
+            "# Disable the module, stop worldserver, then remove its module and addon folders.",
+            f"# Preserve acore_characters.{protocol['claims_table']} to retain user progress.",
+            "# Purge persistent state only as a separate reviewed action after backup.",
+        ))
+    if not rollback_commands:
+        rollback_commands.append("# No persistent/runtime artifacts are declared.")
     lines = [
         f"# {spec.get('title', spec['name'])}",
         "",
@@ -345,8 +395,12 @@ def _readme(spec: dict, result: ValidationResult,
         "spec.json            the spec this package was built from",
         "id-baseline.json     reserved IDs used for conflict-aware allocation",
         "id-allocation.json   deterministic table/key -> ID assignment",
-        "sql/01_world.sql     generated world migration (not DB-qualified)",
-        "sql/99_rollback.sql  generated rollback (not DB-qualified)",
+        "sql/01_world.sql     generated world migration (when world objects are declared)",
+        "sql/99_rollback.sql  generated world rollback (when world objects are declared)",
+        "sql/characters/     characters-DB migrations; retained state is not dropped on rollback",
+        "server/             generated AzerothCore module sources, loader, and config (when declared)",
+        "addon/              generated Interface 30300 addon (when declared)",
+        "protocol/           machine-readable protocol contract (when declared)",
         "manifest.json        sha256 per file",
         "evidence.json        verdicts + evidence levels",
         "compatibility.json   adapter dry run",
@@ -363,14 +417,18 @@ def _readme(spec: dict, result: ValidationResult,
         "",
         "## Install (only after qualification)",
         "",
+        "Run the following in order after inspecting the ID baseline and qualification evidence:",
+        "",
         "```bash",
-        "mysql -u acore -p acore_world < sql/01_world.sql",
+        *install_commands,
         "```",
         "",
         "## Rollback",
         "",
+        "Disable behavior before removing runtime files. Persistent character state is retained by default.",
+        "",
         "```bash",
-        "mysql -u acore -p acore_world < sql/99_rollback.sql",
+        *rollback_commands,
         "```",
         "",
     ]

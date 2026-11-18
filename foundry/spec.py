@@ -34,7 +34,7 @@ TOP_LEVEL_KEYS = {
     "spec_version", "name", "version", "title", "description",
     "id_range", "requires", "items", "spells", "quests", "creatures",
     "gameobjects", "vendors", "recipes", "events", "config",
-    "addon", "module", "dependencies", "acceptance", "notes", "delivery",
+    "addon", "module", "addon_protocol", "dependencies", "acceptance", "notes", "delivery",
 }
 # object kind -> (spec key, id table it allocates from, required fields)
 KINDS = {
@@ -164,6 +164,107 @@ def _is_int(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
+def _addon_protocol_problems(spec: dict) -> List[Problem]:
+    """Validate the generic patch-free daily-counter terminal recipe."""
+    protocol = spec.get("addon_protocol")
+    if protocol is None:
+        return []
+    problems = []
+
+    def fail(message: str) -> None:
+        problems.append(Problem("interaction", FAIL, message))
+
+    if not isinstance(protocol, dict):
+        return [Problem("interaction", FAIL, "addon_protocol must be an object")]
+    allowed = {"schema", "prefix", "version", "max_bytes", "minimum_request_interval_ms",
+               "claims_table", "target", "claims_per_day", "client_opcodes", "server_opcodes",
+               "rank_ladder"}
+    unknown = sorted(set(protocol) - allowed)
+    if unknown:
+        fail("addon_protocol has unknown fields: " + ", ".join(unknown))
+    if protocol.get("schema") != "arena-counter-terminal/1":
+        fail("addon_protocol.schema must be arena-counter-terminal/1")
+    prefix = protocol.get("prefix")
+    if not isinstance(prefix, str) or not re.fullmatch(r"[A-Z][A-Z0-9]{0,7}", prefix):
+        fail("addon_protocol.prefix must be 1-8 uppercase ASCII letters/digits")
+    if not _is_int(protocol.get("version")) or protocol["version"] < 1:
+        fail("addon_protocol.version must be a positive integer")
+    if protocol.get("max_bytes") != 255 or isinstance(protocol.get("max_bytes"), bool):
+        fail("addon_protocol.max_bytes must be the 3.3.5a addon-message cap of 255")
+    interval = protocol.get("minimum_request_interval_ms")
+    if not _is_int(interval) or not 100 <= interval <= 60000:
+        fail("addon_protocol.minimum_request_interval_ms must be 100-60000")
+    table = protocol.get("claims_table")
+    if not isinstance(table, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", table):
+        fail("addon_protocol.claims_table must be a lowercase SQL identifier")
+    if not _is_int(protocol.get("target")) or protocol["target"] < 1:
+        fail("addon_protocol.target must be a positive integer")
+    if protocol.get("claims_per_day") != 1 or isinstance(protocol.get("claims_per_day"), bool):
+        fail("daily-counter v1 requires claims_per_day = 1")
+    if protocol.get("client_opcodes") != ["HELLO", "STATE", "CLAIM", "PING"]:
+        fail("daily-counter v1 client_opcodes must be HELLO, STATE, CLAIM, PING in that order")
+    if protocol.get("server_opcodes") != ["S", "OK", "ERR", "BYE"]:
+        fail("daily-counter v1 server_opcodes must be S, OK, ERR, BYE in that order")
+
+    ranks = protocol.get("rank_ladder")
+    if not isinstance(ranks, list) or not ranks:
+        fail("addon_protocol.rank_ladder must be a non-empty list")
+    else:
+        thresholds = []
+        names = []
+        for row in ranks:
+            if not isinstance(row, dict) or set(row) != {"threshold", "name"}:
+                fail("each rank_ladder entry must contain threshold and name only")
+                continue
+            threshold, rank_name = row.get("threshold"), row.get("name")
+            if not _is_int(threshold) or threshold < 0:
+                fail("rank thresholds must be non-negative integers")
+                continue
+            if not isinstance(rank_name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,15}", rank_name):
+                fail("rank names must be 1-16 ASCII letters/digits beginning with a letter")
+                continue
+            thresholds.append(threshold)
+            names.append(rank_name)
+        if thresholds and (thresholds[0] != 0 or thresholds != sorted(set(thresholds))):
+            fail("rank thresholds must start at zero and increase strictly")
+        if len(names) != len(set(names)):
+            fail("rank names must be unique")
+
+    addon = spec.get("addon")
+    module = spec.get("module")
+    config = spec.get("config")
+    if not isinstance(addon, dict) or addon.get("prefix") != prefix:
+        fail("addon.prefix must match addon_protocol.prefix")
+    else:
+        addon_title = addon.get("title", spec.get("title", ""))
+        if (not isinstance(addon_title, str)
+                or not re.fullmatch(r"[A-Za-z0-9 _.:()'-]{1,80}", addon_title)):
+            fail("addon.title must be 1-80 safe ASCII display characters")
+        commands = addon.get("slash_commands")
+        if (not isinstance(commands, list) or not commands or len(commands) > 4
+                or any(not isinstance(command, str)
+                       or not re.fullmatch(r"/[A-Za-z][A-Za-z0-9]{0,31}", command)
+                       for command in commands)
+                or len(set(commands)) != len(commands)):
+            fail("addon.slash_commands must be 1-4 unique slash-prefixed ASCII command names")
+    if not isinstance(module, dict):
+        fail("addon_protocol requires a server module")
+    elif (not isinstance(module.get("conf_key"), str)
+          or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.]{0,63}", module["conf_key"])):
+        fail("addon_protocol module conf_key must be a safe configuration identifier")
+    elif not isinstance(config, dict) or module["conf_key"] not in config:
+        fail("module.conf_key must have a value in config")
+    feature_title = spec.get("title")
+    if (not isinstance(feature_title, str)
+            or not re.fullmatch(r"[A-Za-z0-9 _.:()'-]{1,80}", feature_title)):
+        fail("addon_protocol title must be 1-80 safe ASCII display characters")
+
+    delivery = spec.get("delivery")
+    if not isinstance(delivery, dict) or delivery.get("characters_sql_tables") != [table]:
+        fail("delivery.characters_sql_tables must exactly declare addon_protocol.claims_table")
+    return problems
+
+
 def validate_spec(spec: dict, *, world_tables=None, reserved=None,
                   asset_index=None, allow_unverified: bool = False) -> ValidationResult:
     """Validate *spec*. ``world_tables``/``reserved`` are optional allowlists;
@@ -201,6 +302,13 @@ def validate_spec(spec: dict, *, world_tables=None, reserved=None,
             add(Problem("schema", FAIL, f"{field_name} must be an object"))
     if spec.get("config") is not None and not isinstance(spec.get("config"), dict):
         add(Problem("schema", FAIL, "config must be an object"))
+    for problem in _addon_protocol_problems(spec):
+        add(problem)
+    if spec.get("addon_protocol") is not None and not any(
+            problem.check == "interaction" and problem.verdict == FAIL
+            for problem in result.problems):
+        add(Problem("interaction", PASS,
+                    "daily-counter protocol, persistence, and delivery fields are coherent"))
     delivery = spec.get("delivery")
     if delivery is not None:
         allowed_delivery_keys = {"client_dbc_tables", "server_dbc_tables", "characters_sql_tables"}
@@ -489,7 +597,11 @@ def delivery_requirements(spec: dict) -> dict:
     if has_world_content:
         artifact("world_sql", activation="apply_after_schema_qualification")
         artifact("data_migration", activation="apply_after_backup_and_review")
-    for table in sorted(string_set("characters_sql_tables")):
+    character_tables = string_set("characters_sql_tables")
+    terminal = spec.get("addon_protocol")
+    if isinstance(terminal, dict) and isinstance(terminal.get("claims_table"), str):
+        character_tables.add(terminal["claims_table"])
+    for table in sorted(character_tables):
         artifact("characters_sql", table=table, activation="apply_after_schema_qualification")
         artifact("data_migration", table=table, activation="apply_after_backup_and_review")
     if spec.get("module"):
