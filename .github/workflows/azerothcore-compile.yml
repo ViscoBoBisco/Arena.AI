@@ -20,7 +20,7 @@ jobs:
       - name: Install AzerothCore configure dependencies
         run: |
           set -euo pipefail
-          if ! curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2023 -o /tmp/mysql-repo.asc; then
+          if ! curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2025 -o /tmp/mysql-repo.asc; then
             echo '::error title=MySQL 8.4 repository key download::Could not fetch the official Oracle MySQL APT signing key.'
             exit 1
           fi
