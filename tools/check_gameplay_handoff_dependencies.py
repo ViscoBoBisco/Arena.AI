@@ -20,6 +20,8 @@ def git_head(path: Path) -> str | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bundle", type=Path,
+                        help="handoff directory containing bundle.json (defaults beside this script)")
     parser.add_argument("--core-source", type=Path)
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--client-dir", type=Path)
@@ -34,9 +36,19 @@ def main() -> int:
         "sql_client": {"status": "PASS" if any(shutil.which(x) for x in ("mysql", "mariadb")) else "MISSING",
                        "path": next((shutil.which(x) for x in ("mysql", "mariadb") if shutil.which(x)), None)},
     }
+    script_dir = Path(__file__).resolve().parent
+    bundle_path = args.bundle.expanduser().resolve() if args.bundle else script_dir / "bundle.json"
+    if bundle_path.is_file():
+        expected_pin = json.loads(bundle_path.read_text(encoding="utf-8"))["core"]["revision"]
+    else:
+        repo_pin_path = script_dir / "foundry/core-pins.json"
+        if not repo_pin_path.is_file():
+            repo_pin_path = script_dir.parent / "foundry/core-pins.json"
+        if not repo_pin_path.is_file():
+            parser.error("cannot find bundle.json or foundry/core-pins.json; pass --bundle")
+        expected_pin = json.loads(repo_pin_path.read_text(encoding="utf-8"))["azerothcore_wotlk"]["revision"]
     if args.core_source:
-        bundle = json.loads((Path(__file__).resolve().parent / "bundle.json").read_text())
-        expected = bundle["core"]["revision"]
+        expected = expected_pin
         actual = git_head(args.core_source.resolve())
         checks["pinned_core"] = {"status": "PASS" if actual == expected else "FAIL",
                                  "expected": expected, "actual": actual}
@@ -44,11 +56,10 @@ def main() -> int:
         checks["pinned_core"] = {"status": "NOT_ASSESSED", "reason": "pass --core-source"}
     if args.data_dir:
         data = args.data_dir.resolve()
-        maps_ok = (data / "maps").is_dir()
-        vmaps_ok = (data / "vmaps").is_dir()
-        checks["server_data"] = {"status": "PASS" if maps_ok else "FAIL",
-                                 "maps": maps_ok, "vmaps": vmaps_ok,
-                                 "path": str(data)}
+        data_dirs = {name: (data / name).is_dir()
+                     for name in ("dbc", "maps", "vmaps", "mmaps")}
+        checks["server_data"] = {"status": "PASS" if all(data_dirs.values()) else "FAIL",
+                                 **data_dirs, "path": str(data)}
     else:
         checks["server_data"] = {"status": "NOT_ASSESSED", "reason": "pass --data-dir"}
     if args.client_dir:

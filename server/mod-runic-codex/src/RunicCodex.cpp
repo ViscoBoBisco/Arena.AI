@@ -457,6 +457,11 @@ namespace
 
 void AddRunicCodexScripts()
 {
+    if (!sConfigMgr->GetOption<bool>("RunicCodex.Enable", true))
+    {
+        LOG_INFO("module", "Runic Codex disabled by RunicCodex.Enable");
+        return;
+    }
     new RunicCodexPlayerScript();
     new RunicCodexCombatScript();
 }

@@ -1,6 +1,9 @@
 ###################################################################################################
 # Argent Commission — server-authoritative character-bound faction benefits
 ###################################################################################################
+# Set to 0 to disable all commission, field-dressing, and medic scripts without deleting state.
+ArgentCommission.Enable = 1
+
 # Honored field dressing remains a modest baseline; Exalted commission holders receive an upgrade.
 ArgentCommission.FieldDressing.HonoredPercent = 2
 ArgentCommission.FieldDressing.HonoredCap = 150

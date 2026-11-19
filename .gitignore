@@ -21,6 +21,7 @@ Data/
 # Patch staging + release artifacts
 patch/
 dist/
+artifacts/local-gameplay-*/
 *.manifest.json.tmp
 
 # Editors / OS
