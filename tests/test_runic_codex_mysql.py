@@ -82,10 +82,12 @@ class RunicCodexMySQL(unittest.TestCase):
             conn.close()
         conn = db.connect(self.pymysql)
         try:
-            with self.assertRaises(self.pymysql.err.IntegrityError):
+            with self.assertRaises(self.pymysql.err.DatabaseError) as raised:
                 with conn.cursor() as cursor:
                     cursor.execute("UPDATE runic_codex_powers SET equipped=1 WHERE guid=%s "
                                    "AND power_key='arcane_echo'", (self.guid,))
+            self.assertEqual(raised.exception.args[0], 3819,
+                             "MySQL CHECK violation should reject equip while locked")
         finally:
             conn.close()
         self.assertEqual(self.row(), (0, 0), "locked entitlement must remain unequipped")
