@@ -1,7 +1,12 @@
 local PREFIX = "RC1"
 local MAX_BYTES = 180
-local frame, statusText, equipButton
-local unlocked, equipped = false, false
+local frame, statusText, loadoutInput
+local powers = {
+    arcane_echo = { name = "Arcane Echo", unlocked = false, equipped = false },
+    aegis_echo = { name = "Aegis Echo", unlocked = false, equipped = false },
+}
+local powerOrder = { "arcane_echo", "aegis_echo" }
+local powerRows = {}
 
 local function validFrame(value)
     if type(value) ~= "string" or #value > MAX_BYTES then return false end
@@ -17,26 +22,31 @@ local function send(action, value)
     local payload = PREFIX .. "\t" .. action .. (value and ("\t" .. value) or "")
     if validFrame(payload) then
         SendAddonMessage(PREFIX, payload, "WHISPER", UnitName("player"))
-        statusText:SetText("Request sent; the server decides discovery and equip state.")
+        statusText:SetText("Request sent; discovery, slots and saved loadouts are server-authoritative.")
     end
 end
 
 local function paint()
-    if unlocked then
-        statusText:SetText("Arcane Echo: " .. (equipped and "equipped" or "unlocked")
-            .. ". A paid Arcane Missiles cast returns floor(10% mana cost, max 100).")
-        equipButton:SetText(equipped and "Unequip" or "Equip")
-        equipButton:Enable()
-    else
-        statusText:SetText("Discover Arcane Echo by using Gahz'ranka's Tome of Polymorph: Turtle and learning Arcane Missiles; either step may come first.")
-        equipButton:SetText("Locked")
-        equipButton:Disable()
+    for _, key in ipairs(powerOrder) do
+        local state, row = powers[key], powerRows[key]
+        if row then
+            local summary
+            if not state.unlocked then summary = "locked"
+            elseif state.equipped then summary = "equipped in slot " .. tostring((state.slot or 0) + 1)
+            else summary = "unlocked, unequipped" end
+            row.label:SetText(state.name .. ": " .. summary)
+            if state.unlocked then
+                row.slot1:Enable(); row.slot2:Enable(); row.remove:Enable()
+            else
+                row.slot1:Disable(); row.slot2:Disable(); row.remove:Disable()
+            end
+        end
     end
 end
 
 local function createFrame()
     frame = CreateFrame("Frame", "RunicCodexFrame", UIParent)
-    frame:SetSize(430, 170)
+    frame:SetSize(490, 300)
     frame:SetBackdrop({
         bgFile = "Interface/Tooltips/UI-Tooltip-Background",
         edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
@@ -52,19 +62,41 @@ local function createFrame()
     frame:SetScript("OnDragStart", frame.StartMoving)
     frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
     frame:Hide()
-    local titleText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    titleText:SetPoint("TOPLEFT", 20, -12)
-    titleText:SetText("Runic Codex")
-    statusText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    statusText:SetPoint("TOPLEFT", 20, -48)
-    statusText:SetWidth(380)
-    statusText:SetJustifyH("LEFT")
-    equipButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    equipButton:SetSize(100, 26)
-    equipButton:SetPoint("BOTTOM", frame, "BOTTOM", 0, 22)
-    equipButton:SetScript("OnClick", function()
-        if unlocked then send("EQUIP", equipped and "0" or "1") end
-    end)
+
+    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 20, -12); title:SetText("Runic Codex")
+    statusText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    statusText:SetPoint("TOPLEFT", 20, -42); statusText:SetWidth(450); statusText:SetJustifyH("LEFT")
+
+    for index, key in ipairs(powerOrder) do
+        local powerKey = key
+        local y = -84 - ((index - 1) * 52)
+        local row = { label = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal") }
+        row.label:SetPoint("TOPLEFT", 20, y); row.label:SetWidth(190); row.label:SetJustifyH("LEFT")
+        row.slot1 = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+        row.slot1:SetSize(62, 22); row.slot1:SetPoint("TOPLEFT", 230, y + 3); row.slot1:SetText("Slot 1")
+        row.slot1:SetScript("OnClick", function() send("EQUIP", powerKey .. "\t0") end)
+        row.slot2 = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+        row.slot2:SetSize(62, 22); row.slot2:SetPoint("LEFT", row.slot1, "RIGHT", 4, 0)
+        row.slot2:SetText("Slot 2")
+        row.slot2:SetScript("OnClick", function() send("EQUIP", powerKey .. "\t1") end)
+        row.remove = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+        row.remove:SetSize(74, 22); row.remove:SetPoint("LEFT", row.slot2, "RIGHT", 4, 0)
+        row.remove:SetText("Unequip")
+        row.remove:SetScript("OnClick", function() send("UNEQUIP", powerKey) end)
+        powerRows[key] = row
+    end
+
+    loadoutInput = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
+    loadoutInput.role = "loadoutName"
+    loadoutInput:SetSize(110, 24); loadoutInput:SetPoint("BOTTOMLEFT", 20, 24)
+    loadoutInput:SetAutoFocus(false); loadoutInput:SetText("")
+    local save = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    save:SetSize(90, 24); save:SetPoint("LEFT", loadoutInput, "RIGHT", 8, 0); save:SetText("Save set")
+    save:SetScript("OnClick", function() send("LOADOUT", "SAVE\t" .. loadoutInput:GetText()) end)
+    local apply = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    apply:SetSize(90, 24); apply:SetPoint("LEFT", save, "RIGHT", 5, 0); apply:SetText("Apply set")
+    apply:SetScript("OnClick", function() send("LOADOUT", "APPLY\t" .. loadoutInput:GetText()) end)
     paint()
 end
 
@@ -85,10 +117,18 @@ events:SetScript("OnEvent", function(_, event, prefix, message, distribution, se
         or not validFrame(message) then return end
     local fields = {}
     for field in (message .. "\t"):gmatch("(.-)\t") do fields[#fields + 1] = field end
-    if fields[1] == PREFIX and fields[2] == "STATE" and #fields >= 4 then
-        unlocked = fields[3] == "1"
-        equipped = fields[4] == "1"
+    if fields[1] == PREFIX and fields[2] == "POWER" and #fields == 7
+        and powers[fields[3]] then
+        local state = powers[fields[3]]
+        state.name = fields[4]
+        state.unlocked = fields[5] == "1"
+        state.equipped = fields[6] == "1"
+        state.slot = tonumber(fields[7])
         paint()
+    elseif fields[1] == PREFIX and fields[2] == "END" then
+        statusText:SetText("Two independent, source-verified item discoveries; two power slots; loadouts are character-bound.")
+    elseif fields[1] == PREFIX and fields[2] == "LOADOUT" then
+        statusText:SetText("Saved loadout " .. (fields[4] or "") .. ".")
     elseif fields[1] == PREFIX and fields[2] == "ERR" then
         statusText:SetText("Server refused: " .. (fields[3] or "unknown"))
     end

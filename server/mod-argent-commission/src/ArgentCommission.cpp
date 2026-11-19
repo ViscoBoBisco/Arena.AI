@@ -2,6 +2,7 @@
 #include "ScriptMgr.h"
 #include "Player.h"
 #include "Chat.h"
+#include "Config.h"
 #include "DatabaseEnv.h"
 #include "ReputationMgr.h"
 #include "SpellMgr.h"
@@ -130,8 +131,15 @@ namespace
             if (earnedCommissions.find(guid) == earnedCommissions.end()
                 || killer->GetReputationRank(ARGENT_CRUSADE_FACTION) < REP_HONORED)
                 return;
+            bool const exalted = killer->GetReputationRank(ARGENT_CRUSADE_FACTION) >= REP_EXALTED;
+            uint32 const percent = sConfigMgr->GetOption<uint32>(exalted
+                ? "ArgentCommission.FieldDressing.ExaltedPercent"
+                : "ArgentCommission.FieldDressing.HonoredPercent", exalted ? 3u : 2u);
+            uint32 const cap = sConfigMgr->GetOption<uint32>(exalted
+                ? "ArgentCommission.FieldDressing.ExaltedCap"
+                : "ArgentCommission.FieldDressing.HonoredCap", exalted ? 250u : 150u);
             uint32 const heal = ArgentFieldDressingPolicy::CalculateHeal(
-                killer->GetMaxHealth(), killer->GetMaxHealth() - killer->GetHealth());
+                killer->GetMaxHealth(), killer->GetMaxHealth() - killer->GetHealth(), percent, cap);
             if (heal > 0)
                 killer->ModifyHealth(static_cast<int32>(heal));
         }

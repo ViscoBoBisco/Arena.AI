@@ -5,8 +5,11 @@ commission. AzerothCore core data identifies spell 57819 as Argent Champion and 
 sets the player's championing faction to 1106. The module persists the entitlement in the Characters
 DB and applies that existing core spell at claim and login. It never edits reputation, faction
 standing, FactionTemplate hostility, or party membership. In addition to championing, an earned
-commission provides Argent Field Dressing: while the character remains Honored, each credited
-creature kill restores 2% of maximum health, capped at 150 health and never exceeding missing health.
+commission provides Argent Field Dressing: while the character remains at least Honored, each
+credited creature kill restores a configurable percentage of maximum health, capped by configuration
+and never exceeding missing health. Defaults are 2% / 150 at Honored and an upgraded 3% / 250 at
+Exalted. The values are read from `conf/mod-argent-commission.conf.dist`; the server still enforces
+the durable entitlement and live reputation rank, regardless of client input.
 The benefit is checked server-side against the live native reputation rank and the durable earned
 entitlement. It does not run on player kills, alter hostility, or grant reputation. A client can
 request a claim but cannot supply a character GUID or an asserted reputation value.

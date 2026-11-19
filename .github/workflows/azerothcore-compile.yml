@@ -11,7 +11,7 @@ jobs:
   compile-generated-module:
     name: Compile generated module against pinned AzerothCore
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -94,3 +94,9 @@ jobs:
             --core-source /tmp/azerothcore \
             --module mod-argent-commission \
             --registration AddArgentCommissionScripts
+
+      - name: Link complete worldserver with all four modules installed together
+        run: |
+          cmake --build /tmp/azerothcore-build --target worldserver --parallel 2
+          test -x /tmp/azerothcore-build/bin/worldserver
+          /tmp/azerothcore-build/bin/worldserver --version
