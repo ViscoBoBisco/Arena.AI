@@ -244,7 +244,7 @@ class PortableHoleMySQL(unittest.TestCase):
         self.assertTrue(ledger.mutate_pin(self.guid, 9907105, False))
         self.assertTrue(ledger.mutate_pin(self.guid, 9907110, True))
         self.assertEqual(set(ledger.pins(self.guid)),
-                         set(range(9907100, 9907110)))
+                         set(range(9907100, 9907105)) | set(range(9907106, 9907111)))
 
     def test_concurrent_pin_adds_serialize_at_ten(self):
         for item in range(9907200, 9907209):

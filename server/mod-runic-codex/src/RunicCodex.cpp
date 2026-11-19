@@ -27,7 +27,7 @@ namespace
     struct PendingRefund
     {
         uint32 spellId = 0;
-        int32 beforeMana = 0;
+        uint32 beforeMana = 0;
         int32 cost = 0;
     };
     std::unordered_map<uint32, State> playerStates;
@@ -190,7 +190,8 @@ namespace
                 return;
             PendingRefund const pending = found->second;
             pendingRefunds.erase(found);
-            int32 const manaSpent = std::max(0, pending.beforeMana - player->GetPower(POWER_MANA));
+            uint32 const manaSpent = RunicCodexPolicy::ManaSpent(
+                pending.beforeMana, player->GetPower(POWER_MANA));
             auto state = playerStates.find(guid);
             uint32 const refund = state == playerStates.end() ? 0
                 : RunicCodexPolicy::CalculateRefund(pending.spellId, state->second.unlocked,

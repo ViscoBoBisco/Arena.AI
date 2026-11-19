@@ -6,6 +6,11 @@
 int main()
 {
     using RunicCodexPolicy::CalculateRefund;
+    using RunicCodexPolicy::ManaSpent;
+
+    assert(ManaSpent(1000, 900) == 100);
+    assert(ManaSpent(1000, 1000) == 0);
+    assert(ManaSpent(900, 1000) == 0); // regeneration cannot masquerade as a paid cast
 
     // Real rank-chain members only; flooring and the 100-mana ceiling are stable.
     assert(CalculateRefund(5143, true, true, 99, 99) == 9);

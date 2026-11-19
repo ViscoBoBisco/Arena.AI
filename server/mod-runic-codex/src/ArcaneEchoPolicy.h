@@ -18,6 +18,11 @@ namespace RunicCodexPolicy
             != DISCOVERY_SPELLS.end();
     }
 
+    inline std::uint32_t ManaSpent(std::uint32_t before, std::uint32_t after)
+    {
+        return before > after ? before - after : 0;
+    }
+
     // The caller supplies mana actually removed by AzerothCore after the spell cast.
     // A cast rejected before full mana deduction, a free/triggered/unrelated spell,
     // or an unequipped power receives no refund.

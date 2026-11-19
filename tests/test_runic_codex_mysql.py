@@ -138,6 +138,7 @@ class RunicCodexSourceContract(unittest.TestCase):
         self.assertIn("player->HasSpell(spell)", source)
         self.assertIn("spell->GetSpellInfo()->PowerType != POWER_MANA", source)
         self.assertIn("spell->GetPowerCost()", source)
+        self.assertIn("RunicCodexPolicy::ManaSpent", source)
         self.assertIn("RunicCodexPolicy::CalculateRefund", source)
         self.assertIn("ModifyPower(POWER_MANA, static_cast<int32>(refund))", source)
         self.assertIn("runic_codex_powers", source)
