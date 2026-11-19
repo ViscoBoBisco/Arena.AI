@@ -30,12 +30,14 @@ TESTS = (
     "tests/test_argent_commission_mysql.py",
     "tests/test_argent_field_dressing_policy.py",
     "tests/test_wotlk_addon_compat.py",
+    "tests/test_gameplay_handoff.py",
     "tests/native/runic_power_registry_test.cpp",
 )
 DOCS = (
     "docs/17-vault-terminal-client-acceptance.md",
     "docs/18-local-runtime-handoff.md",
     "docs/23-portable-hole-physical-custody.md",
+    "docs/24-integrated-gameplay-handoff.md",
 )
 
 
