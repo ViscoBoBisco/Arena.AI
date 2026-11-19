@@ -10,8 +10,8 @@ permissions:
 jobs:
   compile-generated-module:
     name: Compile generated module against pinned AzerothCore
-    # Noble provides Oracle MySQL 8.0 client development headers; Jammy's
-    # MariaDB compatibility package lacks APIs used by the pinned core.
+    # Install the exact Oracle MySQL 8.4.13 LTS client package. The pinned core
+    # uses mysql_stmt_bind_named_param (added after MySQL 8.0), absent from MariaDB.
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -19,15 +19,18 @@ jobs:
 
       - name: Install AzerothCore configure dependencies
         run: |
+          curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2023 -o /tmp/mysql-repo.asc
+          gpg --dearmor < /tmp/mysql-repo.asc | sudo tee /usr/share/keyrings/mysql-apt.gpg >/dev/null
+          echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/mysql-apt.gpg] https://repo.mysql.com/apt/ubuntu/ noble mysql-8.4-lts' \
+            | sudo tee /etc/apt/sources.list.d/mysql-8.4-lts.list
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake git libboost-all-dev libmysqlclient-dev \
+            build-essential cmake git libboost-all-dev libmysqlclient-dev=8.4.13-1ubuntu24.04 \
             libssl-dev libreadline-dev zlib1g-dev libbz2-dev libncurses5-dev
-          # Pin the API compatibility line and fail early if the runner's package
-          # source silently selects a MariaDB-compatible implementation.
           mysql_config --version | tee /tmp/mysql-client-version.txt
-          mysql_config --version | grep -Eq '^8\.0\.'
+          test "$(mysql_config --version)" = '8.4.13'
           dpkg-query -W -f='${Version}\n' libmysqlclient-dev | tee /tmp/mysql-client-package-version.txt
+          test "$(cat /tmp/mysql-client-package-version.txt)" = '8.4.13-1ubuntu24.04'
           cat > /tmp/mysql-api-probe.c <<'EOF'
           #include <mysql.h>
           int main(void) {
@@ -167,7 +170,7 @@ jobs:
                   files, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
           mysql_version = Path('/tmp/mysql-client-version.txt').read_text().strip()
           package_version = Path('/tmp/mysql-client-package-version.txt').read_text().strip()
-          assert mysql_version.startswith('8.0.'), mysql_version
+          assert mysql_version == '8.4.13', mysql_version
           binary = Path('/tmp/azerothcore-build/bin/worldserver')
           version_output = Path('/tmp/worldserver-version.txt').read_text(errors='replace').strip()
           assert version_output, 'worldserver --version returned no output'
@@ -178,7 +181,7 @@ jobs:
               'core': {'repository': 'https://github.com/azerothcore/azerothcore-wotlk.git',
                        'revision': subprocess.check_output(
                            ['git', '-C', str(core), 'rev-parse', 'HEAD'], text=True).strip()},
-              'mysql_client': {'compatibility_line': 'Oracle MySQL 8.0',
+              'mysql_client': {'compatibility_line': 'Oracle MySQL 8.4 LTS',
                                'mysql_config_version': mysql_version,
                                'libmysqlclient_dev_package': package_version,
                                'required_api_probe': 'PASS'},
