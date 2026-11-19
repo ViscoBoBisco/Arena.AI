@@ -1,5 +1,6 @@
 local PREFIX = "PH1"
 local MAX_BYTES = 255
+local MAX_PINS = 10
 local MIN_INTERVAL = 0.200
 local sequence = 0
 local lastSend = 0
@@ -13,9 +14,23 @@ local function savedData()
     if type(PortableHoleDB.characters[key]) ~= "table" then
         PortableHoleDB.characters[key] = { sequence = 0, pending = nil }
     end
-    return PortableHoleDB.characters[key]
+    local data = PortableHoleDB.characters[key]
+    local pins, seen = {}, {}
+    if type(data.pins) == "table" then
+        for _, value in ipairs(data.pins) do
+            local item = tonumber(value)
+            if item and item >= 1 and item <= 4294967295 and item == math.floor(item)
+                and not seen[item] then
+                pins[#pins + 1] = item
+                seen[item] = true
+                if #pins >= MAX_PINS then break end
+            end
+        end
+    end
+    data.pins = pins
+    return data
 end
-local frame, statusText, itemInput, amountInput, reservationInput, rowButtons, pageLabel
+local frame, statusText, itemInput, amountInput, reservationInput, rowButtons, pageLabel, pinStatus
 local page = 0
 
 local function splitTabs(value)
@@ -125,6 +140,46 @@ local function bagCount()
     send("BAG", item)
 end
 
+local function updatePinStatus(data)
+    pinStatus:SetText(string.format("Saved pins %d/%d", #data.pins, MAX_PINS))
+end
+
+local function pinItem()
+    local item = uint(itemInput:GetText(), 4294967295)
+    if not item then statusText:SetText("Enter a positive item entry to pin."); return end
+    local data = savedData()
+    for index, pinned in ipairs(data.pins) do
+        if pinned == item then
+            data.pinCursor = index
+            updatePinStatus(data)
+            statusText:SetText("That item is already pinned for this character.")
+            return
+        end
+    end
+    if #data.pins >= MAX_PINS then
+        statusText:SetText("Pin limit reached; remove a saved pin before adding another.")
+        return
+    end
+    data.pins[#data.pins + 1] = item
+    data.pinCursor = #data.pins
+    updatePinStatus(data)
+    statusText:SetText("Saved item " .. tostring(item) .. " to this character's pins.")
+end
+
+local function cyclePin()
+    local data = savedData()
+    if #data.pins == 0 then
+        statusText:SetText("No saved pins for this character yet.")
+        updatePinStatus(data)
+        return
+    end
+    data.pinCursor = ((tonumber(data.pinCursor) or 0) % #data.pins) + 1
+    local item = data.pins[data.pinCursor]
+    itemInput:SetText(tostring(item))
+    updatePinStatus(data)
+    statusText:SetText("Selected saved item " .. tostring(item) .. ".")
+end
+
 local function transition(action)
     local reservation = reservationInput:GetText()
     if type(reservation) ~= "string" or not reservation:match("^[%w%._:%-]+$") or #reservation > 64 then
@@ -207,7 +262,7 @@ end
 
 local function createFrame()
     frame = CreateFrame("Frame", "PortableHoleFrame", UIParent, "BasicFrameTemplateWithInset")
-    frame:SetSize(620, 390)
+    frame:SetSize(620, 420)
     frame:SetPoint("CENTER")
     frame:SetMovable(true)
     frame:EnableMouse(true)
@@ -244,9 +299,19 @@ local function createFrame()
     button("GM Credit", 209, adminCredit)
     button("Bag count", 300, bagCount, 74)
 
+    local pinButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    pinButton:SetSize(92, 24); pinButton:SetPoint("TOPLEFT", 20, -96)
+    pinButton:SetText("Pin item"); pinButton:SetScript("OnClick", pinItem)
+    local nextPinButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    nextPinButton:SetSize(92, 24); nextPinButton:SetPoint("LEFT", pinButton, "RIGHT", 8, 0)
+    nextPinButton:SetText("Next pin"); nextPinButton:SetScript("OnClick", cyclePin)
+    pinStatus = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    pinStatus:SetPoint("LEFT", nextPinButton, "RIGHT", 12, 0)
+    updatePinStatus(savedData())
+
     for i = 1, 5 do
         local b = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-        b:SetSize(570, 26); b:SetPoint("TOPLEFT", 20, -112 - (i - 1) * 31)
+        b:SetSize(570, 26); b:SetPoint("TOPLEFT", 20, -132 - (i - 1) * 31)
         b:SetScript("OnClick", function() if b.itemEntry then itemInput:SetText(tostring(b.itemEntry)) end end)
         b:Hide(); rowButtons[i] = b
     end

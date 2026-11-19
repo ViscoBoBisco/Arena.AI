@@ -272,6 +272,84 @@ class PortableHoleStaticContract(unittest.TestCase):
         self.assertIn("PortableHoleCreditFromServer", header)
         self.assertIn("PortableHoleConsumeReservation", header)
 
+    def test_saved_pins_are_per_character_deduplicated_and_capped(self):
+        try:
+            from lupa.lua51 import LuaRuntime
+        except ImportError:
+            self.skipTest("install lupa==2.6 for Lua 5.1 addon behavior validation")
+        source = (helpers.REPO / "server/mod-portable-hole/addon/PortableHole/PortableHole.lua").read_text(
+            encoding="utf-8")
+        lua = LuaRuntime(unpack_returned_tuples=True)
+        lua.execute(r"""
+            created, activeGuid = {}, "Player-A"
+            UIParent, SlashCmdList, PortableHoleDB = {}, {}, {}
+            function UnitGUID() return activeGuid end
+            function UnitName() return "Tester" end
+            function RegisterAddonMessagePrefix() end
+            function SendAddonMessage() end
+            function time() return 1 end
+            function GetTime() return 1 end
+            function CreateFrame()
+                local f = { scripts = {}, shown = false, text = "",
+                            TitleText = { SetText = function() end } }
+                function f:SetSize() end
+                function f:SetPoint() end
+                function f:SetMovable() end
+                function f:EnableMouse() end
+                function f:RegisterForDrag() end
+                function f:RegisterEvent() end
+                function f:SetAutoFocus() end
+                function f:SetNumeric() self.numeric = true end
+                function f:SetText(value) self.text = value end
+                function f:GetText() return self.text end
+                function f:SetScript(name, callback) self.scripts[name] = callback end
+                function f:Hide() self.shown = false end
+                function f:Show() self.shown = true end
+                function f:IsShown() return self.shown end
+                function f:StartMoving() end
+                function f:StopMovingOrSizing() end
+                function f:CreateFontString()
+                    local label = {}
+                    function label:SetPoint() end
+                    function label:SetText(value) self.text = value end
+                    return label
+                end
+                table.insert(created, f)
+                return f
+            end
+        """)
+        lua.execute(source)
+        event_frame = lua.globals().created[1]
+        event_frame.scripts.OnEvent(event_frame, "PLAYER_LOGIN")
+        created = lua.globals().created
+        item_input = next(created[index] for index in range(1, len(created) + 1)
+                          if created[index].numeric and created[index].text == "0")
+        buttons = {created[index].text: created[index]
+                   for index in range(1, len(created) + 1)
+                   if created[index].text in ("Pin item", "Next pin")}
+        item_input.SetText(item_input, "123")
+        buttons["Pin item"].scripts.OnClick(buttons["Pin item"])
+        buttons["Pin item"].scripts.OnClick(buttons["Pin item"])
+        pins = lua.globals().PortableHoleDB.characters["Player-A"].pins
+        self.assertEqual(len(pins), 1)
+        self.assertEqual(pins[1], 123)
+        for expected_count, value in enumerate(range(1000, 1009), start=2):
+            item_input.SetText(item_input, str(value))
+            buttons["Pin item"].scripts.OnClick(buttons["Pin item"])
+            current = lua.globals().PortableHoleDB.characters["Player-A"].pins
+            self.assertEqual(len(current), expected_count, f"failed to add pin {value}")
+        item_input.SetText(item_input, "9999")
+        buttons["Pin item"].scripts.OnClick(buttons["Pin item"])
+        pins = lua.globals().PortableHoleDB.characters["Player-A"].pins
+        self.assertEqual(len(pins), 10)
+        buttons["Next pin"].scripts.OnClick(buttons["Next pin"])
+        self.assertEqual(item_input.GetText(item_input), "123")
+        lua.globals().activeGuid = "Player-B"
+        item_input.SetText(item_input, "222")
+        buttons["Pin item"].scripts.OnClick(buttons["Pin item"])
+        self.assertEqual(len(lua.globals().PortableHoleDB.characters["Player-B"].pins), 1)
+        self.assertEqual(len(lua.globals().PortableHoleDB.characters["Player-A"].pins), 10)
+
     def test_bag_count_is_read_only_server_derived_and_excludes_bank(self):
         source = _MODULE.read_text(encoding="utf-8")
         bag_count = source.split("void SendBagCount(", 1)[1].split("void SendBalancePage(", 1)[0]

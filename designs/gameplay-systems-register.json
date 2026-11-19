@@ -477,8 +477,7 @@
       "implementation_state": "SYNTHETIC",
       "outstanding_tests": [
         "bag versus virtual quantity distinction in a booted client/server session",
-        "saved reagent/recipe pins and pagination with stale inventory refresh",
-        "shortage/closest source with provenance and no fabricated vendor/AH/gathering data",
+        "source-grounded shortage/closest-source display and stale inventory refresh",
         "withdraw authorization and partial native stack capacity",
         "no invented vendor/AH/gathering source"
       ],
@@ -487,7 +486,7 @@
         "Never claim native TradeSkill UI consumes virtual warehouse stock",
         "The current count call is carried inventory only; it excludes bank and shared holdings"
       ],
-      "next_milestone": "Add saved pins and a provenance-backed shortage view; keep withdraw disabled until an authorized, recoverable inventory transfer passes its own gates."
+      "next_milestone": "Build a provenance-backed shortage/source view from the saved local pins; keep withdraw disabled until an authorized, recoverable inventory transfer passes its own gates."
     },
     {
       "id": "expedition-quartermaster",
@@ -772,7 +771,7 @@
     {
       "id": "P1-04",
       "title": "Profession reagent overlay and pins",
-      "status": "partial: read-only carried-bag count; no pins, shared counts, or withdraw",
+      "status": "partial: carried count and local pins; no shared counts, provenance view, or withdraw",
       "acceptance": [
         "server-derived read-only carried count for an eligible item; bank excluded",
         "bag versus virtual quantity distinction",
