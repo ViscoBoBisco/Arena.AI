@@ -6,3 +6,7 @@ ArgentCommission.FieldDressing.HonoredPercent = 2
 ArgentCommission.FieldDressing.HonoredCap = 150
 ArgentCommission.FieldDressing.ExaltedPercent = 3
 ArgentCommission.FieldDressing.ExaltedCap = 250
+
+# A commissioned Honored character may ask a nearby living Argent Medic to cast native Cure Disease.
+# The server clamps this to 30..3600 seconds; the process-local cooldown resets on server restart.
+ArgentCommission.Medic.CooldownSeconds = 60

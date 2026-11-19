@@ -1,6 +1,6 @@
 local PREFIX = "AC1"
 local MAX_BYTES = 160
-local frame, statusText, claimButton
+local frame, statusText, claimButton, medicButton
 local earned, honored = false, false
 
 local function send(action)
@@ -15,14 +15,20 @@ local function paint()
         statusText:SetText("Commission earned: Argent Champion plus Field Dressing (2% max health per creature kill, capped at 150). Requires current Honored standing.")
         claimButton:SetText("Claimed")
         claimButton:Disable()
+        medicButton:SetText("Request medic")
+        medicButton:Enable()
     elseif honored then
-        statusText:SetText("Honored with the Argent Crusade. Claim your commission.")
+        statusText:SetText("Honored with the Argent Crusade. Claim the commission; commissioned characters can request a disease cure near an Argent Medic.")
         claimButton:SetText("Claim commission")
         claimButton:Enable()
+        medicButton:SetText("Request medic")
+        medicButton:Disable()
     else
         statusText:SetText("Requires Honored standing with the Argent Crusade.")
         claimButton:SetText("Locked")
         claimButton:Disable()
+        medicButton:SetText("Request medic")
+        medicButton:Disable()
     end
 end
 
@@ -52,9 +58,15 @@ local function createFrame()
     statusText:SetWidth(380)
     statusText:SetJustifyH("LEFT")
     claimButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    claimButton:SetSize(150, 26)
-    claimButton:SetPoint("BOTTOM", frame, "BOTTOM", 0, 20)
+    claimButton:SetSize(140, 26)
+    claimButton:SetPoint("BOTTOM", frame, "BOTTOM", -76, 20)
     claimButton:SetScript("OnClick", function() if honored and not earned then send("CLAIM") end end)
+    medicButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    medicButton:SetSize(140, 26)
+    medicButton:SetPoint("BOTTOM", frame, "BOTTOM", 76, 20)
+    medicButton:SetScript("OnClick", function()
+        if honored and earned then send("MEDIC") end
+    end)
     paint()
 end
 
@@ -81,6 +93,8 @@ events:SetScript("OnEvent", function(_, event, prefix, message, distribution, se
     elseif fields[1] == PREFIX and fields[2] == "CLAIMED" then
         earned = true
         paint()
+    elseif fields[1] == PREFIX and fields[2] == "MEDIC" and fields[3] == "READY" then
+        statusText:SetText("Argent Medic service used; the next request is available in " .. (fields[4] or "60") .. " seconds.")
     elseif fields[1] == PREFIX and fields[2] == "ERR" then
         statusText:SetText("Server refused: " .. (fields[3] or "unknown"))
     end
