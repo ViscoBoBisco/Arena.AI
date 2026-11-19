@@ -159,7 +159,7 @@
         "ObjectMgr stackable-item validation",
         "server-authorized credit source"
       ],
-      "player_loop": "Browse character-owned virtual commodity counts, reserve/release/consume only on the current character, or grant another account a revocable read-only aggregate vault view; GM/server code can seed balances with durable receipts.",
+      "player_loop": "Browse character-owned virtual commodity counts, reserve/release/consume only on the current character, grant another account a revocable read-only aggregate view, or compare a known profession recipe's native reagents against carried and advisory virtual counts.",
       "source_evidence": [
         "server/mod-portable-hole/src/PortableHole.cpp",
         "server/mod-portable-hole/src/mod-portable-hole_loader.cpp",
@@ -191,7 +191,7 @@
         "Account views are read-only; no cross-account mutation, party ACL, or Campaign Party adapter is enabled",
         "Cross-database or core inventory state atomicity is not assumed"
       ],
-      "next_milestone": "Run hosted ACL and account-aggregate MySQL qualification, integrate one profession reagent consumer without touching physical inventory, then test a recoverable core item-custody saga before enabling item movement."
+      "next_milestone": "Run hosted ACL/account-aggregate qualification and booted-client exercise; only then prototype a profession consumer that proves recipe/reagent atomicity before any virtual balance can satisfy crafting, and keep physical item movement behind the separate custody gate."
     },
     {
       "id": "runic-codex",

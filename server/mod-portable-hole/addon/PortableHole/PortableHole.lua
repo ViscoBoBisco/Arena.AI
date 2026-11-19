@@ -31,8 +31,8 @@ local function savedData()
     return data
 end
 local frame, statusText, itemInput, amountInput, reservationInput, rowButtons, pageLabel, pinStatus
-local vaultAccountInput, shareAccountInput, accountInfo
-local viewAccountId, ownAccountId = 0, 0
+local vaultAccountInput, shareAccountInput, recipeSpellInput, accountInfo
+local viewAccountId, ownAccountId, reagentSpellId = 0, 0, 0
 local page = 0
 local pendingPinAdds = {}
 local sortModes, sortIndex = { "ENTRY", "NAME", "BALANCE", "AVAILABLE" }, 1
@@ -125,6 +125,32 @@ local function repaint(rows)
             row.item, row.name, row.balance, row.reserved))
         button:Show()
     end
+end
+
+local function repaintReagentRows(rows)
+    for i = 1, #rowButtons do rowButtons[i]:Hide() end
+    for i, row in ipairs(rows) do
+        if i > #rowButtons then break end
+        local button = rowButtons[i]
+        button.itemEntry = row.item
+        local virtual = row.status == "VIRTUAL_AVAILABLE_NOT_CRAFTABLE"
+            and tostring(row.available) or "not eligible"
+        button:SetText(string.format("%s: need %d, carried %d, gap %d, virtual %s (not craftable)",
+            row.name, row.required, row.carried, row.gap, virtual))
+        button:Show()
+    end
+end
+
+local function sendProfessionReagents()
+    local spell = uint(recipeSpellInput:GetText(), 4294967295)
+    if not spell then
+        statusText:SetText("Enter a positive known profession recipe spell ID.")
+        return
+    end
+    reagentSpellId = spell
+    frame.reagentRows = {}
+    repaintReagentRows(frame.reagentRows)
+    send("REAGENTS", spell)
 end
 
 local function refresh()
@@ -291,6 +317,22 @@ local function onMessage(_, prefix, message, distribution, sender)
     elseif fields[2] == "FINDEND" and #fields == 4 then
         if fields[4] == "1" then statusText:SetText("Showing first five matches; narrow the search.")
         elseif (tonumber(fields[3]) or 0) == 0 then statusText:SetText("No matching ledger entries.") end
+    elseif fields[2] == "RGT" and #fields == 10 then
+        local spell, item, required = tonumber(fields[3]), tonumber(fields[4]), tonumber(fields[5])
+        local carried, gap, available = tonumber(fields[6]), tonumber(fields[7]), tonumber(fields[8])
+        if spell == reagentSpellId and item and required and carried and gap and available then
+            local rows = frame.reagentRows or {}
+            rows[#rows + 1] = { item = item, required = required, carried = carried,
+                gap = gap, available = available, status = fields[9], name = fields[10] }
+            frame.reagentRows = rows
+            repaintReagentRows(rows)
+        end
+    elseif fields[2] == "REAGEND" and #fields == 4 then
+        local spell, count = tonumber(fields[3]), tonumber(fields[4])
+        if spell == reagentSpellId and count then
+            statusText:SetText("Recipe " .. tostring(spell) .. ": " .. tostring(count)
+                .. " reagent line(s). Virtual availability is advisory only; crafting still uses bags.")
+        end
     elseif fields[2] == "SHARE" and #fields == 4 then
         local account = tonumber(fields[3])
         if account and fields[4] == "GRANTED" then
@@ -397,7 +439,7 @@ end
 
 local function createFrame()
     frame = CreateFrame("Frame", "PortableHoleFrame", UIParent)
-    frame:SetSize(620, 420)
+    frame:SetSize(620, 470)
     frame:SetBackdrop({
         bgFile = "Interface/Tooltips/UI-Tooltip-Background",
         edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
@@ -515,10 +557,20 @@ local function createFrame()
     local revokeButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
     revokeButton:SetSize(68, 22); revokeButton:SetPoint("LEFT", grantButton, "RIGHT", 4, 0)
     revokeButton:SetText("Revoke"); revokeButton:SetScript("OnClick", function() changeShare(false) end)
+    recipeSpellInput = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
+    recipeSpellInput.role = "recipeSpell"
+    recipeSpellInput:SetSize(62, 22); recipeSpellInput:SetPoint("LEFT", revokeButton, "RIGHT", 8, 0)
+    recipeSpellInput:SetAutoFocus(false); recipeSpellInput:SetNumeric(true); recipeSpellInput:SetText("")
+    local recipeLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    recipeLabel:SetPoint("BOTTOMLEFT", recipeSpellInput, "TOPLEFT", 0, 2)
+    recipeLabel:SetText("Recipe ID")
+    local reagentButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    reagentButton:SetSize(62, 22); reagentButton:SetPoint("LEFT", recipeSpellInput, "RIGHT", 4, 0)
+    reagentButton:SetText("Reagents"); reagentButton:SetScript("OnClick", sendProfessionReagents)
 
-    for i = 1, 5 do
+    for i = 1, 8 do
         local b = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-        b:SetSize(570, 26); b:SetPoint("TOPLEFT", 20, -190 - (i - 1) * 31)
+        b:SetSize(570, 22); b:SetPoint("TOPLEFT", 20, -190 - (i - 1) * 25)
         b:SetScript("OnClick", function() if b.itemEntry then itemInput:SetText(tostring(b.itemEntry)) end end)
         b:Hide(); rowButtons[i] = b
     end

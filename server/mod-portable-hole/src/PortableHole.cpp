@@ -7,6 +7,8 @@
 #include "Config.h"
 #include "DatabaseEnv.h"
 #include "ObjectMgr.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "StringFormat.h"
 #include "WorldSession.h"
 
@@ -249,6 +251,64 @@ namespace
         uint64 const virtualAvailable = balance - reserved;
         Send(player, Acore::StringFormat("{}NEED\t{}\t{}\t{}\t{}\t{}\t{}",
             PREFIX, itemEntry, required, carried, bagGap, virtualAvailable, SafeLabel(item->Name1)));
+    }
+
+    void SendProfessionReagentPlan(Player* player, uint32 spellId)
+    {
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (!spellInfo || !player->HasSpell(spellId) || !spellInfo->IsProfession())
+        {
+            SendError(player, "KNOWN_PROFESSION_SPELL_REQUIRED");
+            return;
+        }
+
+        uint32 const guid = player->GetGUID().GetCounter();
+        uint32 reagentRows = 0;
+        for (uint32 index = 0; index < MAX_SPELL_REAGENTS; ++index)
+        {
+            int32 const reagentEntry = spellInfo->Reagent[index];
+            uint32 const required = spellInfo->ReagentCount[index];
+            if (reagentEntry <= 0 || required == 0)
+                continue;
+
+            uint32 const itemEntry = static_cast<uint32>(reagentEntry);
+            ItemTemplate const* item = sObjectMgr->GetItemTemplate(itemEntry);
+            if (!item)
+            {
+                SendError(player, "REAGENT_DATA_UNAVAILABLE");
+                return;
+            }
+
+            uint64 balance = 0;
+            uint64 reserved = 0;
+            bool const eligible = Commodity(itemEntry) != nullptr;
+            if (eligible)
+            {
+                QueryResult row = CharacterDatabase.Query(
+                    "SELECT balance,reserved FROM `{}` WHERE guid={} AND item_entry={}",
+                    BALANCES, guid, itemEntry);
+                if (row)
+                {
+                    Field* fields = row->Fetch();
+                    balance = fields[0].Get<uint64>();
+                    reserved = fields[1].Get<uint64>();
+                }
+                if (reserved > balance)
+                {
+                    SendError(player, "LEDGER_INCONSISTENT");
+                    return;
+                }
+            }
+
+            uint64 const carried = player->GetItemCount(itemEntry);
+            uint64 const bagGap = required > carried ? required - carried : 0;
+            Send(player, Acore::StringFormat("{}RGT\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                PREFIX, spellId, itemEntry, required, carried, bagGap, balance - reserved,
+                eligible ? "VIRTUAL_AVAILABLE_NOT_CRAFTABLE" : "STANDARD_BAG_ONLY",
+                SafeLabel(item->Name1)));
+            ++reagentRows;
+        }
+        Send(player, Acore::StringFormat("{}REAGEND\t{}\t{}", PREFIX, spellId, reagentRows));
     }
 
     void SendBagCount(Player* player, uint32 itemEntry)
@@ -723,6 +783,15 @@ namespace
                 SendBulkPlan(player, itemEntry, amount);
             return true;
         }
+        if (action == "REAGENTS")
+        {
+            uint32 spellId = 0;
+            if (fields.size() != 3 || !ParseUnsigned(fields[2], spellId) || spellId == 0)
+                SendError(player, "MALFORMED");
+            else
+                SendProfessionReagentPlan(player, spellId);
+            return true;
+        }
         if (action == "SEARCH")
         {
             uint32 viewAccount = 0;
@@ -852,7 +921,8 @@ public:
         if (fields.size() < 2 || fields[0] != PREFIX_TOKEN)
             return;
         bool const known = fields[1] == "HELLO" || fields[1] == "LIST" || fields[1] == "BAG"
-            || fields[1] == "NEED" || fields[1] == "SEARCH" || fields[1] == "SHARE" || fields[1] == "PLAN"
+            || fields[1] == "NEED" || fields[1] == "REAGENTS" || fields[1] == "SEARCH"
+            || fields[1] == "SHARE" || fields[1] == "PLAN"
             || fields[1] == "PINS" || fields[1] == "PIN"
             || fields[1] == "CREDIT" || fields[1] == "RESERVE"
             || fields[1] == "RELEASE" || fields[1] == "CONSUME";

@@ -370,6 +370,25 @@ class PortableHoleStaticContract(unittest.TestCase):
         self.assertNotIn("viewAccount", reserve,
                          "shared views must not redirect mutations or reservation ownership")
 
+    def test_profession_recipe_reagents_are_server_verified_and_read_only(self):
+        source = _MODULE.read_text(encoding="utf-8")
+        addon = (helpers.REPO / "server/mod-portable-hole/addon/PortableHole/PortableHole.lua").read_text(
+            encoding="utf-8")
+        planner = source[source.index("void SendProfessionReagentPlan("):source.index("void SendBagCount(")]
+        self.assertIn("sSpellMgr->GetSpellInfo(spellId)", planner)
+        self.assertIn("player->HasSpell(spellId)", planner)
+        self.assertIn("spellInfo->IsProfession()", planner)
+        self.assertIn("MAX_SPELL_REAGENTS", planner)
+        self.assertIn("spellInfo->ReagentCount[index]", planner)
+        self.assertIn("player->GetItemCount(itemEntry)", planner)
+        self.assertIn("VIRTUAL_AVAILABLE_NOT_CRAFTABLE", planner)
+        self.assertIn("STANDARD_BAG_ONLY", planner)
+        self.assertIn('action == "REAGENTS"', source)
+        self.assertIn('send("REAGENTS", spell)', addon)
+        self.assertIn("crafting still uses bags", addon)
+        for mutation in ("RemoveItem(", "StoreItem(", "DestroyItem("):
+            self.assertNotIn(mutation, planner)
+
     def test_saved_pins_are_per_character_deduplicated_and_capped(self):
         try:
             from lupa.lua51 import LuaRuntime
@@ -471,6 +490,14 @@ class PortableHoleStaticContract(unittest.TestCase):
         lua.globals().clock = 4
         account_buttons["Revoke"].scripts.OnClick(account_buttons["Revoke"])
         self.assertEqual(lua.globals().sent[len(lua.globals().sent)], "PH1\tSHARE\t98765\tREVOKE")
+        recipe_input = next(created[index] for index in range(1, len(created) + 1)
+                            if created[index].role == "recipeSpell")
+        reagent_button = next(created[index] for index in range(1, len(created) + 1)
+                              if created[index].text == "Reagents")
+        recipe_input.SetText(recipe_input, "1234")
+        lua.globals().clock = 5
+        reagent_button.scripts.OnClick(reagent_button)
+        self.assertEqual(lua.globals().sent[len(lua.globals().sent)], "PH1\tREAGENTS\t1234")
 
     def test_need_comparison_separates_carried_gap_and_virtual_available(self):
         source = _MODULE.read_text(encoding="utf-8")
