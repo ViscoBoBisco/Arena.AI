@@ -5,6 +5,7 @@ import multiprocessing
 import os
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import helpers  # noqa: E402
 sys.path.insert(0, str(helpers.REPO))
 sys.path.insert(0, str(helpers.REPO / "server/mod-portable-hole/harness"))
 import portable_hole_mysql as ledger  # noqa: E402
+import project_planner  # noqa: E402
 
 _REQUIRED = ("ARENA_MYSQL_HOST", "ARENA_MYSQL_DATABASE", "ARENA_MYSQL_USER",
              "ARENA_MYSQL_PASSWORD")
@@ -39,6 +41,35 @@ def _crash_after_reserve_update(guid: int, item: int, request_id: str, env: dict
             "WHERE guid=%s AND item_entry=%s AND balance-reserved>=60",
             (request_id, guid, item))
     os._exit(77)  # the DB connection dies before receipt/reservation commit
+
+
+def _crash_after_project_update(owner: int, key: str, request_id: str, account: int,
+                                guid: int, item: int, amount: int, env: dict) -> None:
+    for name, value in env.items():
+        os.environ[name] = value
+    import pymysql
+    conn = ledger.connect(pymysql)
+    conn.begin()
+    with conn.cursor() as cursor:
+        cursor.execute(
+            "INSERT IGNORE INTO portable_hole_project_reservations "
+            "(owner_account_id,project_key,request_id,contributor_account_id,guid,item_entry,amount,state) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,'PENDING')",
+            (owner, key, request_id, account, guid, item, amount))
+        cursor.execute(
+            "UPDATE portable_hole_commodities b, portable_hole_projects p, "
+            "portable_hole_project_reservations r SET b.reserved=b.reserved+r.amount, "
+            "p.reserved_amount=p.reserved_amount+r.amount,r.state='HELD' "
+            "WHERE r.owner_account_id=%s AND r.project_key=%s AND r.request_id=%s "
+            "AND r.state='PENDING' AND r.guid=b.guid AND r.item_entry=b.item_entry "
+            "AND p.owner_account_id=r.owner_account_id AND p.project_key=r.project_key "
+            "AND p.status='OPEN' AND b.balance-b.reserved>=r.amount "
+            "AND p.reserved_amount+r.amount<=p.target_amount "
+            "AND EXISTS (SELECT 1 FROM portable_hole_project_access a "
+            "WHERE a.owner_account_id=p.owner_account_id AND a.project_key=p.project_key "
+            "AND a.member_account_id=%s AND a.role='CONTRIBUTE')",
+            (owner, key, request_id, account))
+    os._exit(77)  # simulate process death before the project/commodity transaction commits
 
 
 @unittest.skipUnless(_ENABLED, "requires explicitly configured disposable MySQL")
@@ -210,6 +241,245 @@ class PortableHoleMySQL(unittest.TestCase):
                 cursor.execute("SELECT reserved_amount FROM portable_hole_projects "
                                "WHERE owner_account_id=%s AND project_key=%s", (owner, key))
                 self.assertEqual(cursor.fetchone(), (0,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_concurrent_contributors_acl_revocation_and_owner_recovery(self):
+        owner = 9910000 + self.guid
+        first_account, second_account = owner + 1, owner + 2
+        key = f"race{self.guid}"
+        conn = ledger.connect(self.pymysql)
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("INSERT INTO portable_hole_projects "
+                               "(owner_account_id,project_key,item_entry,target_amount,created_by_guid) "
+                               "VALUES(%s,%s,%s,60,%s)", (owner, key, self.item, self.guid))
+                cursor.execute("INSERT INTO portable_hole_project_access "
+                               "(owner_account_id,project_key,member_account_id,role,granted_by_guid) "
+                               "VALUES(%s,%s,%s,'CONTRIBUTE',%s),(%s,%s,%s,'CONTRIBUTE',%s)",
+                               (owner, key, first_account, self.guid,
+                                owner, key, second_account, self.guid))
+                for guid in (self.guid, self.other_guid):
+                    cursor.execute("INSERT INTO portable_hole_commodities "
+                                   "(guid,item_entry,balance,reserved) VALUES(%s,%s,100,0)",
+                                   (guid, self.item))
+            conn.commit()
+        finally:
+            conn.close()
+
+        barrier = threading.Barrier(2)
+        outcomes, errors = [], []
+
+        def reserve(account, guid, request_id):
+            connection = ledger.connect(self.pymysql)
+            try:
+                barrier.wait(timeout=5)
+                for attempt in range(4):
+                    try:
+                        connection.begin()
+                        with connection.cursor() as cursor:
+                            cursor.execute("INSERT IGNORE INTO portable_hole_project_reservations "
+                                           "(owner_account_id,project_key,request_id,contributor_account_id,guid,item_entry,amount,state) "
+                                           "VALUES(%s,%s,%s,%s,%s,%s,40,'PENDING')",
+                                           (owner, key, request_id, account, guid, self.item))
+                            cursor.execute("UPDATE portable_hole_commodities b, portable_hole_projects p, "
+                                           "portable_hole_project_reservations r "
+                                           "SET b.reserved=b.reserved+r.amount,p.reserved_amount=p.reserved_amount+r.amount, "
+                                           "r.state='HELD' WHERE r.owner_account_id=%s AND r.project_key=%s "
+                                           "AND r.request_id=%s AND r.state='PENDING' AND r.contributor_account_id=%s "
+                                           "AND r.guid=%s AND r.item_entry=%s AND r.amount=40 "
+                                           "AND b.guid=r.guid AND b.item_entry=r.item_entry "
+                                           "AND p.owner_account_id=r.owner_account_id AND p.project_key=r.project_key "
+                                           "AND p.status='OPEN' AND b.balance-b.reserved>=r.amount "
+                                           "AND p.reserved_amount+r.amount<=p.target_amount "
+                                           "AND (p.owner_account_id=%s OR EXISTS (SELECT 1 FROM portable_hole_project_access a "
+                                           "WHERE a.owner_account_id=p.owner_account_id AND a.project_key=p.project_key "
+                                           "AND a.member_account_id=%s AND a.role='CONTRIBUTE'))",
+                                           (owner, key, request_id, account, guid, self.item, account, account))
+                            cursor.execute("UPDATE portable_hole_project_reservations SET state='DENIED' "
+                                           "WHERE owner_account_id=%s AND project_key=%s AND request_id=%s "
+                                           "AND state='PENDING'", (owner, key, request_id))
+                            cursor.execute("SELECT state FROM portable_hole_project_reservations "
+                                           "WHERE owner_account_id=%s AND project_key=%s AND request_id=%s",
+                                           (owner, key, request_id))
+                            state = cursor.fetchone()[0]
+                        connection.commit()
+                        outcomes.append((request_id, account, guid, state))
+                        return
+                    except self.pymysql.err.OperationalError as exc:
+                        connection.rollback()
+                        if exc.args[0] not in (1205, 1213) or attempt == 3:
+                            errors.append(exc)
+                            return
+                        # Same request ID is safe to retry after a rolled-back lock conflict.
+                        time.sleep(0.01 * (attempt + 1))
+                    except Exception as exc:
+                        connection.rollback()
+                        errors.append(exc)
+                        return
+            finally:
+                connection.close()
+
+        threads = [threading.Thread(target=reserve, args=(first_account, self.guid, "race-first")),
+                   threading.Thread(target=reserve, args=(second_account, self.other_guid, "race-second"))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+        self.assertFalse(any(thread.is_alive() for thread in threads), "project race deadlocked")
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(row[3] for row in outcomes), ["DENIED", "HELD"])
+        held = next(row for row in outcomes if row[3] == "HELD")
+        self.assertEqual(held[2], self.guid if held[1] == first_account else self.other_guid)
+
+        # Replay must not double reserve; then revoke the contributor and ensure no new hold.
+        conn = ledger.connect(self.pymysql)
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT reserved_amount FROM portable_hole_projects "
+                               "WHERE owner_account_id=%s AND project_key=%s", (owner, key))
+                self.assertEqual(cursor.fetchone(), (40,))
+                cursor.execute("DELETE FROM portable_hole_project_access WHERE owner_account_id=%s "
+                               "AND project_key=%s AND member_account_id=%s", (owner, key, held[1]))
+                cursor.execute("INSERT IGNORE INTO portable_hole_project_reservations "
+                               "(owner_account_id,project_key,request_id,contributor_account_id,guid,item_entry,amount,state) "
+                               "VALUES(%s,%s,'after-revoke',%s,%s,%s,5,'PENDING')",
+                               (owner, key, held[1], held[2], self.item))
+                cursor.execute("UPDATE portable_hole_project_reservations SET state='DENIED' "
+                               "WHERE owner_account_id=%s AND project_key=%s AND request_id='after-revoke' "
+                               "AND state='PENDING'", (owner, key))
+                cursor.execute("SELECT state FROM portable_hole_project_reservations "
+                               "WHERE owner_account_id=%s AND project_key=%s AND request_id='after-revoke'",
+                               (owner, key))
+                self.assertEqual(cursor.fetchone(), ("DENIED",))
+                # Owner-side recovery remains possible after contributor access is revoked.
+                cursor.execute("UPDATE portable_hole_project_reservations r, portable_hole_projects p, "
+                               "portable_hole_commodities b SET r.state='RELEASED', "
+                               "r.release_request_id='owner-recovery',p.reserved_amount=p.reserved_amount-r.amount, "
+                               "b.reserved=b.reserved-r.amount WHERE r.owner_account_id=%s "
+                               "AND r.project_key=%s AND r.request_id=%s AND r.state='HELD' "
+                               "AND r.guid=b.guid AND r.item_entry=b.item_entry "
+                               "AND p.owner_account_id=r.owner_account_id AND p.project_key=r.project_key "
+                               "AND p.reserved_amount>=r.amount AND b.reserved>=r.amount "
+                               "AND %s=p.owner_account_id", (owner, key, held[0], owner))
+                cursor.execute("SELECT state,release_request_id FROM portable_hole_project_reservations "
+                               "WHERE owner_account_id=%s AND project_key=%s AND request_id=%s",
+                               (owner, key, held[0]))
+                self.assertEqual(cursor.fetchone(), ("RELEASED", "owner-recovery"))
+                cursor.execute("SELECT reserved_amount FROM portable_hole_projects "
+                               "WHERE owner_account_id=%s AND project_key=%s", (owner, key))
+                self.assertEqual(cursor.fetchone(), (0,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_project_disconnect_rolls_back_and_same_request_recovers(self):
+        owner = 9910000 + self.guid
+        contributor = owner + 1
+        key = f"crash{self.guid}"
+        conn = ledger.connect(self.pymysql)
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("INSERT INTO portable_hole_projects "
+                               "(owner_account_id,project_key,item_entry,target_amount,created_by_guid) "
+                               "VALUES(%s,%s,%s,50,%s)", (owner, key, self.item, self.guid))
+                cursor.execute("INSERT INTO portable_hole_project_access "
+                               "(owner_account_id,project_key,member_account_id,role,granted_by_guid) "
+                               "VALUES(%s,%s,%s,'CONTRIBUTE',%s)", (owner, key, contributor, self.guid))
+                cursor.execute("INSERT INTO portable_hole_commodities "
+                               "(guid,item_entry,balance,reserved) VALUES(%s,%s,100,0)",
+                               (self.guid, self.item))
+            conn.commit()
+        finally:
+            conn.close()
+        env = {name: os.environ[name] for name in _REQUIRED}
+        proc = multiprocessing.get_context("fork").Process(
+            target=_crash_after_project_update,
+            args=(owner, key, "disconnect-project", contributor, self.guid, self.item, 30, env))
+        proc.start()
+        proc.join(timeout=20)
+        if proc.is_alive():
+            proc.kill(); proc.join(timeout=5)
+            self.fail("project disconnect worker hung")
+        self.assertEqual(proc.exitcode, 77)
+        conn = ledger.connect(self.pymysql)
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT reserved_amount FROM portable_hole_projects "
+                               "WHERE owner_account_id=%s AND project_key=%s", (owner, key))
+                self.assertEqual(cursor.fetchone(), (0,))
+                cursor.execute("SELECT reserved FROM portable_hole_commodities "
+                               "WHERE guid=%s AND item_entry=%s", (self.guid, self.item))
+                self.assertEqual(cursor.fetchone(), (0,))
+                cursor.execute("SELECT COUNT(*) FROM portable_hole_project_reservations "
+                               "WHERE owner_account_id=%s AND project_key=%s AND request_id='disconnect-project'",
+                               (owner, key))
+                self.assertEqual(cursor.fetchone(), (0,))
+            conn.close()
+        finally:
+            if conn.open:
+                conn.close()
+        # The transaction died before commit, so the same request token is safe to retry.
+        with self.subTest("same request can be retried after disconnect"):
+            conn = ledger.connect(self.pymysql)
+            try:
+                conn.begin()
+                with conn.cursor() as cursor:
+                    cursor.execute("INSERT IGNORE INTO portable_hole_project_reservations "
+                                   "(owner_account_id,project_key,request_id,contributor_account_id,guid,item_entry,amount,state) "
+                                   "VALUES(%s,%s,'disconnect-project',%s,%s,%s,30,'PENDING')",
+                                   (owner, key, contributor, self.guid, self.item))
+                    cursor.execute("UPDATE portable_hole_commodities b, portable_hole_projects p, "
+                                   "portable_hole_project_reservations r SET b.reserved=b.reserved+r.amount, "
+                                   "p.reserved_amount=p.reserved_amount+r.amount,r.state='HELD' "
+                                   "WHERE r.owner_account_id=%s AND r.project_key=%s "
+                                   "AND r.request_id='disconnect-project' AND r.state='PENDING' "
+                                   "AND r.guid=b.guid AND r.item_entry=b.item_entry "
+                                   "AND p.owner_account_id=r.owner_account_id AND p.project_key=r.project_key "
+                                   "AND p.status='OPEN' AND b.balance-b.reserved>=r.amount "
+                                   "AND p.reserved_amount+r.amount<=p.target_amount "
+                                   "AND EXISTS (SELECT 1 FROM portable_hole_project_access a "
+                                   "WHERE a.owner_account_id=p.owner_account_id AND a.project_key=p.project_key "
+                                   "AND a.member_account_id=%s AND a.role='CONTRIBUTE')",
+                                   (owner, key, contributor))
+                    cursor.execute("SELECT state FROM portable_hole_project_reservations "
+                                   "WHERE owner_account_id=%s AND project_key=%s "
+                                   "AND request_id='disconnect-project'", (owner, key))
+                    self.assertEqual(cursor.fetchone(), ("HELD",))
+                conn.commit()
+            finally:
+                conn.close()
+
+    def test_profession_preparation_contract_reads_only_authorized_project_budget(self):
+        owner = 9910000 + self.guid
+        viewer = owner + 1
+        key = f"recipe{self.guid}"
+        conn = ledger.connect(self.pymysql)
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("INSERT INTO portable_hole_projects "
+                               "(owner_account_id,project_key,item_entry,target_amount,reserved_amount,created_by_guid) "
+                               "VALUES(%s,%s,%s,100,35,%s)", (owner, key, self.item, self.guid))
+                cursor.execute("INSERT INTO portable_hole_project_access "
+                               "(owner_account_id,project_key,member_account_id,role,granted_by_guid) "
+                               "VALUES(%s,%s,%s,'VIEW',%s)", (owner, key, viewer, self.guid))
+                contract = {
+                    "schema": project_planner.SCHEMA,
+                    "request_id": f"profession-{self.guid}",
+                    "profession": {"recipe_id": 17187},
+                    "requirements": [{"item_entry": self.item, "amount": 50,
+                                      "project_owner_account_id": owner, "project_key": key}],
+                }
+                plan = project_planner.plan_preparation(cursor, viewer, contract)
+                self.assertEqual(plan["lines"][0]["held_amount"], 35)
+                self.assertEqual(plan["lines"][0]["shortfall_amount"], 15)
+                self.assertFalse(plan["mutation_performed"])
+                with self.assertRaises(PermissionError):
+                    project_planner.plan_preparation(cursor, owner + 99, contract)
+                cursor.execute("SELECT reserved_amount FROM portable_hole_projects "
+                               "WHERE owner_account_id=%s AND project_key=%s", (owner, key))
+                self.assertEqual(cursor.fetchone(), (35,))
             conn.commit()
         finally:
             conn.close()

@@ -25,10 +25,12 @@ ADDONS = (
 TESTS = (
     "tests/helpers.py",
     "tests/test_portable_hole_mysql.py",
+    "tests/test_portable_hole_planner.py",
     "tests/test_portable_hole_custody_gate.py",
     "tests/test_runic_codex_mysql.py",
     "tests/test_argent_commission_mysql.py",
     "tests/test_argent_field_dressing_policy.py",
+    "tests/test_argent_medic_policy.py",
     "tests/test_wotlk_addon_compat.py",
     "tests/test_gameplay_handoff.py",
     "tests/native/runic_power_registry_test.cpp",
@@ -78,6 +80,34 @@ def main() -> int:
                 raise ValueError("CI evidence does not prove successful combined worldserver build/link")
         pin = json.loads((ROOT / "foundry/core-pins.json").read_text())[
             "azerothcore_wotlk"]["revision"]
+        if ci_evidence is not None:
+            module_names = {"mod-vault-terminal", "mod-portable-hole", "mod-runic-codex",
+                            "mod-argent-commission"}
+            modules = ci_evidence.get("modules")
+            binary_hash = ci_evidence.get("worldserver_binary_sha256", "")
+            version = ci_evidence.get("worldserver_version_command", {})
+            mysql = ci_evidence.get("mysql_client", {})
+            digest_is_valid = lambda value: (isinstance(value, str) and len(value) == 64
+                and all(char in "0123456789abcdef" for char in value))
+            if ci_evidence.get("schema") != "arena-public-core-integration-evidence/1":
+                raise ValueError("CI evidence schema is missing or unsupported")
+            if ci_evidence.get("source", {}).get("repository") != "ViscoBoBisco/Arena.AI":
+                raise ValueError("CI evidence repository identity is not this project")
+            if ci_evidence.get("core", {}).get("revision") != pin:
+                raise ValueError("CI evidence core revision does not match the pinned public core")
+            if not isinstance(modules, dict) or set(modules) != module_names or not all(
+                    digest_is_valid(value) for value in modules.values()):
+                raise ValueError("CI evidence must contain SHA-256 hashes for all four modules")
+            if not digest_is_valid(binary_hash):
+                raise ValueError("CI evidence is missing the linked worldserver SHA-256")
+            if version.get("status") != "PASS" or not version.get("output"):
+                raise ValueError("CI evidence does not prove the version command ran")
+            if (mysql.get("mysql_config_version") != "8.4.13"
+                    or mysql.get("libmysqlclient_dev_package") != "8.4.13-1ubuntu24.04"
+                    or mysql.get("required_api_probe") != "PASS"):
+                raise ValueError("CI evidence does not prove the pinned compatible MySQL API toolchain")
+            if ci_evidence.get("worldserver_boot") != "NOT_RUN_NO_VERIFIED_SERVER_DATA_AND_DATABASE_BOOT_FIXTURE":
+                raise ValueError("runtime-boot evidence must remain a distinct, accurately scoped result")
         included: dict[str, dict] = {}
         for module in MODULES:
             destination = out / "modules" / Path(module).name

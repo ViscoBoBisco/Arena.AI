@@ -105,7 +105,25 @@ jobs:
           loot_line = next(line for line in (world / 'creature_loot_template.sql').read_text().splitlines()
                            if line.startswith('(15114,22739,'))
           assert ',0,15,0,1,0,1,1,' in loot_line and 'Tome of Polymorph: Turtle' in loot_line
-          print('Pinned Tome item-use and Gahz’ranka loot source verified.')
+          item_lines = (world / 'item_template.sql').read_text().splitlines()
+          shadow_bolt = next(line for line in item_lines if line.startswith('(21281,'))
+          assert "'Grimoire of Shadow Bolt X'" in shadow_bolt and ',25307,6,' in shadow_bolt
+          shadow_ward = next(line for line in item_lines if line.startswith('(22891,'))
+          assert "'Grimoire of Shadow Ward IV'" in shadow_ward and ',28610,6,' in shadow_ward
+          ranks = (world / 'spell_ranks.sql').read_text()
+          assert '(686,25307,10)' in ranks and '(6229,28610,4)' in ranks
+          reference_loot = (world / 'reference_loot_template.sql').read_text()
+          assert '(34024,21281,' in reference_loot and '(30171,22891,' in reference_loot
+          creature_loot = (world / 'creature_loot_template.sql').read_text()
+          assert '(15339,34024,34024,' in creature_loot
+          assert '(11502,30171,30171,' in creature_loot and '(11583,30171,30171,' in creature_loot
+          medic = next(line for line in (world / 'creature_template.sql').read_text().splitlines()
+                       if line.startswith('(16284,'))
+          assert "'Argent Medic'" in medic
+          medic_ai = [line for line in (world / 'smart_scripts.sql').read_text().splitlines()
+                      if line.startswith('(16284,') and '28133' in line]
+          assert medic_ai, 'stock Argent Medic must already use native Cure Disease 28133'
+          print('Pinned collectible items, acquisition tables, spell ranks and Argent Medic service verified.')
           print('Cast hook precedes power deduction; player update follows Unit spell processing.')
           PY
 

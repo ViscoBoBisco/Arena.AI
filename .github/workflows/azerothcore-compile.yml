@@ -181,12 +181,13 @@ jobs:
       - name: Verify linked worldserver executable
         run: |
           set -euo pipefail
-          if [ ! -x /tmp/azerothcore-build/bin/worldserver ]; then
-            echo '::error title=worldserver executable missing::The complete target reported success but did not produce bin/worldserver.'
-            find /tmp/azerothcore-build -maxdepth 4 -type f -name worldserver -print
+          worldserver=/tmp/azerothcore-build/src/server/apps/worldserver
+          if [ ! -x "$worldserver" ]; then
+            echo '::error title=worldserver executable missing::The complete target reported success but did not produce src/server/apps/worldserver.'
+            find /tmp/azerothcore-build -maxdepth 6 -type f -name worldserver -print
             exit 1
           fi
-          /tmp/azerothcore-build/bin/worldserver --version 2>&1 | tee /tmp/worldserver-version.txt
+          "$worldserver" --version 2>&1 | tee /tmp/worldserver-version.txt
 
       - name: Create source and binary-bound integration evidence and handoff
         env:
@@ -215,7 +216,7 @@ jobs:
           mysql_version = Path('/tmp/mysql-client-version.txt').read_text().strip()
           package_version = Path('/tmp/mysql-client-package-version.txt').read_text().strip()
           assert mysql_version == '8.4.13', mysql_version
-          binary = Path('/tmp/azerothcore-build/bin/worldserver')
+          binary = Path('/tmp/azerothcore-build/src/server/apps/worldserver')
           version_output = Path('/tmp/worldserver-version.txt').read_text(errors='replace').strip()
           assert version_output, 'worldserver --version returned no output'
           evidence = {

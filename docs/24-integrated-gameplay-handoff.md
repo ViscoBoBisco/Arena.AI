@@ -8,9 +8,10 @@ python3 /tmp/arena-gameplay-handoff/verify.py
 ```
 
 The bundle contains the three maintained AzerothCore modules and addons, the generated Vault Terminal
-module/addon/config, all additive Characters SQL migrations in a machine-readable order, Vault Terminal
-source evidence, focused qualification tests, dependency checks, install and disable/rollback steps,
-source/core hashes, and exact private Campaign Party/Playerbots/build-12340 acceptance requirements.
+module/addon/config, all additive Characters SQL migrations in a machine-readable order, source evidence,
+focused qualification tests (including shared-project race/recovery, preparation planning, new Runic
+powers and Argent Medic policy), dependency checks, install and disable/rollback steps, source/core
+hashes, and exact private Campaign Party/Playerbots/build-12340 acceptance requirements.
 The builder refuses overwrite and paths inside the repository. It does not copy client files,
 credentials, live DBs, or server binaries. `bundle.json` explicitly records that production readiness
 and physical item custody are false and the combined boot/client gate is not assessed.

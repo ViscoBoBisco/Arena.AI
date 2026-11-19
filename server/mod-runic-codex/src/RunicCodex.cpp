@@ -404,14 +404,15 @@ namespace
         }) { }
 
         void ModifySpellDamageTaken(Unit* target, Unit* /*attacker*/, int32& damage,
-                                    SpellInfo const* /*spellInfo*/) override
+                                    SpellInfo const* spellInfo) override
         {
             Player* player = target ? target->ToPlayer() : nullptr;
             if (!player || damage <= 0)
                 return;
             for (RunicPowerRegistry::PowerDefinition const& power : RunicPowerRegistry::POWERS)
             {
-                if (power.spellDamageReductionPercent == 0)
+                if (power.spellDamageReductionPercent == 0
+                    || (power.spellDamageSchoolMask != 0 && !spellInfo))
                     continue;
                 State const state = GetState(player, power);
                 uint32 const percent = sConfigMgr->GetOption<uint32>(
@@ -420,8 +421,9 @@ namespace
                 uint32 const cap = sConfigMgr->GetOption<uint32>(
                     "RunicCodex." + std::string(power.key) + ".SpellDamageReductionCap",
                     power.spellDamageReductionCap);
-                uint32 const reduction = RunicPowerRegistry::CalculateCombatBonus(
-                    static_cast<uint32>(damage), percent, cap, state.unlocked, state.equipped);
+                uint32 const reduction = RunicPowerRegistry::CalculateSchoolFilteredCombatBonus(
+                    static_cast<uint32>(damage), percent, cap, state.unlocked, state.equipped,
+                    spellInfo ? spellInfo->SchoolMask : 0, power.spellDamageSchoolMask);
                 damage -= static_cast<int32>(reduction);
             }
         }

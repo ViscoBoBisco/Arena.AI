@@ -6,10 +6,16 @@
 #include "DatabaseEnv.h"
 #include "ReputationMgr.h"
 #include "SpellMgr.h"
+#include "Creature.h"
 #include "StringFormat.h"
 #include "ArgentFieldDressingPolicy.h"
+#include "ArgentMedicPolicy.h"
 
+#include <algorithm>
+#include <chrono>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -20,6 +26,8 @@ namespace
     constexpr uint32 ARGENT_CHAMPION_SPELL = 57819;
     constexpr std::size_t MAX_FRAME = 160;
     std::unordered_set<uint32> earnedCommissions;
+    std::unordered_map<uint32, std::chrono::steady_clock::time_point> medicCooldowns;
+    std::mutex medicCooldownMutex;
 
     std::vector<std::string> SplitTabs(std::string const& value)
     {
@@ -102,6 +110,68 @@ namespace
         Send(player, std::string(PREFIX) + "\tCLAIMED\t1");
     }
 
+    void RequestMedicService(Player* player)
+    {
+        if (!HasCommission(player))
+        {
+            Send(player, std::string(PREFIX) + "\tERR\tCOMMISSION_REQUIRED");
+            return;
+        }
+        bool const honored = player->GetReputationRank(ARGENT_CRUSADE_FACTION) >= REP_HONORED;
+        if (!honored)
+        {
+            Send(player, std::string(PREFIX) + "\tERR\tHONORED_REQUIRED");
+            return;
+        }
+        Creature* medic = player->FindNearestCreature(ArgentMedicPolicy::MEDIC_CREATURE_ENTRY,
+            static_cast<float>(ArgentMedicPolicy::SERVICE_RANGE_YARDS), true);
+        if (!medic)
+        {
+            Send(player, std::string(PREFIX) + "\tERR\tARGENT_MEDIC_REQUIRED");
+            return;
+        }
+        if (!sSpellMgr->GetSpellInfo(ArgentMedicPolicy::CURE_DISEASE_SPELL))
+        {
+            Send(player, std::string(PREFIX) + "\tERR\tSERVICE_UNAVAILABLE");
+            return;
+        }
+        if (!ArgentMedicPolicy::CanRequestService(true, honored, medic->IsAlive(), true))
+        {
+            Send(player, std::string(PREFIX) + "\tERR\tSERVICE_UNAVAILABLE");
+            return;
+        }
+
+        uint32 const cooldownSeconds = ArgentMedicPolicy::BoundCooldown(sConfigMgr->GetOption<uint32>(
+            "ArgentCommission.Medic.CooldownSeconds", ArgentMedicPolicy::DEFAULT_COOLDOWN_SECONDS));
+        auto const now = std::chrono::steady_clock::now();
+        uint32 const guid = player->GetGUID().GetCounter();
+        bool ready = false;
+        {
+            std::lock_guard<std::mutex> lock(medicCooldownMutex);
+            for (auto iter = medicCooldowns.begin(); iter != medicCooldowns.end();)
+                if (now >= iter->second)
+                    iter = medicCooldowns.erase(iter);
+                else
+                    ++iter;
+            auto const previous = medicCooldowns.find(guid);
+            if (previous == medicCooldowns.end() || now >= previous->second)
+            {
+                medicCooldowns[guid] = now + std::chrono::seconds(cooldownSeconds);
+                ready = true;
+            }
+        }
+        if (!ready)
+        {
+            Send(player, std::string(PREFIX) + "\tERR\tSERVICE_COOLDOWN");
+            return;
+        }
+
+        // Keep the existing SmartAI and its gossip behavior intact: this addon request
+        // only asks the nearby stock Argent Medic to cast its native disease cure.
+        medic->CastSpell(player, ArgentMedicPolicy::CURE_DISEASE_SPELL, true);
+        Send(player, Acore::StringFormat("{}\tMEDIC\tREADY\t{}", PREFIX, cooldownSeconds));
+    }
+
     class ArgentCommissionPlayerScript final : public PlayerScript
     {
     public:
@@ -160,6 +230,8 @@ namespace
                 SendStatus(player);
             else if (fields[1] == "CLAIM")
                 Claim(player);
+            else if (fields[1] == "MEDIC")
+                RequestMedicService(player);
         }
     };
 }
