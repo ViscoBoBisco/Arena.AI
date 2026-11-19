@@ -108,6 +108,17 @@ jobs:
 
       - name: Link complete worldserver with all four modules installed together
         run: |
-          cmake --build /tmp/azerothcore-build --target worldserver --parallel 2
+          if ! cmake --build /tmp/azerothcore-build --target worldserver --parallel 2 > /tmp/worldserver-build.log 2>&1; then
+            tail -n 80 /tmp/worldserver-build.log
+            python3 - <<'PY'
+          from pathlib import Path
+          lines = Path('/tmp/worldserver-build.log').read_text(errors='replace').strip().splitlines()
+          detail = '\\n'.join(lines[-40:]) if lines else 'worldserver build/link failed'
+          detail = detail.replace('%', '%25').replace('\\r', '%0D').replace('\\n', '%0A')
+          print(f'::error title=Combined worldserver build failure::{detail}')
+          PY
+            exit 1
+          fi
+          cat /tmp/worldserver-build.log
           test -x /tmp/azerothcore-build/bin/worldserver
           /tmp/azerothcore-build/bin/worldserver --version
