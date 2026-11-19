@@ -19,18 +19,48 @@ jobs:
 
       - name: Install AzerothCore configure dependencies
         run: |
-          curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2023 -o /tmp/mysql-repo.asc
+          set -euo pipefail
+          if ! curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2023 -o /tmp/mysql-repo.asc; then
+            echo '::error title=MySQL 8.4 repository key download::Could not fetch the official Oracle MySQL APT signing key.'
+            exit 1
+          fi
           gpg --dearmor < /tmp/mysql-repo.asc | sudo tee /usr/share/keyrings/mysql-apt.gpg >/dev/null
           echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/mysql-apt.gpg] https://repo.mysql.com/apt/ubuntu/ noble mysql-8.4-lts' \
             | sudo tee /etc/apt/sources.list.d/mysql-8.4-lts.list
-          sudo apt-get update
-          sudo apt-get install -y \
+          if ! sudo apt-get update > /tmp/mysql-apt-update.log 2>&1; then
+            tail -n 60 /tmp/mysql-apt-update.log
+            python3 - <<'PY'
+          from pathlib import Path
+          detail = '\n'.join(Path('/tmp/mysql-apt-update.log').read_text(errors='replace').splitlines()[-45:])
+          detail = detail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print(f'::error title=Pinned MySQL 8.4 APT repository::{detail}')
+          PY
+            exit 1
+          fi
+          if ! sudo apt-get install -y \
             build-essential cmake git libboost-all-dev libmysqlclient-dev=8.4.13-1ubuntu24.04 \
-            libssl-dev libreadline-dev zlib1g-dev libbz2-dev libncurses5-dev
+            libssl-dev libreadline-dev zlib1g-dev libbz2-dev libncurses5-dev \
+            > /tmp/mysql-apt-install.log 2>&1; then
+            tail -n 60 /tmp/mysql-apt-install.log
+            python3 - <<'PY'
+          from pathlib import Path
+          detail = '\n'.join(Path('/tmp/mysql-apt-install.log').read_text(errors='replace').splitlines()[-45:])
+          detail = detail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print(f'::error title=Pinned MySQL 8.4 package install::{detail}')
+          PY
+            exit 1
+          fi
+          cat /tmp/mysql-apt-install.log
           mysql_config --version | tee /tmp/mysql-client-version.txt
-          test "$(mysql_config --version)" = '8.4.13'
+          if [ "$(mysql_config --version)" != '8.4.13' ]; then
+            echo "::error title=MySQL client version mismatch::Expected 8.4.13, got $(mysql_config --version)"
+            exit 1
+          fi
           dpkg-query -W -f='${Version}\n' libmysqlclient-dev | tee /tmp/mysql-client-package-version.txt
-          test "$(cat /tmp/mysql-client-package-version.txt)" = '8.4.13-1ubuntu24.04'
+          if [ "$(cat /tmp/mysql-client-package-version.txt)" != '8.4.13-1ubuntu24.04' ]; then
+            echo "::error title=MySQL client package mismatch::Expected 8.4.13-1ubuntu24.04, got $(cat /tmp/mysql-client-package-version.txt)"
+            exit 1
+          fi
           cat > /tmp/mysql-api-probe.c <<'EOF'
           #include <mysql.h>
           int main(void) {
@@ -42,7 +72,16 @@ jobs:
               return mysql_stmt_bind_named_param(statement, bindings, 0, 0);
           }
           EOF
-          cc $(mysql_config --cflags) -Werror -c /tmp/mysql-api-probe.c -o /tmp/mysql-api-probe.o
+          if ! cc $(mysql_config --cflags) -Werror -c /tmp/mysql-api-probe.c -o /tmp/mysql-api-probe.o > /tmp/mysql-api-probe.log 2>&1; then
+            cat /tmp/mysql-api-probe.log
+            python3 - <<'PY'
+          from pathlib import Path
+          detail = '\n'.join(Path('/tmp/mysql-api-probe.log').read_text(errors='replace').splitlines()[-30:])
+          detail = detail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print(f'::error title=MySQL 8.4 required API probe::{detail}')
+          PY
+            exit 1
+          fi
 
       - name: Checkout exact source pin
         run: |
