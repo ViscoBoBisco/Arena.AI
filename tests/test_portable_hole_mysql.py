@@ -5,6 +5,7 @@ import multiprocessing
 import os
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -274,38 +275,49 @@ class PortableHoleMySQL(unittest.TestCase):
             connection = ledger.connect(self.pymysql)
             try:
                 barrier.wait(timeout=5)
-                connection.begin()
-                with connection.cursor() as cursor:
-                    cursor.execute("INSERT IGNORE INTO portable_hole_project_reservations "
-                                   "(owner_account_id,project_key,request_id,contributor_account_id,guid,item_entry,amount,state) "
-                                   "VALUES(%s,%s,%s,%s,%s,%s,40,'PENDING')",
-                                   (owner, key, request_id, account, guid, self.item))
-                    cursor.execute("UPDATE portable_hole_commodities b, portable_hole_projects p, "
-                                   "portable_hole_project_reservations r "
-                                   "SET b.reserved=b.reserved+r.amount,p.reserved_amount=p.reserved_amount+r.amount, "
-                                   "r.state='HELD' WHERE r.owner_account_id=%s AND r.project_key=%s "
-                                   "AND r.request_id=%s AND r.state='PENDING' AND r.contributor_account_id=%s "
-                                   "AND r.guid=%s AND r.item_entry=%s AND r.amount=40 "
-                                   "AND b.guid=r.guid AND b.item_entry=r.item_entry "
-                                   "AND p.owner_account_id=r.owner_account_id AND p.project_key=r.project_key "
-                                   "AND p.status='OPEN' AND b.balance-b.reserved>=r.amount "
-                                   "AND p.reserved_amount+r.amount<=p.target_amount "
-                                   "AND (p.owner_account_id=%s OR EXISTS (SELECT 1 FROM portable_hole_project_access a "
-                                   "WHERE a.owner_account_id=p.owner_account_id AND a.project_key=p.project_key "
-                                   "AND a.member_account_id=%s AND a.role='CONTRIBUTE'))",
-                                   (owner, key, request_id, account, guid, self.item, account, account))
-                    cursor.execute("UPDATE portable_hole_project_reservations SET state='DENIED' "
-                                   "WHERE owner_account_id=%s AND project_key=%s AND request_id=%s "
-                                   "AND state='PENDING'", (owner, key, request_id))
-                    cursor.execute("SELECT state FROM portable_hole_project_reservations "
-                                   "WHERE owner_account_id=%s AND project_key=%s AND request_id=%s",
-                                   (owner, key, request_id))
-                    state = cursor.fetchone()[0]
-                connection.commit()
-                outcomes.append((request_id, account, guid, state))
-            except Exception as exc:
-                connection.rollback()
-                errors.append(exc)
+                for attempt in range(4):
+                    try:
+                        connection.begin()
+                        with connection.cursor() as cursor:
+                            cursor.execute("INSERT IGNORE INTO portable_hole_project_reservations "
+                                           "(owner_account_id,project_key,request_id,contributor_account_id,guid,item_entry,amount,state) "
+                                           "VALUES(%s,%s,%s,%s,%s,%s,40,'PENDING')",
+                                           (owner, key, request_id, account, guid, self.item))
+                            cursor.execute("UPDATE portable_hole_commodities b, portable_hole_projects p, "
+                                           "portable_hole_project_reservations r "
+                                           "SET b.reserved=b.reserved+r.amount,p.reserved_amount=p.reserved_amount+r.amount, "
+                                           "r.state='HELD' WHERE r.owner_account_id=%s AND r.project_key=%s "
+                                           "AND r.request_id=%s AND r.state='PENDING' AND r.contributor_account_id=%s "
+                                           "AND r.guid=%s AND r.item_entry=%s AND r.amount=40 "
+                                           "AND b.guid=r.guid AND b.item_entry=r.item_entry "
+                                           "AND p.owner_account_id=r.owner_account_id AND p.project_key=r.project_key "
+                                           "AND p.status='OPEN' AND b.balance-b.reserved>=r.amount "
+                                           "AND p.reserved_amount+r.amount<=p.target_amount "
+                                           "AND (p.owner_account_id=%s OR EXISTS (SELECT 1 FROM portable_hole_project_access a "
+                                           "WHERE a.owner_account_id=p.owner_account_id AND a.project_key=p.project_key "
+                                           "AND a.member_account_id=%s AND a.role='CONTRIBUTE'))",
+                                           (owner, key, request_id, account, guid, self.item, account, account))
+                            cursor.execute("UPDATE portable_hole_project_reservations SET state='DENIED' "
+                                           "WHERE owner_account_id=%s AND project_key=%s AND request_id=%s "
+                                           "AND state='PENDING'", (owner, key, request_id))
+                            cursor.execute("SELECT state FROM portable_hole_project_reservations "
+                                           "WHERE owner_account_id=%s AND project_key=%s AND request_id=%s",
+                                           (owner, key, request_id))
+                            state = cursor.fetchone()[0]
+                        connection.commit()
+                        outcomes.append((request_id, account, guid, state))
+                        return
+                    except self.pymysql.err.OperationalError as exc:
+                        connection.rollback()
+                        if exc.args[0] not in (1205, 1213) or attempt == 3:
+                            errors.append(exc)
+                            return
+                        # Same request ID is safe to retry after a rolled-back lock conflict.
+                        time.sleep(0.01 * (attempt + 1))
+                    except Exception as exc:
+                        connection.rollback()
+                        errors.append(exc)
+                        return
             finally:
                 connection.close()
 
