@@ -49,6 +49,15 @@ class GameplayHandoffBundle(unittest.TestCase):
             self.assertEqual(metadata["qualification"]["combined_worldserver_build_and_link"],
                              "CI_GATE_CONFIGURED_RESULT_PENDING")
             self.assertTrue((bundle / "check_dependencies.py").is_file())
+            self.assertFalse((bundle / "qualification/tools/local_gameplay.py").exists())
+            install = (bundle / "INSTALL.md").read_text()
+            self.assertIn("require the full repository checkout", install)
+            self.assertIn("the local agent's first command is `python3 tools/local_gameplay.py preflight`", install)
+            self.assertIn("python3 tools/local_gameplay.py qualify", install)
+            dependency_help = subprocess.run([sys.executable, "check_dependencies.py", "--help"],
+                                             cwd=bundle, check=True, capture_output=True, text=True)
+            self.assertIn("--core-source", dependency_help.stdout)
+            self.assertIn("libmysqlclient-dev=8.4.13-1ubuntu24.04", (bundle / "DEPENDENCIES.md").read_text())
             for name in ("INSTALL.md", "ROLLBACK.md", "DEPENDENCIES.md",
                          "PRIVATE-QUALIFICATION.md"):
                 self.assertTrue((bundle / name).is_file())

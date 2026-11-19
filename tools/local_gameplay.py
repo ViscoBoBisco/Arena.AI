@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import signal
 import subprocess
 import sys
@@ -67,12 +68,99 @@ def source_pin() -> str:
     return json.loads(PIN_FILE.read_text(encoding="utf-8"))["azerothcore_wotlk"]["revision"]
 
 
+def source_snapshot() -> tuple[str, int]:
+    names = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                           cwd=ROOT, check=True, capture_output=True).stdout.split(b"\0")
+    files: dict[str, str] = {}
+    for raw in names:
+        if not raw:
+            continue
+        name = raw.decode("utf-8", errors="surrogateescape")
+        path = ROOT / name
+        if path.is_symlink():
+            files[name] = "SYMLINK:" + os.readlink(path)
+        elif path.is_file():
+            mode = path.stat().st_mode & 0o777
+            files[name] = f"FILE:{mode:o}:{sha256_file(path)}"
+        else:
+            files[name] = "DELETED"
+    payload = json.dumps(files, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest(), len(files)
+
+
+def mysql_api_report() -> dict[str, Any]:
+    guidance = (
+        "Ubuntu 24.04 amd64: install the verified Oracle MySQL 8.4 client API used by CI:\n"
+        "  sudo apt-get update && sudo apt-get install -y ca-certificates curl gnupg\n"
+        "  curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2025 -o /tmp/mysql-repo.asc\n"
+        "  gpg --dearmor < /tmp/mysql-repo.asc | sudo tee /usr/share/keyrings/mysql-apt.gpg >/dev/null\n"
+        "  echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/mysql-apt.gpg] https://repo.mysql.com/apt/ubuntu/ noble mysql-8.4-lts' | sudo tee /etc/apt/sources.list.d/mysql-8.4-lts.list\n"
+        "  sudo apt-get update && sudo apt-get install -y build-essential cmake git libboost-all-dev libmysqlclient-dev=8.4.13-1ubuntu24.04 libssl-dev libreadline-dev zlib1g-dev libbz2-dev libncurses5-dev\n"
+        "The pinned AzerothCore core requires APIs absent from MariaDB client headers. The preflight "
+        "compiles and links a probe for mysql_stmt_bind_named_param and MYSQL_OPT_SSL_MODE; package "
+        "version alone is not trusted. Rerun `python3 tools/local_gameplay.py preflight` before building.")
+    mysql_config = shutil.which("mysql_config") or shutil.which("mariadb_config")
+    cc = shutil.which("cc") or shutil.which("gcc")
+    if not mysql_config:
+        return {"status": "MISSING", "mysql_config": None, "compiler": cc,
+                "reason": "mysql_config was not found", "install_guidance": guidance}
+    if not cc:
+        return {"status": "MISSING", "mysql_config": mysql_config, "compiler": None,
+                "reason": "a C compiler (cc/gcc) is required for the client API probe",
+                "install_guidance": guidance}
+    try:
+        version_result = subprocess.run([mysql_config, "--version"], check=False,
+                                        capture_output=True, text=True, timeout=15)
+        version = version_result.stdout.strip()
+        if version_result.returncode or not re.match(r"^8\.4\.", version):
+            return {"status": "INCOMPATIBLE", "mysql_config": mysql_config, "compiler": cc,
+                    "version": version or None,
+                    "reason": "the pinned AzerothCore toolchain requires the Oracle MySQL 8.4 client API",
+                    "install_guidance": guidance}
+        cflags = subprocess.run([mysql_config, "--cflags"], check=True, capture_output=True,
+                                text=True, timeout=15).stdout
+        libs = subprocess.run([mysql_config, "--libs"], check=True, capture_output=True,
+                              text=True, timeout=15).stdout
+        probe = ("#include <mysql.h>\n"
+                 "int main(void) {\n"
+                 "  enum mysql_ssl_mode mode = SSL_MODE_REQUIRED;\n"
+                 "  MYSQL *connection = 0; MYSQL_STMT *statement = 0; MYSQL_BIND *bindings = 0;\n"
+                 "  (void)mysql_options(connection, MYSQL_OPT_SSL_MODE, &mode);\n"
+                 "  return mysql_stmt_bind_named_param(statement, bindings, 0, 0);\n}\n")
+        with tempfile.TemporaryDirectory(prefix="arena-mysql-api-") as temp:
+            source = Path(temp) / "mysql_api_probe.c"
+            binary = Path(temp) / "mysql_api_probe"
+            source.write_text(probe, encoding="utf-8")
+            command = [cc, "-Werror", *shlex.split(cflags), str(source),
+                       *shlex.split(libs), "-o", str(binary)]
+            result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            return {"status": "INCOMPATIBLE", "mysql_config": mysql_config, "compiler": cc,
+                    "version": version, "probe_command": command,
+                    "reason": (result.stderr or result.stdout).strip()[-4000:],
+                    "install_guidance": guidance}
+        return {"status": "PASS", "mysql_config": mysql_config, "compiler": cc,
+                "version": version, "probe": "COMPILE_AND_LINK_PASS",
+                "probe_command": command}
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"status": "INCOMPATIBLE", "mysql_config": mysql_config, "compiler": cc,
+                "reason": str(exc), "install_guidance": guidance}
+
+
 def inside(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
         return True
     except ValueError:
         return False
+
+
+def pinned_build_prerequisites(dependencies: dict[str, Any]) -> tuple[bool, list[str]]:
+    missing = [name for name in ("git", "cmake", "cxx")
+               if dependencies.get(name, {}).get("status") != "PASS"]
+    if dependencies.get("mysql_client_api", {}).get("status") != "PASS":
+        missing.append("mysql_client_api")
+    return not missing, missing
 
 
 def prerequisite_report(data_dir: Path | None = None,
@@ -87,6 +175,7 @@ def prerequisite_report(data_dir: Path | None = None,
         "mysql_config": shutil.which("mysql_config") or shutil.which("mariadb_config"),
         "mysqldump": shutil.which("mysqldump") or shutil.which("mariadb-dump"),
     }
+    programs["mysql_client_api"] = mysql_api_report()
     for name in ("git", "cmake", "cxx", "mysql", "mysql_config", "mysqldump"):
         programs[name] = {"path": programs[name],
                           "status": "PASS" if programs[name] else "MISSING"}
@@ -264,19 +353,21 @@ def run_logged(workspace: Path, name: str, argv: list[str], *, cwd: Path = ROOT,
 
 def create_workspace(path: Path) -> dict[str, Any]:
     target = path.expanduser().absolute()
-    if target.is_symlink():
-        raise ValueError("workspace path must not be a symlink")
+    if any(part.is_symlink() for part in (target, *target.parents)):
+        raise ValueError("workspace path and its parents must not traverse symlinks")
     resolved = target.resolve()
     if inside(resolved, ROOT) or inside(ROOT, resolved):
         raise ValueError("workspace must be outside and disjoint from the repository")
     if target.exists():
         raise FileExistsError(f"refusing to overwrite existing workspace: {target}")
     target.mkdir(parents=True)
+    source_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
+                                 capture_output=True, text=True, check=True).stdout.strip()
+    snapshot_sha256, snapshot_files = source_snapshot()
     metadata = {"schema": WORKSPACE_SCHEMA, "run_id": uuid.uuid4().hex[:12],
                 "created_utc": utc_now(), "repository": REPOSITORY,
-                "source_head": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
-                                                capture_output=True, text=True, check=True).stdout.strip(),
-                "core_pin": source_pin()}
+                "source_head": source_head, "source_snapshot_sha256": snapshot_sha256,
+                "source_snapshot_file_count": snapshot_files, "core_pin": source_pin()}
     (target / ".arena-local-integration.json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (target / "logs").mkdir()
@@ -284,7 +375,10 @@ def create_workspace(path: Path) -> dict[str, Any]:
 
 
 def validate_workspace(path: Path) -> tuple[Path, dict[str, Any]]:
-    workspace = path.expanduser().resolve()
+    requested = path.expanduser().absolute()
+    if any(part.is_symlink() for part in (requested, *requested.parents)):
+        raise ValueError("workspace path and its parents must not traverse symlinks")
+    workspace = requested.resolve()
     if inside(workspace, ROOT) or inside(ROOT, workspace):
         raise ValueError("workspace must be outside and disjoint from the repository")
     meta_path = workspace / ".arena-local-integration.json"
@@ -293,6 +387,69 @@ def validate_workspace(path: Path) -> tuple[Path, dict[str, Any]]:
     metadata = json.loads(meta_path.read_text(encoding="utf-8"))
     if metadata.get("schema") != WORKSPACE_SCHEMA or metadata.get("repository") != REPOSITORY:
         raise ValueError("workspace marker does not identify this integration procedure")
+    return workspace, metadata
+
+
+def validate_resume_workspace(path: Path) -> tuple[Path, dict[str, Any]]:
+    workspace, metadata = validate_workspace(path)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, check=True,
+                          capture_output=True, text=True).stdout.strip()
+    snapshot_sha256, snapshot_files = source_snapshot()
+    if metadata.get("source_head") != head or metadata.get("core_pin") != source_pin():
+        raise ValueError("resume refused: repository HEAD or pinned core differs from this workspace marker")
+    if (metadata.get("source_snapshot_sha256") != snapshot_sha256
+            or metadata.get("source_snapshot_file_count") != snapshot_files):
+        raise ValueError("resume refused: source tree hash differs from the workspace's recorded source")
+    handoff_dir = workspace / "handoff"
+    if handoff_dir.exists() or handoff_dir.is_symlink():
+        if handoff_dir.is_symlink() or not handoff_dir.is_dir():
+            raise ValueError("resume refused: handoff path is not a regular directory")
+    bundle = handoff_dir / "bundle.json"
+    if bundle.exists() or bundle.is_symlink():
+        if bundle.is_symlink() or not bundle.is_file():
+            raise ValueError("resume refused: handoff bundle path is not a regular file")
+        metadata_bundle = json.loads(bundle.read_text(encoding="utf-8"))
+        source = metadata_bundle.get("source", {})
+        if (source.get("head") != head
+                or source.get("worktree_snapshot_sha256") != snapshot_sha256
+                or metadata_bundle.get("core", {}).get("revision") != source_pin()):
+            raise ValueError("resume refused: existing handoff provenance does not match this checkout")
+        verifier = workspace / "handoff/verify.py"
+        if not verifier.is_file():
+            raise ValueError("resume refused: existing handoff verifier is missing")
+        checked = subprocess.run([sys.executable, str(verifier)], cwd=verifier.parent,
+                                 capture_output=True, text=True, check=False)
+        if checked.returncode:
+            raise ValueError("resume refused: existing handoff integrity check failed: "
+                             + (checked.stdout + checked.stderr)[-2000:])
+        try:
+            verify_handoff_provenance(bundle.parent, metadata)
+            existing_manifest = json.loads(bundle.read_text(encoding="utf-8"))
+            embedded_evidence = bundle.parent / "qualification/ci-integration-evidence.json"
+            with tempfile.TemporaryDirectory(prefix=".resume-handoff-check-", dir=workspace) as temp:
+                rebuilt = Path(temp) / "generated"
+                command = [sys.executable, str(ROOT / "tools/build_gameplay_handoff.py"),
+                           "--out", str(rebuilt)]
+                if embedded_evidence.is_file():
+                    command.extend(["--ci-evidence", str(embedded_evidence)])
+                generated = subprocess.run(command, cwd=ROOT, capture_output=True,
+                                           text=True, timeout=600, check=False)
+                if generated.returncode:
+                    raise ValueError("source handoff could not be reproduced: "
+                                     + (generated.stdout + generated.stderr)[-2000:])
+                regenerated = json.loads((rebuilt / "bundle.json").read_text(encoding="utf-8"))
+                if regenerated.get("files") != existing_manifest.get("files"):
+                    raise ValueError("existing handoff file hashes differ from the reproducible source bundle")
+        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+            raise ValueError(f"resume refused: existing handoff evidence invalid: {exc}") from exc
+    core = workspace / "core"
+    if core.exists():
+        if core.is_symlink() or not core.is_dir() or not (core / ".git").exists():
+            raise ValueError("resume refused: existing isolated core is not a regular Git checkout")
+        revision = subprocess.run(["git", "-C", str(core), "rev-parse", "HEAD"],
+                                  capture_output=True, text=True, check=False)
+        if revision.returncode or revision.stdout.strip() != source_pin():
+            raise ValueError("resume refused: isolated public-core checkout is not at the pinned revision")
     return workspace, metadata
 
 
@@ -326,6 +483,48 @@ def _tree_hash(path: Path) -> str:
             files[item.relative_to(path).as_posix()] = sha256_file(item)
     raw = json.dumps(files, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(raw).hexdigest()
+
+
+def verify_handoff_provenance(bundle_dir: Path, metadata: dict[str, Any]) -> dict[str, Any] | None:
+    bundle_path = bundle_dir / "bundle.json"
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    source = bundle.get("source", {})
+    if (source.get("head") != metadata["source_head"]
+            or source.get("worktree_snapshot_sha256") != metadata["source_snapshot_sha256"]
+            or bundle.get("core", {}).get("revision") != metadata["core_pin"]):
+        raise ValueError("handoff source/core provenance does not match the marked workspace")
+    evidence_path = bundle_dir / "qualification/ci-integration-evidence.json"
+    if not evidence_path.is_file():
+        return None
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    expected_modules = {"mod-vault-terminal", "mod-portable-hole", "mod-runic-codex",
+                        "mod-argent-commission"}
+    modules = evidence.get("modules")
+    digest_ok = lambda value: (isinstance(value, str) and len(value) == 64
+                               and all(c in "0123456789abcdef" for c in value))
+    if (evidence.get("schema") != "arena-public-core-integration-evidence/1"
+            or evidence.get("source", {}).get("repository") != REPOSITORY
+            or evidence.get("source", {}).get("head") != metadata["source_head"]
+            or evidence.get("core", {}).get("revision") != metadata["core_pin"]
+            or evidence.get("combined_worldserver_build_link") != "PASS"
+            or not isinstance(modules, dict) or set(modules) != expected_modules
+            or not all(digest_ok(value) for value in modules.values())
+            or not digest_ok(evidence.get("worldserver_binary_sha256"))
+            or evidence.get("worldserver_version_command", {}).get("status") != "PASS"
+            or not evidence.get("worldserver_version_command", {}).get("output")
+            or evidence.get("mysql_client", {}).get("mysql_config_version") != "8.4.13"
+            or evidence.get("mysql_client", {}).get("libmysqlclient_dev_package") != "8.4.13-1ubuntu24.04"
+            or evidence.get("mysql_client", {}).get("required_api_probe") != "PASS"
+            or evidence.get("worldserver_boot") != "NOT_RUN_NO_VERIFIED_SERVER_DATA_AND_DATABASE_BOOT_FIXTURE"):
+        raise ValueError("embedded CI evidence is incomplete, failed, or not bound to this exact source/pin")
+    for module, expected in modules.items():
+        root = bundle_dir / "modules" / module
+        if not root.is_dir() or _tree_hash(root) != expected:
+            raise ValueError(f"embedded CI module hash mismatch: {module}")
+    record = bundle.get("files", {}).get("qualification/ci-integration-evidence.json", {})
+    if record.get("sha256") != sha256_file(evidence_path):
+        raise ValueError("embedded CI evidence hash does not match the handoff manifest")
+    return evidence
 
 
 def install_addons(workspace: Path, client_dir: Path, affirmative: bool,
@@ -664,26 +863,74 @@ def build_pinned_core(workspace: Path, timeout: int) -> dict[str, Any]:
     core = workspace / "core"
     build = workspace / "build"
     source_url = "https://github.com/azerothcore/azerothcore-wotlk.git"
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, check=True,
+                          capture_output=True, text=True).stdout.strip()
+    snapshot_sha256, _ = source_snapshot()
+    module_names = ("mod-vault-terminal", *(name for name, _ in COMPONENTS))
+    evidence_path = workspace / "local-build-evidence.json"
+    expected_binary = build / "src/server/apps/worldserver"
+    if evidence_path.is_file():
+        saved = json.loads(evidence_path.read_text(encoding="utf-8"))
+        if (saved.get("source_head") != head or saved.get("source_snapshot_sha256") != snapshot_sha256
+                or saved.get("core_revision") != pin
+                or saved.get("worldserver") != str(expected_binary)
+                or not expected_binary.is_file()
+                or not os.access(expected_binary, os.X_OK)
+                or saved.get("worldserver_sha256") != sha256_file(expected_binary)):
+            return {"status": "BLOCKED", "reason": "saved build evidence or binary is incompatible with this source/workspace"}
+        for module in module_names:
+            root = core / "modules" / module
+            if not root.is_dir() or _tree_hash(root) != saved.get("modules", {}).get(module):
+                return {"status": "BLOCKED", "reason": f"saved module tree changed or is missing: {module}"}
+        version = run_logged(workspace, "worldserver-version-resume",
+                             [str(expected_binary), "--version"], timeout=30)
+        if version["status"] != "PASS":
+            return {"status": "BLOCKED", "reason": "saved worldserver no longer passes --version", "version_command": version}
+        saved["resumed"] = True
+        saved["resume_version_check"] = version
+        return saved
+
     steps = []
-    clone = run_logged(workspace, "clone-pinned-core", ["git", "clone", "--filter=blob:none",
-                       "--no-checkout", source_url, str(core)], timeout=timeout)
-    steps.append(clone)
-    if clone["status"] != "PASS":
-        return {"status": "FAIL", "steps": steps}
-    checkout = run_logged(workspace, "checkout-core-pin", ["git", "-C", str(core), "checkout", "--detach", pin], timeout=timeout)
-    steps.append(checkout)
-    if checkout["status"] != "PASS":
-        return {"status": "FAIL", "steps": steps}
-    rev = subprocess.run(["git", "-C", str(core), "rev-parse", "HEAD"], check=True,
-                         capture_output=True, text=True).stdout.strip()
-    if rev != pin:
-        return {"status": "FAIL", "reason": f"core pin mismatch: expected {pin}, got {rev}", "steps": steps}
-    for module in ("mod-vault-terminal", *(name for name, _ in COMPONENTS)):
+    if core.exists():
+        if core.is_symlink() or not core.is_dir() or not (core / ".git").exists():
+            return {"status": "BLOCKED", "reason": "existing core path is not a regular Git checkout"}
+        current = subprocess.run(["git", "-C", str(core), "rev-parse", "HEAD"],
+                                  capture_output=True, text=True, check=False)
+        if current.returncode or current.stdout.strip() != pin:
+            return {"status": "BLOCKED", "reason": "existing core checkout is not at the pinned revision"}
+        rev = current.stdout.strip()
+        steps.append({"name": "reuse-pinned-core", "status": "PASS", "revision": rev})
+    else:
+        clone = run_logged(workspace, "clone-pinned-core", ["git", "clone", "--filter=blob:none",
+                           "--no-checkout", source_url, str(core)], timeout=timeout)
+        steps.append(clone)
+        if clone["status"] != "PASS":
+            return {"status": "FAIL", "steps": steps}
+        checkout = run_logged(workspace, "checkout-core-pin", ["git", "-C", str(core), "checkout", "--detach", pin], timeout=timeout)
+        steps.append(checkout)
+        if checkout["status"] != "PASS":
+            return {"status": "FAIL", "steps": steps}
+        rev = subprocess.run(["git", "-C", str(core), "rev-parse", "HEAD"], check=True,
+                             capture_output=True, text=True).stdout.strip()
+        if rev != pin:
+            return {"status": "FAIL", "reason": f"core pin mismatch: expected {pin}, got {rev}", "steps": steps}
+    for module in module_names:
         source = workspace / "handoff/modules" / module
         target = core / "modules" / module
+        if not source.is_dir():
+            return {"status": "BLOCKED", "reason": f"handoff module source is missing: {module}", "steps": steps}
         if target.exists() or target.is_symlink():
-            return {"status": "BLOCKED", "reason": f"refusing to overwrite pre-existing module in fresh clone: {module}", "steps": steps}
-        shutil.copytree(source, target)
+            if target.is_symlink() or not target.is_dir() or _tree_hash(target) != _tree_hash(source):
+                return {"status": "BLOCKED", "reason": f"existing isolated module differs from handoff: {module}", "steps": steps}
+        else:
+            shutil.copytree(source, target)
+    if build.is_symlink():
+        return {"status": "BLOCKED", "reason": "isolated build directory may not be a symlink", "steps": steps}
+    cache = build / "CMakeCache.txt"
+    if cache.exists():
+        cache_text = cache.read_text(encoding="utf-8", errors="replace")
+        if f"CMAKE_HOME_DIRECTORY:INTERNAL={core}" not in cache_text:
+            return {"status": "BLOCKED", "reason": "existing CMake build cache belongs to a different source directory", "steps": steps}
     configure = run_logged(workspace, "configure-pinned-core",
                            ["cmake", "-S", str(core), "-B", str(build), *CMAKE_FLAGS], timeout=timeout)
     steps.append(configure)
@@ -701,25 +948,20 @@ def build_pinned_core(workspace: Path, timeout: int) -> dict[str, Any]:
                         ["cmake", "--build", str(build), "--target", "worldserver", "--parallel", "2"],
                         timeout=timeout)
     steps.append(linked)
-    binary = build / "src/server/apps/worldserver"
+    binary = expected_binary
     if linked["status"] != "PASS" or not binary.is_file() or not os.access(binary, os.X_OK):
         return {"status": "FAIL", "steps": steps, "binary": str(binary)}
     version = run_logged(workspace, "worldserver-version", [str(binary), "--version"], timeout=30)
     steps.append(version)
-    modules_digest = {}
-    for module in ("mod-vault-terminal", *(name for name, _ in COMPONENTS)):
-        root = core / "modules" / module
-        files = {p.relative_to(root).as_posix(): sha256_file(p)
-                 for p in sorted(root.rglob("*")) if p.is_file() and not p.is_symlink()}
-        modules_digest[module] = hashlib.sha256(json.dumps(
-            files, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    modules_digest = {module: _tree_hash(core / "modules" / module) for module in module_names}
     result = {"status": "PASS" if version["status"] == "PASS" else "FAIL",
+              "source_head": head, "source_snapshot_sha256": snapshot_sha256,
               "core_revision": rev, "modules": modules_digest,
               "worldserver": str(binary), "worldserver_sha256": sha256_file(binary),
               "version_command": version, "steps": steps,
               "boot": "NOT_ASSESSED_UNTIL_EXPLICIT_RUNTIME_OPTIONS_SUPPLIED",
               "client": "NOT_ASSESSED"}
-    (workspace / "local-build-evidence.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    write_json_atomic(evidence_path, result)
     return result
 
 
@@ -841,6 +1083,26 @@ def render_report(report: dict[str, Any]) -> str:
         status = item.get("status", "NOT_ASSESSED") if isinstance(item, dict) else str(item)
         detail = item.get("reason", item.get("summary", "")) if isinstance(item, dict) else ""
         lines.append(f"| {name} | {status} | {str(detail).replace('|', '/')} |")
+    handoff = report.get("handoff")
+    if handoff:
+        lines += ["", "## Source/evidence provenance", "",
+                  f"- Worktree snapshot SHA-256: `{handoff['source'].get('worktree_snapshot_sha256')}`",
+                  f"- Handoff manifest SHA-256: `{handoff['bundle_sha256']}`",
+                  f"- Public core pin: `{handoff['core'].get('revision')}`"]
+        if report.get("ci_evidence"):
+            lines.append(f"- Verified CI worldserver SHA-256: `{report['ci_evidence']['worldserver_binary_sha256']}`")
+            lines.append("- Boot/client/private-fork runtime qualification remains not assessed.")
+        lines += ["", "### Ordered migrations and hashes", ""]
+        for migration in handoff.get("migration_order", []):
+            record = handoff.get("file_hashes", {}).get(migration, {})
+            lines.append(f"- `{migration}` — SHA-256 `{record.get('sha256', 'MISSING')}`")
+        qual = handoff.get("qualification", {})
+        safety = handoff.get("safety", {})
+        lines += ["", "### Known limitations", "",
+                  f"- Server boot: `{qual.get('worldserver_boot', 'NOT_ASSESSED')}`.",
+                  f"- Private Campaign Party/client: `{qual.get('private_campaign_party_client', 'REQUIRES_LOCAL_QUALIFICATION')}`.",
+                  f"- Physical-item custody enabled: `{safety.get('physical_item_custody_enabled', False)}`.",
+                  f"- Production ready: `{safety.get('ready_for_production', False)}`."]
     lines += ["", "## Required local acceptance", "",
               "1. Run the pinned public-core build in this isolated workspace; preserve the recorded SHA-256s.",
               "2. Initialize matching disposable auth/world/characters databases from the exact pinned core; use only `arena_disposable_*` schemas.",
@@ -851,14 +1113,40 @@ def render_report(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def qualification_failures(args: argparse.Namespace, gates: dict[str, Any]) -> list[str]:
+    failures = []
+    for gate in ("package_audit", "repository_tests", "source_handoff", "handoff_integrity"):
+        if gates.get(gate, {}).get("status") != "PASS":
+            failures.append(gate)
+    build_status = gates.get("pinned_four_module_build_link", {}).get("status")
+    if args.require_build and build_status != "PASS":
+        failures.append("pinned_four_module_build_link")
+    elif build_status in ("FAIL", "TIMEOUT", "BLOCKED"):
+        failures.append("pinned_four_module_build_link")
+    if args.create_disposable_db and gates.get("disposable_module_migrations", {}).get("status") != "MODULE_MIGRATIONS_PASS":
+        failures.append("disposable_module_migrations")
+    if args.install_addons and gates.get("test_client_addons", {}).get("status") != "PASS":
+        failures.append("test_client_addons")
+    if args.attempt_public_boot and gates.get("public_server_boot", {}).get("status") != "PASS":
+        failures.append("public_server_boot")
+    if args.ci_evidence and gates.get("ci_source_compile_link", {}).get("status") != "PASS":
+        failures.append("ci_source_compile_link")
+    return sorted(set(failures))
+
+
 def qualify(args: argparse.Namespace) -> int:
     workspace = Path(args.workspace)
-    metadata = create_workspace(workspace)
-    workspace = workspace.resolve()
+    if args.resume:
+        workspace, metadata = validate_resume_workspace(workspace)
+    else:
+        metadata = create_workspace(workspace)
+        workspace = workspace.resolve()
     report: dict[str, Any] = {"schema": "arena-local-gameplay-qualification/1",
                               "generated_utc": utc_now(),
                               "source": {"repository": REPOSITORY,
                                          "head": metadata["source_head"],
+                                         "worktree_snapshot_sha256": metadata["source_snapshot_sha256"],
+                                         "worktree_snapshot_file_count": metadata["source_snapshot_file_count"],
                                          "worktree_dirty": bool(subprocess.run(
                                              ["git", "status", "--porcelain"], cwd=ROOT,
                                              check=True, capture_output=True, text=True).stdout.strip())},
@@ -872,25 +1160,82 @@ def qualify(args: argparse.Namespace) -> int:
     report["gates"]["package_audit"] = audit
     report["gates"]["repository_tests"] = run_logged(workspace, "repository-make-check", ["make", "check"], timeout=args.test_timeout)
     bundle_out = workspace / "handoff"
-    build_bundle = run_logged(workspace, "build-source-handoff",
-                              [sys.executable, str(ROOT / "tools/build_gameplay_handoff.py"),
-                               "--out", str(bundle_out)], timeout=args.test_timeout)
+    bundle_out = workspace / "handoff"
+    existing_evidence = bundle_out / "qualification/ci-integration-evidence.json"
+    if bundle_out.exists():
+        if not args.resume:
+            build_bundle = {"status": "BLOCKED", "reason": "handoff already exists; use --resume to verify and reuse it"}
+        else:
+            build_bundle = {"status": "PASS", "resumed": True,
+                            "bundle": str(bundle_out / "bundle.json")}
+            if args.ci_evidence:
+                evidence_path = args.ci_evidence.expanduser().resolve()
+                if (not evidence_path.is_file() or evidence_path.is_symlink()
+                        or not existing_evidence.is_file()
+                        or sha256_file(evidence_path) != sha256_file(existing_evidence)):
+                    build_bundle = {"status": "BLOCKED",
+                                    "reason": "resume evidence differs from the evidence embedded in the verified handoff"}
+    else:
+        builder_command = [sys.executable, str(ROOT / "tools/build_gameplay_handoff.py"),
+                           "--out", str(bundle_out)]
+        if args.ci_evidence:
+            evidence_path = args.ci_evidence.expanduser().resolve()
+            if not evidence_path.is_file() or evidence_path.is_symlink():
+                build_bundle = {"status": "BLOCKED", "reason": "--ci-evidence must name a regular JSON evidence file"}
+            else:
+                builder_command.extend(["--ci-evidence", str(evidence_path)])
+                build_bundle = run_logged(workspace, "build-source-handoff", builder_command,
+                                          timeout=args.test_timeout)
+        else:
+            build_bundle = run_logged(workspace, "build-source-handoff", builder_command,
+                                      timeout=args.test_timeout)
     report["gates"]["source_handoff"] = build_bundle
     if build_bundle["status"] == "PASS":
         report["gates"]["handoff_integrity"] = run_logged(workspace, "verify-source-handoff",
                               [sys.executable, str(bundle_out / "verify.py")], cwd=bundle_out,
                               timeout=args.test_timeout)
+        bundle_manifest_path = bundle_out / "bundle.json"
+        if report["gates"]["handoff_integrity"]["status"] == "PASS" and bundle_manifest_path.is_file():
+            try:
+                embedded_evidence = verify_handoff_provenance(bundle_out, metadata)
+                bundle_manifest = json.loads(bundle_manifest_path.read_text(encoding="utf-8"))
+                report["handoff"] = {
+                    "bundle_sha256": sha256_file(bundle_manifest_path),
+                    "source": bundle_manifest.get("source"),
+                    "core": bundle_manifest.get("core"),
+                    "migration_order": bundle_manifest.get("migration_order"),
+                    "qualification": bundle_manifest.get("qualification"),
+                    "safety": bundle_manifest.get("safety"),
+                    "file_hashes": bundle_manifest.get("files", {}),
+                }
+                if embedded_evidence is not None:
+                    report["ci_evidence"] = embedded_evidence
+                    report["ci_evidence_sha256"] = sha256_file(bundle_out / "qualification/ci-integration-evidence.json")
+                    report["gates"]["ci_source_compile_link"] = {"status": "PASS",
+                        "source_head": embedded_evidence["source"]["head"],
+                        "worldserver_binary_sha256": embedded_evidence["worldserver_binary_sha256"]}
+                else:
+                    report["gates"]["ci_source_compile_link"] = {"status": "NOT_ASSESSED",
+                        "reason": "no matching CI evidence supplied or embedded in the verified bundle"}
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                report["gates"]["handoff_integrity"] = {"status": "FAIL", "reason": str(exc)}
         report["handoff_archive"] = zip_handoff(workspace)
     else:
-        report["gates"]["handoff_integrity"] = {"status": "BLOCKED", "reason": "bundle generation failed"}
+        report["gates"]["handoff_integrity"] = {"status": "BLOCKED", "reason": "bundle generation failed or an existing bundle was refused"}
     dependencies = prerequisite_report(args.data_dir, args.test_client)
-    build_prereqs = all(dependencies[name]["status"] == "PASS" for name in ("git", "cmake", "cxx"))
+    build_prereqs, missing_build_tools = pinned_build_prerequisites(dependencies)
+    mysql_api_status = dependencies["mysql_client_api"]["status"]
     if args.skip_build:
         report["gates"]["pinned_four_module_build_link"] = {"status": "NOT_ASSESSED", "reason": "--skip-build"}
     elif not build_prereqs:
+        reasons = list(missing_build_tools)
+        if mysql_api_status != "PASS":
+            reasons.append("mysql_client_api")
         report["gates"]["pinned_four_module_build_link"] = {
-            "status": "BLOCKED", "reason": "missing build prerequisites",
-            "missing": [name for name in ("git", "cmake", "cxx") if dependencies[name]["status"] != "PASS"]}
+            "status": "BLOCKED" if args.require_build else "NOT_ASSESSED",
+            "reason": "required build prerequisites are unavailable" if args.require_build
+                      else "optional build prerequisites are unavailable",
+            "missing": reasons, "mysql_client_api": dependencies["mysql_client_api"]}
     elif build_bundle["status"] != "PASS":
         report["gates"]["pinned_four_module_build_link"] = {"status": "BLOCKED", "reason": "handoff module sources unavailable"}
     else:
@@ -918,7 +1263,7 @@ def qualify(args: argparse.Namespace) -> int:
             report["gates"]["public_server_boot"] = {
                 "status": "BLOCKED", "reason": "--attempt-public-boot requires --data-dir and --runtime-config"}
         elif report["gates"]["pinned_four_module_build_link"].get("status") != "PASS":
-            report["gates"]["public_server_boot"] = {"status": "NOT_ASSESSED", "reason": "isolated build not successful"}
+            report["gates"]["public_server_boot"] = {"status": "BLOCKED", "reason": "requested boot requires a successful isolated build"}
         else:
             try:
                 runtime_config = stage_runtime_config(workspace, args.runtime_config)
@@ -929,22 +1274,24 @@ def qualify(args: argparse.Namespace) -> int:
                 report["gates"]["public_server_boot"] = {"status": "BLOCKED", "reason": str(exc)}
     else:
         report["gates"]["public_server_boot"] = {"status": "NOT_ASSESSED", "reason": "boot is opt-in and requires disposable DB config and verified data"}
-    if audit["status"] != "PASS":
-        report["final_status"] = "BLOCKED_PACKAGE_AUDIT"
-    elif report["gates"]["repository_tests"]["status"] != "PASS":
-        report["final_status"] = "BLOCKED_REPOSITORY_TESTS"
-    elif report["gates"]["pinned_four_module_build_link"]["status"] == "PASS":
+    failures = qualification_failures(args, report["gates"])
+    build_status = report["gates"]["pinned_four_module_build_link"].get("status")
+    report["failures"] = failures
+    if failures:
+        report["final_status"] = "QUALIFICATION_FAILED"
+    elif build_status == "PASS" or report["gates"].get("ci_source_compile_link", {}).get("status") == "PASS":
         report["final_status"] = "PUBLIC_COMPILE_LINK_QUALIFIED_RUNTIME_GATES_SEPARATE"
     else:
         report["final_status"] = "SOURCE_AND_STATIC_QUALIFICATION_ONLY"
-    (workspace / "qualification.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json_atomic(workspace / "qualification.json", report)
     (workspace / "QUALIFICATION.md").write_text(render_report(report), encoding="utf-8")
     print(json.dumps({"workspace": str(workspace), "final_status": report["final_status"],
+                      "exit_code": 1 if failures else 0, "failures": report["failures"],
                       "gates": {key: value.get("status", "NOT_ASSESSED")
                                 if isinstance(value, dict) else "RECORDED"
                                 for key, value in report["gates"].items()},
                       "report": str(workspace / "QUALIFICATION.md")}, indent=2))
-    return 0 if report["final_status"] != "BLOCKED_PACKAGE_AUDIT" and report["final_status"] != "BLOCKED_REPOSITORY_TESTS" else 1
+    return 1 if failures else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -956,6 +1303,12 @@ def main(argv: list[str] | None = None) -> int:
     audit = sub.add_parser("audit", help="audit module/addon/migration/register integration")
     q = sub.add_parser("qualify", help="tests, handoff, isolated build, and opt-in local gates")
     q.add_argument("--workspace", required=True, type=Path)
+    q.add_argument("--resume", action="store_true",
+                   help="resume only a marked workspace whose source, pin, handoff and isolated core hashes still match")
+    q.add_argument("--ci-evidence", type=Path,
+                   help="successful integration-evidence.json from CI for this exact clean source revision")
+    q.add_argument("--require-build", action="store_true",
+                   help="treat missing pinned-build prerequisites as a requested-operation failure")
     q.add_argument("--data-dir", type=Path)
     q.add_argument("--test-client", type=Path)
     q.add_argument("--install-addons", action="store_true")
@@ -994,6 +1347,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0 if result["status"] == "PASS" else 1
         if args.command == "qualify":
+            if args.require_build and args.skip_build:
+                parser.error("--require-build cannot be combined with --skip-build")
             if args.install_addons and (not args.test_client or args.client_build != "12340"
                                         or not args.confirm_test_client_write):
                 parser.error("addon install requires --test-client, --client-build 12340, and --confirm-test-client-write")
@@ -1011,7 +1366,7 @@ def main(argv: list[str] | None = None) -> int:
         success_statuses = {"PASS", "DISABLED_IN_ISOLATED_CONFIG", "ORIGINAL_ISOLATED_CONFIG_RESTORED",
                             "RECOVERED_PRE_INSTALL_CLIENT_STATE"}
         return 0 if result.get("status") in success_statuses or result.get("state") in success_statuses else 1
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"local integration blocked safely: {exc}", file=sys.stderr)
         return 2
 

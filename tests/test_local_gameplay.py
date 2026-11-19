@@ -34,6 +34,61 @@ class LocalGameplayAudit(unittest.TestCase):
         self.assertIn("pinned_core", result.stdout)
 
 
+class MySQLClientApiProbe(unittest.TestCase):
+    def test_mysql_84_probe_checks_version_headers_and_linked_api(self):
+        from unittest.mock import patch
+        import subprocess
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if argv[1:] == ["--version"]:
+                return subprocess.CompletedProcess(argv, 0, "8.4.13\n", "")
+            if argv[1:] == ["--cflags"]:
+                return subprocess.CompletedProcess(argv, 0, "-I/test/mysql/include", "")
+            if argv[1:] == ["--libs"]:
+                return subprocess.CompletedProcess(argv, 0, "-L/test/mysql/lib -lmysqlclient", "")
+            source = next(Path(arg) for arg in argv if arg.endswith("mysql_api_probe.c"))
+            text = source.read_text()
+            self.assertIn("mysql_stmt_bind_named_param", text)
+            self.assertIn("MYSQL_OPT_SSL_MODE", text)
+            self.assertIn("-lmysqlclient", argv)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with patch.object(local.shutil, "which", side_effect=lambda name: {
+                "mysql_config": "/usr/bin/mysql_config", "cc": "/usr/bin/cc"}.get(name)), patch.object(
+                local.subprocess, "run", side_effect=fake_run):
+            result = local.mysql_api_report()
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["probe"], "COMPILE_AND_LINK_PASS")
+        self.assertEqual(len(calls), 4)
+
+    def test_incompatible_client_api_blocks_build_even_when_cmake_and_compilers_exist(self):
+        dependencies = {name: {"status": "PASS"} for name in ("git", "cmake", "cxx")}
+        dependencies["mysql_client_api"] = {"status": "INCOMPATIBLE"}
+        ready, missing = local.pinned_build_prerequisites(dependencies)
+        self.assertFalse(ready)
+        self.assertEqual(missing, ["mysql_client_api"])
+
+    def test_mariadb_version_is_rejected_before_probe_or_build(self):
+        from unittest.mock import patch
+        import subprocess
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "10.11.8-MariaDB\n", "")
+
+        with patch.object(local.shutil, "which", side_effect=lambda name: {
+                "mariadb_config": "/usr/bin/mariadb_config", "cc": "/usr/bin/cc"}.get(name)), patch.object(
+                local.subprocess, "run", side_effect=fake_run):
+            result = local.mysql_api_report()
+        self.assertEqual(result["status"], "INCOMPATIBLE")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("libmysqlclient-dev=8.4.13-1ubuntu24.04", result["install_guidance"])
+        self.assertIn("cmake git libboost-all-dev", result["install_guidance"])
+
+
 class WorkspaceSafety(unittest.TestCase):
     def test_workspace_is_external_and_never_overwritten(self):
         with tempfile.TemporaryDirectory(prefix="arena-local-tool-") as temp:
@@ -44,6 +99,34 @@ class WorkspaceSafety(unittest.TestCase):
                 local.create_workspace(target)
             with self.assertRaises(ValueError):
                 local.create_workspace(ROOT / "not-allowed")
+
+    def test_workspace_paths_reject_symlink_roots_and_parents(self):
+        with tempfile.TemporaryDirectory(prefix="arena-local-symlink-") as temp:
+            root = Path(temp)
+            real_parent = root / "real"
+            real_parent.mkdir()
+            linked_parent = root / "linked"
+            linked_parent.symlink_to(real_parent, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "symlinks"):
+                local.create_workspace(linked_parent / "workspace")
+            workspace = real_parent / "workspace"
+            local.create_workspace(workspace)
+            alias = root / "workspace-alias"
+            alias.symlink_to(workspace, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "symlinks"):
+                local.validate_resume_workspace(alias)
+
+    def test_resume_requires_matching_recorded_checkout_and_source_hash(self):
+        with tempfile.TemporaryDirectory(prefix="arena-local-resume-") as temp:
+            workspace = Path(temp) / "work"
+            local.create_workspace(workspace)
+            resolved, marker = local.validate_resume_workspace(workspace)
+            self.assertEqual(resolved, workspace.resolve())
+            marker_path = workspace / ".arena-local-integration.json"
+            marker["source_snapshot_sha256"] = "0" * 64
+            marker_path.write_text(json.dumps(marker))
+            with self.assertRaisesRegex(ValueError, "source tree hash differs"):
+                local.validate_resume_workspace(workspace)
 
     def test_run_logged_handles_stdin_sql_and_records_output(self):
         with tempfile.TemporaryDirectory(prefix="arena-local-tool-") as temp:
@@ -69,6 +152,134 @@ class WorkspaceSafety(unittest.TestCase):
             with patch.dict(os.environ, {"ARENA_DISPOSABLE_MYSQL_HOST": "db.production.example"}):
                 with self.assertRaisesRegex(ValueError, "local MySQL"):
                     local._mysql_credentials()
+
+
+class HandoffEvidence(unittest.TestCase):
+    def test_embedded_ci_evidence_must_match_source_core_and_module_trees(self):
+        with tempfile.TemporaryDirectory(prefix="arena-handoff-evidence-") as temp:
+            bundle = Path(temp)
+            modules = ("mod-vault-terminal", "mod-portable-hole", "mod-runic-codex",
+                       "mod-argent-commission")
+            module_hashes = {}
+            for name in modules:
+                root = bundle / "modules" / name
+                root.mkdir(parents=True)
+                (root / "source.txt").write_text(name)
+                module_hashes[name] = local._tree_hash(root)
+            evidence = {
+                "schema": "arena-public-core-integration-evidence/1",
+                "source": {"repository": local.REPOSITORY, "head": "source-head"},
+                "core": {"revision": "core-pin"}, "modules": module_hashes,
+                "combined_worldserver_build_link": "PASS",
+                "worldserver_binary_sha256": "a" * 64,
+                "worldserver_version_command": {"status": "PASS", "output": "worldserver version"},
+                "mysql_client": {"mysql_config_version": "8.4.13",
+                                 "libmysqlclient_dev_package": "8.4.13-1ubuntu24.04",
+                                 "required_api_probe": "PASS"},
+                "worldserver_boot": "NOT_RUN_NO_VERIFIED_SERVER_DATA_AND_DATABASE_BOOT_FIXTURE",
+            }
+            evidence_path = bundle / "qualification/ci-integration-evidence.json"
+            evidence_path.parent.mkdir(parents=True)
+            evidence_path.write_text(json.dumps(evidence))
+            snapshot = "b" * 64
+            manifest = {"source": {"head": "source-head",
+                                   "worktree_snapshot_sha256": snapshot},
+                        "core": {"revision": "core-pin"},
+                        "files": {"qualification/ci-integration-evidence.json": {
+                            "sha256": local.sha256_file(evidence_path)}}}
+            (bundle / "bundle.json").write_text(json.dumps(manifest))
+            metadata = {"source_head": "source-head", "source_snapshot_sha256": snapshot,
+                        "core_pin": "core-pin"}
+            self.assertEqual(local.verify_handoff_provenance(bundle, metadata), evidence)
+            (bundle / "modules/mod-runic-codex/source.txt").write_text("tampered")
+            with self.assertRaisesRegex(ValueError, "module hash mismatch"):
+                local.verify_handoff_provenance(bundle, metadata)
+
+
+class QualificationStatus(unittest.TestCase):
+    def _args(self, **overrides):
+        from argparse import Namespace
+        values = {"require_build": False, "create_disposable_db": False,
+                  "install_addons": False, "attempt_public_boot": False,
+                  "ci_evidence": None}
+        values.update(overrides)
+        return Namespace(**values)
+
+    def test_optional_unassessed_build_does_not_fail_qualification(self):
+        gates = {name: {"status": "PASS"} for name in (
+            "package_audit", "repository_tests", "source_handoff", "handoff_integrity")}
+        gates["pinned_four_module_build_link"] = {"status": "NOT_ASSESSED"}
+        self.assertEqual(local.qualification_failures(self._args(), gates), [])
+
+    def test_failed_requested_build_db_boot_and_ci_evidence_are_unsuccessful(self):
+        gates = {name: {"status": "PASS"} for name in (
+            "package_audit", "repository_tests", "source_handoff", "handoff_integrity")}
+        gates.update({"pinned_four_module_build_link": {"status": "NOT_ASSESSED"},
+                      "disposable_module_migrations": {"status": "BLOCKED"},
+                      "test_client_addons": {"status": "NOT_ASSESSED"},
+                      "public_server_boot": {"status": "BLOCKED"},
+                      "ci_source_compile_link": {"status": "NOT_ASSESSED"}})
+        args = self._args(require_build=True, create_disposable_db=True,
+                          attempt_public_boot=True, ci_evidence=Path("evidence.json"))
+        self.assertEqual(set(local.qualification_failures(args, gates)), {
+            "pinned_four_module_build_link", "disposable_module_migrations",
+            "public_server_boot", "ci_source_compile_link"})
+
+    def test_requested_failed_execution_is_not_hidden_by_optional_gates(self):
+        gates = {name: {"status": "PASS"} for name in (
+            "package_audit", "repository_tests", "source_handoff", "handoff_integrity")}
+        gates["pinned_four_module_build_link"] = {"status": "FAIL"}
+        self.assertEqual(local.qualification_failures(self._args(), gates),
+                         ["pinned_four_module_build_link"])
+
+
+class BuildResume(unittest.TestCase):
+    def _cached_workspace(self, workspace: Path):
+        core = workspace / "core"
+        module_hashes = {}
+        for name in ("mod-vault-terminal", *(module for module, _ in local.COMPONENTS)):
+            root = core / "modules" / name
+            root.mkdir(parents=True)
+            (root / "source.txt").write_text(name)
+            module_hashes[name] = local._tree_hash(root)
+        binary = workspace / "build/src/server/apps/worldserver"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("#!/bin/sh\necho worldserver-version\n")
+        binary.chmod(0o755)
+        head = __import__("subprocess").check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        snapshot, _ = local.source_snapshot()
+        saved = {"status": "PASS", "source_head": head,
+                 "source_snapshot_sha256": snapshot, "core_revision": local.source_pin(),
+                 "modules": module_hashes, "worldserver": str(binary),
+                 "worldserver_sha256": local.sha256_file(binary),
+                 "version_command": {"status": "PASS", "output": "worldserver-version"}}
+        (workspace / "local-build-evidence.json").write_text(json.dumps(saved))
+        return saved
+
+    def test_valid_build_evidence_resumes_without_clone_or_rebuild(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory(prefix="arena-build-resume-") as temp:
+            workspace = Path(temp)
+            self._cached_workspace(workspace)
+            with patch.object(local, "run_logged", return_value={"status": "PASS"}) as logged:
+                result = local.build_pinned_core(workspace, 10)
+            self.assertEqual(result["status"], "PASS")
+            self.assertTrue(result["resumed"])
+            self.assertEqual(logged.call_count, 1)
+            self.assertIn("worldserver-version", logged.call_args.args[1])
+
+    def test_resume_refuses_changed_module_source_instead_of_rebuilding(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory(prefix="arena-build-resume-") as temp:
+            workspace = Path(temp)
+            self._cached_workspace(workspace)
+            (workspace / "core/modules/mod-runic-codex/source.txt").write_text("tampered")
+            with patch.object(local, "run_logged") as logged:
+                result = local.build_pinned_core(workspace, 10)
+            self.assertEqual(result["status"], "BLOCKED")
+            self.assertIn("module tree changed", result["reason"])
+            logged.assert_not_called()
 
 
 class ClientAndConfigRecovery(unittest.TestCase):

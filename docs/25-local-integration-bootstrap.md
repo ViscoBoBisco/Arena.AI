@@ -1,10 +1,16 @@
 # Four-module local integration bootstrap and acceptance
 
-This is the single supported local entry point for the merged four-module package. It creates a fresh workspace outside this checkout, audits the package, runs repository checks, generates and verifies a source bundle, and—when prerequisites exist—clones the exact public AzerothCore pin into that workspace, compiles all four modules together, links `worldserver`, and records hashes and logs. It never copies a module into an existing Campaign Party/private checkout.
+This is the repository-checkout entry point for the merged four-module package. `tools/local_gameplay.py` depends on the full repository (`make`, generators, tests, pinned-core metadata), so it is **not standalone** and must be run from a clean checkout at the revision being qualified. The generated handoff is separately verifiable with its standalone `verify.py` and dependency checker. It creates a fresh workspace outside this checkout, audits the package, runs repository checks, generates and verifies a source bundle, and—when prerequisites exist—clones the exact public AzerothCore pin into that workspace, compiles all four modules together, links `worldserver`, and records hashes and logs. It never copies a module into an existing Campaign Party/private checkout.
 
 ## One-command qualification
 
-From a clean checkout, choose a new path outside the repository. The default run is read-only with respect to databases and client files; build and runtime steps are gated by prerequisites and explicit options.
+**Local agent's first command:** from the exact source checkout, run the read-only preflight before choosing a build or touching local assets:
+
+```sh
+python3 tools/local_gameplay.py preflight
+```
+
+Review `mysql_client_api.status` and its Ubuntu guidance; do not begin the pinned build unless the compile/link probe passes. From a clean checkout, choose a new path outside the repository. The default run is read-only with respect to databases and client files; build and runtime steps are gated by prerequisites and explicit options. Before any expensive core build, the preflight verifies Oracle MySQL 8.4 by version and by compiling/linking the exact required API probe; an installed MariaDB development package is rejected.
 
 ```sh
 set -eu
@@ -14,7 +20,25 @@ python3 tools/local_gameplay.py qualify --workspace "$OUT"
 cat "$OUT/QUALIFICATION.md"
 ```
 
-`qualify` runs `make check`, a package/source/migration/feature-register audit, creates and self-verifies `handoff/`, and writes `qualification.json`, readable `QUALIFICATION.md`, per-step logs, a ZIP of the generated handoff, and (if compilation completes) `local-build-evidence.json`. It attempts the full pinned build only if `git`, CMake, and a C++ compiler are present. CMake's configure step is authoritative for Boost, Oracle MySQL development headers, OpenSSL, and the remaining upstream libraries. The core pin is `foundry/core-pins.json`; the script clones the public core into a new, tool-owned workspace and refuses to overwrite module paths. Build flags match `.github/workflows/azerothcore-compile.yml`.
+A retry can reuse the marked workspace; it verifies the checkout snapshot, core pin, bundle files, CI evidence, isolated core, module trees, and any cached executable before resuming. A mismatch exits unsuccessfully instead of silently rebuilding over it:
+
+```sh
+python3 tools/local_gameplay.py qualify --workspace "$OUT" --resume
+```
+
+To transfer exact-revision hosted evidence, download the integration artifact for the same `HEAD` and pass its JSON file. The builder checks the evidence schema, exact source/core revisions, pinned MySQL API record, all four generated module-tree hashes, linked binary hash, and version command; the final `qualification.json` includes evidence, bundle/migration hashes, gate results, and known limits.
+
+```sh
+HEAD="$(git rev-parse HEAD)"
+CI_DIR="${TMPDIR:-/tmp}/arena-ci-$HEAD"
+mkdir -p "$CI_DIR"
+gh run download "$CI_RUN_ID" --name "arena-four-module-integration-$HEAD" --dir "$CI_DIR"
+OUT="${TMPDIR:-/tmp}/arena-local-$HEAD"
+python3 tools/local_gameplay.py qualify --workspace "$OUT" \
+  --ci-evidence "$CI_DIR/integration-evidence.json"
+```
+
+`qualify` runs `make check`, audits package/source/migrations/register, creates and self-verifies `handoff/`, and records a readable report, JSON evidence, logs and ZIP. It attempts the pinned build only when `git`, CMake, C++, and the MySQL 8.4 API probe pass. Use `--require-build` when the local build itself is a required gate; otherwise missing local build prerequisites are `NOT_ASSESSED`, not failures. Any operation explicitly requested with database/client/boot flags that is blocked or fails returns nonzero. CMake then checks Boost, OpenSSL, and remaining upstream libraries. The pin is `foundry/core-pins.json`; the clone is isolated and module paths are hash-checked on resume. Build flags match `.github/workflows/azerothcore-compile.yml`.
 
 Read-only inventory can be run independently:
 
@@ -23,16 +47,15 @@ python3 tools/local_gameplay.py preflight --data-dir /path/to/server/data --test
 python3 tools/local_gameplay.py audit
 ```
 
-The preflight output distinguishes compiler/build tools, MySQL client/development tools, server `dbc`, `maps`, `vmaps`, `mmaps`, and a client executable. Client version is deliberately reported as operator-verified; executable presence is not proof of build 12340.
+The preflight output distinguishes compiler/build tools, MySQL client/development tools and API status, server `dbc`, `maps`, `vmaps`, `mmaps`, and a client executable. Client version is deliberately reported as operator-verified; executable presence is not proof of build 12340. On Ubuntu 24.04 amd64, install the CI-compatible client by configuring Oracle's `noble mysql-8.4-lts` repo and installing `libmysqlclient-dev=8.4.13-1ubuntu24.04`; when the probe is missing/incompatible, its `mysql_client_api.install_guidance` field contains the exact key/repository/apt commands and remaining CMake dependencies. Rerun preflight; do not proceed if the compile/link probe is not PASS.
 
 ## Explicit disposable database migration path
 
 The module migration gate is opt-in. It creates a new, UUID-named schema with the `arena_disposable_` prefix on **localhost only**, refuses collisions (no `IF NOT EXISTS`), writes a run/core provenance marker, and applies exactly the ordered migration list in `handoff/bundle.json`. It then creates a SQL dump backup. The schema contains module migration tables only; it is not a complete AzerothCore Characters database and must not be used to claim boot/runtime qualification.
 
-Install the optional connector and set local disposable-server credentials without placing secrets in command arguments or logs:
+The migration path uses the MySQL/MariaDB command-line client and does not require PyMySQL; PyMySQL is optional for separate DB-API tests. Set local disposable-server credentials without placing secrets in command arguments or logs:
 
 ```sh
-python3 -m pip install -r requirements-world-qualification.txt
 export ARENA_DISPOSABLE_MYSQL_HOST=127.0.0.1
 export ARENA_DISPOSABLE_MYSQL_PORT=3306
 export ARENA_DISPOSABLE_MYSQL_USER=arena_test_admin
@@ -107,6 +130,6 @@ Never run these operations against a Campaign Party installation. Keep any priva
 
 ## Current workspace findings and stop gates
 
-The recorded merge baseline `850cae42040ac31b9fdcd9f15d0fe91d94bf7f6b` has successful hosted Python, pinned four-module compile/link, and disposable Characters-schema CI runs (`44596610699`, `44596610718`, `44596610873`). Those results apply to that merged commit, not to subsequent uncommitted edits in this worktree. In this Arena workspace, CMake, the SQL client/server, a real pinned-core checkout, disposable DB, server DBC/maps/vmaps/mmaps, and a build-12340 client are not available. The local `c++` alone is insufficient to establish compile/link. Thus a fresh build, public boot, database migration, and live addon requests cannot be qualified here. Run the one-command procedure on a suitable host; the script records gates as `MISSING`, `BLOCKED`, or `NOT_ASSESSED` and never manufactures a runtime `PASS`. Private Campaign Party/Playerbots validation and exact-client interaction remain local-only.
+This integration workspace does not provide CMake, Oracle MySQL 8.4 development headers/client, a local disposable DB, full pinned-core source, server DBC/maps/vmaps/mmaps, or a build-12340 client. A local `c++` alone cannot qualify a core build. The script's preflight reports the MySQL API probe and all other prerequisites before any expensive build; optional missing gates remain `NOT_ASSESSED`, while failed explicitly requested operations return nonzero. Do not claim a boot/client pass from CI build or database tests. Private Campaign Party/Playerbots qualification and exact-client interaction remain local-only.
 
 Physical item custody remains disabled. No bootstrap operation mutates live inventory or materializes virtual balances. Recovery means restoring owned client/config backups or restoring a verified SQL dump to a **new** disposable schema, never destructive rollback of player data.

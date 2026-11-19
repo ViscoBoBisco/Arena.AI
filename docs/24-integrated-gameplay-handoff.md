@@ -1,6 +1,6 @@
 # Integrated gameplay handoff bundle
 
-Use the repeatable, guarded local bootstrap to run the audit, repository checks, source bundle generation, prerequisite inventory, and (where tools exist) an isolated pinned-core build. It writes a readable qualification report and integrity-checked source handoff outside the checkout:
+Run the guarded bootstrap from a clean checkout at the source revision under qualification. `tools/local_gameplay.py` depends on the repository's tests, generators and pin files; it is not a standalone file from the bundle. Only the handoff's `verify.py` and `check_dependencies.py` run standalone. The bootstrap writes an external qualification workspace and can resume it only after verifying source, pin, bundle and cached-build hashes:
 
 ```sh
 OUT="${TMPDIR:-/tmp}/arena-local-$(date -u +%Y%m%dT%H%M%SZ)"
