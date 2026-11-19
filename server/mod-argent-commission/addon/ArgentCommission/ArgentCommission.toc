@@ -1,0 +1,5 @@
+## Interface: 30300
+## Title: Argent Commission
+## Notes: Claim the Honored-gated Argent Champion commission
+## Version: 1.0.0
+ArgentCommission.lua

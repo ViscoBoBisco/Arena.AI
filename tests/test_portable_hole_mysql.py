@@ -77,6 +77,8 @@ class PortableHoleMySQL(unittest.TestCase):
                     cursor.execute("DELETE FROM portable_hole_receipts WHERE guid=%s", (guid,))
                     cursor.execute("DELETE FROM portable_hole_reservations WHERE guid=%s", (guid,))
                     cursor.execute("DELETE FROM portable_hole_commodities WHERE guid=%s", (guid,))
+                    cursor.execute("DELETE FROM portable_hole_pins WHERE guid=%s", (guid,))
+                    cursor.execute("DELETE FROM portable_hole_pin_state WHERE guid=%s", (guid,))
             conn.commit()
         finally:
             conn.close()
@@ -93,6 +95,8 @@ class PortableHoleMySQL(unittest.TestCase):
                     cursor.execute("DELETE FROM portable_hole_receipts WHERE guid=%s", (guid,))
                     cursor.execute("DELETE FROM portable_hole_reservations WHERE guid=%s", (guid,))
                     cursor.execute("DELETE FROM portable_hole_commodities WHERE guid=%s", (guid,))
+                    cursor.execute("DELETE FROM portable_hole_pins WHERE guid=%s", (guid,))
+                    cursor.execute("DELETE FROM portable_hole_pin_state WHERE guid=%s", (guid,))
             conn.commit()
         finally:
             conn.close()
@@ -230,6 +234,42 @@ class PortableHoleMySQL(unittest.TestCase):
         self.assertEqual(receipt[2], "RESERVED")
         self.assertEqual(self.balance(), (100, 60))
 
+    def test_server_pins_are_persistent_scoped_capped_and_idempotent(self):
+        for item in range(9907100, 9907110):
+            self.assertTrue(ledger.mutate_pin(self.guid, item, True))
+        self.assertTrue(ledger.mutate_pin(self.guid, 9907100, True), "duplicate pin is idempotent")
+        self.assertFalse(ledger.mutate_pin(self.guid, 9907110, True), "eleventh pin is refused")
+        self.assertEqual(len(ledger.pins(self.guid)), 10)
+        self.assertEqual(ledger.pins(self.other_guid), [])
+        self.assertTrue(ledger.mutate_pin(self.guid, 9907105, False))
+        self.assertTrue(ledger.mutate_pin(self.guid, 9907110, True))
+        self.assertEqual(set(ledger.pins(self.guid)),
+                         set(range(9907100, 9907105)) | set(range(9907106, 9907111)))
+
+    def test_concurrent_pin_adds_serialize_at_ten(self):
+        for item in range(9907200, 9907209):
+            self.assertTrue(ledger.mutate_pin(self.guid, item, True))
+        barrier = threading.Barrier(2)
+        results, errors = [], []
+
+        def worker(item):
+            try:
+                barrier.wait(timeout=5)
+                results.append(ledger.mutate_pin(self.guid, item, True))
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(entry,))
+                   for entry in (9907209, 9907210)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+        self.assertFalse(any(thread.is_alive() for thread in threads), "pin cap race deadlocked")
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(results), [False, True])
+        self.assertEqual(len(ledger.pins(self.guid)), 10)
+
     def test_credit_capacity_rejects_overflow_without_mutation(self):
         conn = ledger.connect(self.pymysql)
         try:
@@ -264,6 +304,8 @@ class PortableHoleStaticContract(unittest.TestCase):
         self.assertIn("player->IsGameMaster()", source)
         self.assertIn("GetMaxStackSize() <= 1", source)
         self.assertIn("portable_hole_receipts", source)
+        self.assertIn("portable_hole_pins", source)
+        self.assertIn("portable_hole_pin_state", source)
         self.assertIn("request_id", source)
         self.assertNotIn("GetGUID", lua, "client must not choose a character identity")
         self.assertIn("RegisterAddonMessagePrefix(PREFIX)", lua)
@@ -374,6 +416,22 @@ class PortableHoleStaticContract(unittest.TestCase):
         self.assertIn("bank excluded; read-only", lua)
         self.assertIn('action == "BAG"', source)
         self.assertIn('SendBagCount(player, itemEntry)', source)
+
+    def test_search_sort_and_bulk_deposit_plan_are_read_only(self):
+        source = _MODULE.read_text(encoding="utf-8")
+        self.assertIn('action == "SEARCH"', source)
+        self.assertIn('action == "PLAN"', source)
+        self.assertIn('sort != "ENTRY" && sort != "NAME" && sort != "BALANCE" && sort != "AVAILABLE"', source)
+        planner = source.split("void SendBulkPlan(", 1)[1].split("void SendPins(", 1)[0]
+        self.assertIn("player->GetItemCount(itemEntry, false)", planner)
+        self.assertIn("std::min(carried, requested)", planner)
+        for forbidden in ("RemoveItem(", "StoreItem(", "DestroyItem("):
+            self.assertNotIn(forbidden, planner)
+        lua = (helpers.REPO / "server/mod-portable-hole/addon/PortableHole/PortableHole.lua").read_text(
+            encoding="utf-8")
+        self.assertIn('send("SEARCH", query)', lua)
+        self.assertIn('send("PLAN", item, amount)', lua)
+        self.assertIn("PLAN ONLY — no item moved", lua)
 
     def test_balance_row_is_locked_before_receipt_to_serialize_mutation_order(self):
         source = _MODULE.read_text(encoding="utf-8")

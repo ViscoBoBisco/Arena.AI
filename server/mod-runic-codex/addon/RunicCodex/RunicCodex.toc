@@ -1,0 +1,5 @@
+## Interface: 30300
+## Title: Runic Codex
+## Notes: Discover and equip server-authoritative spell echoes
+## Version: 1.0.0
+RunicCodex.lua

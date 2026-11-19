@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <atomic>
 #include <charconv>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <mutex>
@@ -262,13 +263,144 @@ namespace
             PREFIX, itemEntry, count, SafeLabel(item->Name1)));
     }
 
-    void SendBalancePage(Player* player, uint32 page)
+    std::string BalanceName(uint32 itemEntry)
+    {
+        ItemTemplate const* item = Commodity(itemEntry);
+        return item ? SafeLabel(item->Name1) : "Unavailable item";
+    }
+
+    std::string LowerAscii(std::string value)
+    {
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c)
+        {
+            return static_cast<char>(std::tolower(c));
+        });
+        return value;
+    }
+
+    struct BalanceLine
+    {
+        uint32 item = 0;
+        uint64 balance = 0;
+        uint64 reserved = 0;
+        std::string name;
+    };
+
+    void SendBalancePage(Player* player, uint32 page, std::string const& sort)
     {
         uint32 const guid = player->GetGUID().GetCounter();
-        uint32 const offset = page * LIST_PAGE_SIZE;
+        std::vector<BalanceLine> rows;
+        QueryResult result = CharacterDatabase.Query(
+            "SELECT item_entry,balance,reserved FROM `{}` WHERE guid={} ORDER BY item_entry",
+            BALANCES, guid);
+        if (result)
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                BalanceLine line{ fields[0].Get<uint32>(), fields[1].Get<uint64>(),
+                                  fields[2].Get<uint64>(), {} };
+                if (line.reserved > line.balance)
+                {
+                    SendError(player, "LEDGER_INCONSISTENT");
+                    return;
+                }
+                line.name = BalanceName(line.item);
+                rows.emplace_back(std::move(line));
+            } while (result->NextRow());
+        }
+
+        std::stable_sort(rows.begin(), rows.end(), [&sort](BalanceLine const& a, BalanceLine const& b)
+        {
+            if (sort == "NAME" && a.name != b.name)
+                return a.name < b.name;
+            if (sort == "BALANCE" && a.balance != b.balance)
+                return a.balance > b.balance;
+            if (sort == "AVAILABLE")
+            {
+                uint64 const availableA = a.balance - a.reserved;
+                uint64 const availableB = b.balance - b.reserved;
+                if (availableA != availableB)
+                    return availableA > availableB;
+            }
+            return a.item < b.item;
+        });
+
+        std::size_t const offset = static_cast<std::size_t>(page) * LIST_PAGE_SIZE;
+        uint32 count = 0;
+        for (std::size_t index = offset; index < rows.size() && count < LIST_PAGE_SIZE; ++index)
+        {
+            BalanceLine const& row = rows[index];
+            Send(player, Acore::StringFormat("{}ROW\t{}\t{}\t{}\t{}\t{}",
+                PREFIX, page, row.item, row.balance, row.reserved, row.name));
+            ++count;
+        }
+        Send(player, Acore::StringFormat("{}END\t{}\t{}", PREFIX, page, count));
+    }
+
+    void SendSearch(Player* player, std::string const& term)
+    {
+        if (term.empty() || term.size() > 32 || !std::all_of(term.begin(), term.end(),
+            [](unsigned char c) { return std::isalnum(c) || c == ' ' || c == '-' || c == '\''; }))
+        {
+            SendError(player, "BAD_SEARCH");
+            return;
+        }
+        std::string const needle = LowerAscii(term);
+        uint32 const guid = player->GetGUID().GetCounter();
+        std::vector<BalanceLine> matches;
+        QueryResult result = CharacterDatabase.Query(
+            "SELECT item_entry,balance,reserved FROM `{}` WHERE guid={} ORDER BY item_entry",
+            BALANCES, guid);
+        if (result)
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                BalanceLine line{ fields[0].Get<uint32>(), fields[1].Get<uint64>(),
+                                  fields[2].Get<uint64>(), BalanceName(fields[0].Get<uint32>()) };
+                if (line.reserved > line.balance)
+                {
+                    SendError(player, "LEDGER_INCONSISTENT");
+                    return;
+                }
+                if (LowerAscii(line.name).find(needle) != std::string::npos)
+                    matches.emplace_back(std::move(line));
+            } while (result->NextRow());
+        }
+        uint32 sent = 0;
+        for (BalanceLine const& row : matches)
+        {
+            if (sent >= LIST_PAGE_SIZE)
+                break;
+            Send(player, Acore::StringFormat("{}FINDROW\t{}\t{}\t{}\t{}",
+                PREFIX, row.item, row.balance, row.reserved, row.name));
+            ++sent;
+        }
+        Send(player, Acore::StringFormat("{}FINDEND\t{}\t{}", PREFIX, sent,
+            matches.size() > LIST_PAGE_SIZE ? 1 : 0));
+    }
+
+    void SendBulkPlan(Player* player, uint32 itemEntry, uint64 requested)
+    {
+        ItemTemplate const* item = Commodity(itemEntry);
+        if (!item || requested == 0 || requested > MAX_OPERATION_AMOUNT)
+        {
+            SendError(player, "INVALID_COMMODITY_OR_AMOUNT");
+            return;
+        }
+        uint64 const carried = player->GetItemCount(itemEntry, false);
+        uint64 const planned = std::min(carried, requested);
+        Send(player, Acore::StringFormat("{}PLAN\t{}\t{}\t{}\t{}\t{}",
+            PREFIX, itemEntry, requested, carried, planned, SafeLabel(item->Name1)));
+    }
+
+    void SendPins(Player* player)
+    {
+        uint32 const guid = player->GetGUID().GetCounter();
         QueryResult rows = CharacterDatabase.Query(
-            "SELECT item_entry, balance, reserved FROM `{}` WHERE guid={} "
-            "ORDER BY item_entry LIMIT {} OFFSET {}", BALANCES, guid, LIST_PAGE_SIZE, offset);
+            "SELECT item_entry FROM `portable_hole_pins` WHERE guid={} ORDER BY created_at,item_entry LIMIT 10",
+            guid);
         uint32 count = 0;
         if (rows)
         {
@@ -276,16 +408,52 @@ namespace
             {
                 Field* fields = rows->Fetch();
                 uint32 const itemEntry = fields[0].Get<uint32>();
-                uint64 const balance = fields[1].Get<uint64>();
-                uint64 const reserved = fields[2].Get<uint64>();
                 ItemTemplate const* item = Commodity(itemEntry);
-                std::string const name = item ? SafeLabel(item->Name1) : "Unavailable item";
-                Send(player, Acore::StringFormat("{}ROW\t{}\t{}\t{}\t{}\t{}",
-                    PREFIX, page, itemEntry, balance, reserved, name));
-                ++count;
+                if (item)
+                {
+                    Send(player, Acore::StringFormat("{}PINROW\t{}\t{}",
+                        PREFIX, itemEntry, SafeLabel(item->Name1)));
+                    ++count;
+                }
             } while (rows->NextRow());
         }
-        Send(player, Acore::StringFormat("{}END\t{}\t{}", PREFIX, page, count));
+        Send(player, Acore::StringFormat("{}PINEND\t{}", PREFIX, count));
+    }
+
+    void MutatePin(Player* player, uint32 itemEntry, bool add)
+    {
+        if (!Commodity(itemEntry))
+        {
+            SendError(player, "INVALID_COMMODITY");
+            return;
+        }
+        uint32 const guid = player->GetGUID().GetCounter();
+        auto transaction = CharacterDatabase.BeginTransaction();
+        transaction->Append(Acore::StringFormat(
+            "INSERT INTO `portable_hole_pin_state` (guid) VALUES ({}) "
+            "ON DUPLICATE KEY UPDATE guid=VALUES(guid)", guid));
+        transaction->Append(Acore::StringFormat(
+            "SELECT guid FROM `portable_hole_pin_state` WHERE guid={} FOR UPDATE", guid));
+        if (add)
+            transaction->Append(Acore::StringFormat(
+                "INSERT IGNORE INTO `portable_hole_pins` (guid,item_entry) "
+                "SELECT {},{} WHERE (SELECT COUNT(*) FROM `portable_hole_pins` WHERE guid={}) < 10",
+                guid, itemEntry, guid));
+        else
+            transaction->Append(Acore::StringFormat(
+                "DELETE FROM `portable_hole_pins` WHERE guid={} AND item_entry={}", guid, itemEntry));
+        CharacterDatabase.DirectCommitTransaction(transaction);
+
+        QueryResult state = CharacterDatabase.Query(
+            "SELECT COUNT(*) FROM `portable_hole_pins` WHERE guid={}", guid);
+        uint32 count = state ? state->Fetch()[0].Get<uint32>() : 0;
+        QueryResult pin = CharacterDatabase.Query(
+            "SELECT item_entry FROM `portable_hole_pins` WHERE guid={} AND item_entry={}", guid, itemEntry);
+        if (add && !pin && count >= 10)
+            SendError(player, "PIN_LIMIT");
+        else
+            Send(player, Acore::StringFormat("{}PIN\t{}\t{}", PREFIX, itemEntry, pin ? 1 : 0));
+        SendPins(player);
     }
 
     void HandleCredit(Player* player, uint32 itemEntry, uint64 amount,
@@ -466,13 +634,53 @@ namespace
                 SendBagCount(player, itemEntry);
             return true;
         }
+        if (action == "PLAN")
+        {
+            uint32 itemEntry = 0;
+            uint64 amount = 0;
+            if (fields.size() != 4 || !ParseUnsigned(fields[2], itemEntry)
+                || !ParseUnsigned(fields[3], amount))
+                SendError(player, "MALFORMED");
+            else
+                SendBulkPlan(player, itemEntry, amount);
+            return true;
+        }
+        if (action == "SEARCH")
+        {
+            if (fields.size() != 3)
+                SendError(player, "MALFORMED");
+            else
+                SendSearch(player, fields[2]);
+            return true;
+        }
+        if (action == "PINS")
+        {
+            if (fields.size() != 2)
+                SendError(player, "MALFORMED");
+            else
+                SendPins(player);
+            return true;
+        }
+        if (action == "PIN")
+        {
+            uint32 itemEntry = 0;
+            if (fields.size() != 4 || !ParseUnsigned(fields[2], itemEntry)
+                || (fields[3] != "ADD" && fields[3] != "REMOVE"))
+                SendError(player, "MALFORMED");
+            else
+                MutatePin(player, itemEntry, fields[3] == "ADD");
+            return true;
+        }
         if (action == "LIST")
         {
             uint32 page = 0;
-            if (fields.size() != 3 || !ParseUnsigned(fields[2], page) || page > MAX_PAGE)
-                SendError(player, "BAD_PAGE");
+            std::string sort = fields.size() == 4 ? fields[3] : "ENTRY";
+            if ((fields.size() != 3 && fields.size() != 4)
+                || !ParseUnsigned(fields[2], page) || page > MAX_PAGE
+                || (sort != "ENTRY" && sort != "NAME" && sort != "BALANCE" && sort != "AVAILABLE"))
+                SendError(player, "BAD_PAGE_OR_SORT");
             else
-                SendBalancePage(player, page);
+                SendBalancePage(player, page, sort);
             return true;
         }
         if (action == "CREDIT")
@@ -552,7 +760,8 @@ public:
         if (fields.size() < 2 || fields[0] != PREFIX_TOKEN)
             return;
         bool const known = fields[1] == "HELLO" || fields[1] == "LIST" || fields[1] == "BAG"
-            || fields[1] == "NEED"
+            || fields[1] == "NEED" || fields[1] == "SEARCH" || fields[1] == "PLAN"
+            || fields[1] == "PINS" || fields[1] == "PIN"
             || fields[1] == "CREDIT" || fields[1] == "RESERVE"
             || fields[1] == "RELEASE" || fields[1] == "CONSUME";
         if (!known)
