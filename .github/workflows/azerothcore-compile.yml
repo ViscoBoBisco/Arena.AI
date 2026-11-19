@@ -97,8 +97,12 @@ jobs:
           cp -a server/mod-portable-hole /tmp/azerothcore/modules/
           cp -a server/mod-runic-codex /tmp/azerothcore/modules/
           cp -a server/mod-argent-commission /tmp/azerothcore/modules/
+          # Keep AzerothCore's normal core/script PCHs enabled for a production-shaped
+          # worldserver build. Several upstream script translation units rely on ScriptPCH.h
+          # to provide CellImpl template definitions; disabling PCH produces undefined refs
+          # at the final link even though every module TU compiles successfully.
           cmake -S /tmp/azerothcore -B /tmp/azerothcore-build \
-            -DWITHOUT_GIT=1 -DNOJEM=1 -DUSE_COREPCH=0 -DUSE_SCRIPTPCH=0 \
+            -DWITHOUT_GIT=1 -DNOJEM=1 -DUSE_COREPCH=1 -DUSE_SCRIPTPCH=1 \
             -DTOOLS_BUILD=none -DWITH_WARNINGS=0 -DMODULES=static
 
       - name: Compile generated Vault Terminal module against the pinned core

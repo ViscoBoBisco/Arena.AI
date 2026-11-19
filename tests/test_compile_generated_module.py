@@ -14,6 +14,16 @@ SPEC.loader.exec_module(compile_gate)
 
 
 class DemangledSymbols(unittest.TestCase):
+    def test_complete_build_keeps_upstream_core_and_script_pchs_enabled(self):
+        workflow = (REPO / ".github" / "workflows" / "azerothcore-compile.yml").read_text(
+            encoding="utf-8")
+        configure = workflow[workflow.index("cmake -S /tmp/azerothcore"):
+                             workflow.index("cmake -S /tmp/azerothcore") + 500]
+        self.assertIn("-DUSE_COREPCH=1", configure)
+        self.assertIn("-DUSE_SCRIPTPCH=1", configure)
+        self.assertNotIn("-DUSE_COREPCH=0", configure)
+        self.assertNotIn("-DUSE_SCRIPTPCH=0", configure)
+
     def test_accepts_source_spelling_against_nm_function_spelling(self):
         output = "0000000000000000 T AddFrostArmoryScripts()\n"
         self.assertTrue(compile_gate._symbol(output, "T", "AddFrostArmoryScripts"))
