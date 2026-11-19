@@ -188,6 +188,50 @@ local function changeShare(grant)
     send("SHARE", account, grant and "GRANT" or "REVOKE")
 end
 
+local function validProjectKey(value)
+    return type(value) == "string" and #value > 0 and #value <= 32
+        and value:match("^[%w_%-%.:]+$") ~= nil
+end
+
+local function projectCommand(raw)
+    local args = {}
+    for word in string.gmatch(raw or "", "%S+") do args[#args + 1] = word end
+    local action = string.upper(args[1] or "")
+    frame:Show()
+    if action == "CREATE" and #args == 4 and validProjectKey(args[2]) then
+        local item, target = uint(args[3], 4294967295), uint(args[4], 1000000000)
+        if item and target then send("PROJECT", "CREATE", args[2], item, target)
+        else statusText:SetText("Usage: /ph project create key item-entry target") end
+    elseif action == "GRANT" and #args == 4 and validProjectKey(args[2]) then
+        local account = uint(args[3], 4294967295)
+        local role = string.upper(args[4] or "CONTRIBUTE")
+        if account and (role == "VIEW" or role == "CONTRIBUTE") then
+            send("PROJECT", "GRANT", args[2], account, role)
+        else statusText:SetText("Usage: /ph project grant key account [VIEW|CONTRIBUTE]") end
+    elseif action == "REVOKE" and #args == 3 and validProjectKey(args[2]) then
+        local account = uint(args[3], 4294967295)
+        if account then send("PROJECT", "REVOKE", args[2], account)
+        else statusText:SetText("Usage: /ph project revoke key account") end
+    elseif action == "SHOW" and #args == 3 and validProjectKey(args[3]) then
+        local owner = uint(args[2], 4294967295)
+        if owner then send("PROJECT", "SHOW", owner, args[3])
+        else statusText:SetText("Usage: /ph project show owner-account key") end
+    elseif action == "RESERVE" and #args == 4 and validProjectKey(args[3]) then
+        local owner = uint(args[2], 4294967295)
+        local amount = uint(args[4], 1000000000)
+        if owner and amount then
+            sendMutation("PROJECT", { "RESERVE", tostring(owner), args[3], tostring(amount) })
+        else statusText:SetText("Usage: /ph project reserve owner-account key amount") end
+    elseif action == "RELEASE" and #args == 5 and validProjectKey(args[3]) then
+        local owner = uint(args[2], 4294967295)
+        if owner and validProjectKey(args[4]) then
+            sendMutation("PROJECT", { "RELEASE", tostring(owner), args[3], args[4] })
+        else statusText:SetText("Usage: /ph project release owner-account key reservation-id") end
+    else
+        statusText:SetText("Project commands: create, grant, revoke, show, reserve, release. See module README.")
+    end
+end
+
 local function reserve()
     local item = uint(itemInput:GetText(), 4294967295)
     local amount = uint(amountInput:GetText(), 1000000000)
@@ -340,6 +384,31 @@ local function onMessage(_, prefix, message, distribution, sender)
         elseif account and fields[4] == "REVOKED" then
             statusText:SetText("Revoked read-only vault access for account " .. tostring(account) .. ".")
         end
+    elseif fields[2] == "PROJECT" and fields[3] == "CREATED" and #fields == 7 then
+        statusText:SetText("Project " .. fields[5] .. " ready: target " .. fields[7]
+            .. " of virtual item " .. fields[6] .. ". No physical items moved.")
+    elseif fields[2] == "PROJECT" and fields[3] == "ACCESS" and #fields == 7 then
+        statusText:SetText("Project " .. fields[4] .. " access for account " .. fields[5]
+            .. ": " .. fields[6] .. ".")
+    elseif fields[2] == "PROJECT" and fields[3] == "SUMMARY" and #fields == 10 then
+        statusText:SetText("Project " .. fields[4] .. ": held " .. fields[8] .. "/" .. fields[7]
+            .. ", item " .. fields[6] .. ", state " .. fields[9]
+            .. ", contributing accounts " .. fields[10] .. ". Virtual balance only.")
+    elseif fields[2] == "PROJECT" and fields[3] == "RESERVATION" and #fields == 9 then
+        local pending = savedData().pending
+        if pending and pending.action == "PROJECT" and pending.id == fields[4] then
+            savedData().pending = nil
+        end
+        statusText:SetText("Project reservation " .. fields[4] .. ": " .. fields[5]
+            .. " for " .. fields[7] .. " of item " .. fields[6] .. ".")
+        refresh()
+    elseif fields[2] == "PROJECT" and fields[3] == "RELEASED" and #fields == 6 then
+        local pending = savedData().pending
+        if pending and pending.action == "PROJECT" and pending.id == fields[4] then
+            savedData().pending = nil
+        end
+        statusText:SetText("Project reservation released; virtual balance returned. Project " .. fields[6] .. ".")
+        refresh()
     elseif fields[2] == "PLAN" and #fields == 7 then
         local item, requested, carried, planned = tonumber(fields[3]), tonumber(fields[4]),
             tonumber(fields[5]), tonumber(fields[6])
@@ -619,9 +688,14 @@ events:SetScript("OnEvent", function(self, event, ...)
         createFrame()
         SLASH_PORTABLEHOLE1 = "/portablehole"
         SLASH_PORTABLEHOLE2 = "/ph"
-        SlashCmdList.PORTABLEHOLE = function()
-            frame:Show()
-            showPage(0)
+        SlashCmdList.PORTABLEHOLE = function(message)
+            local command, rest = tostring(message or ""):match("^%s*(%S+)%s*(.-)%s*$")
+            if command and string.lower(command) == "project" then
+                projectCommand(rest)
+            else
+                frame:Show()
+                showPage(0)
+            end
         end
     else
         onMessage(self, ...)

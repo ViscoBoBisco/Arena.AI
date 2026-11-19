@@ -41,6 +41,9 @@ namespace
     constexpr char const* RESERVATIONS = "portable_hole_reservations";
     constexpr char const* RECEIPTS = "portable_hole_receipts";
     constexpr char const* VAULT_ACCESS = "portable_hole_vault_access";
+    constexpr char const* PROJECTS = "portable_hole_projects";
+    constexpr char const* PROJECT_ACCESS = "portable_hole_project_access";
+    constexpr char const* PROJECT_RESERVATIONS = "portable_hole_project_reservations";
 
     std::atomic_bool enabled{true};
     std::mutex throttleMutex;
@@ -396,6 +399,29 @@ namespace
             grant ? "GRANTED" : "REVOKED"));
     }
 
+    bool CanAccessProject(Player* player, uint32 ownerAccount, std::string const& projectKey,
+                          bool contribute)
+    {
+        uint32 const account = CurrentAccountId(player);
+        if (account == 0 || ownerAccount == 0)
+            return false;
+        if (account == ownerAccount)
+            return true;
+        QueryResult permission = CharacterDatabase.Query(
+            "SELECT owner_account_id FROM `{}` WHERE owner_account_id={} AND project_key='{}' "
+            "AND member_account_id={} AND (role='CONTRIBUTE' OR role='VIEW')",
+            PROJECT_ACCESS, ownerAccount, projectKey, account);
+        if (!permission)
+            return false;
+        if (!contribute)
+            return true;
+        QueryResult contributor = CharacterDatabase.Query(
+            "SELECT owner_account_id FROM `{}` WHERE owner_account_id={} AND project_key='{}' "
+            "AND member_account_id={} AND role='CONTRIBUTE'",
+            PROJECT_ACCESS, ownerAccount, projectKey, account);
+        return contributor != nullptr;
+    }
+
     void SendBalancePage(Player* player, uint32 page, std::string const& sort,
                          uint32 viewAccount = 0)
     {
@@ -739,6 +765,222 @@ namespace
             SendError(player, "REQUEST_CONFLICT");
     }
 
+    void CreateProject(Player* player, std::string const& projectKey, uint32 itemEntry,
+                       uint64 targetAmount)
+    {
+        uint32 const account = CurrentAccountId(player);
+        if (!account || !IsValidToken(projectKey, 32) || !Commodity(itemEntry)
+            || !targetAmount || targetAmount > MAX_OPERATION_AMOUNT)
+        {
+            SendError(player, "INVALID_PROJECT");
+            return;
+        }
+        auto transaction = CharacterDatabase.BeginTransaction();
+        transaction->Append(Acore::StringFormat(
+            "INSERT IGNORE INTO `{}` (owner_account_id,project_key,item_entry,target_amount,created_by_guid) "
+            "VALUES({},'{}',{},{},{})", PROJECTS, account, projectKey, itemEntry, targetAmount,
+            player->GetGUID().GetCounter()));
+        CharacterDatabase.DirectCommitTransaction(transaction);
+        QueryResult project = CharacterDatabase.Query(
+            "SELECT item_entry,target_amount FROM `{}` WHERE owner_account_id={} AND project_key='{}'",
+            PROJECTS, account, projectKey);
+        if (!project)
+        {
+            SendError(player, "RETRY");
+            return;
+        }
+        Field* fields = project->Fetch();
+        if (fields[0].Get<uint32>() != itemEntry || fields[1].Get<uint64>() != targetAmount)
+        {
+            SendError(player, "PROJECT_KEY_CONFLICT");
+            return;
+        }
+        Send(player, Acore::StringFormat("{}PROJECT\tCREATED\t{}\t{}\t{}\t{}",
+            PREFIX, account, projectKey, itemEntry, targetAmount));
+    }
+
+    void ChangeProjectAccess(Player* player, std::string const& projectKey,
+                             uint32 memberAccount, std::string const& role, bool grant)
+    {
+        uint32 const ownerAccount = CurrentAccountId(player);
+        if (!ownerAccount || !IsValidToken(projectKey, 32) || !memberAccount
+            || memberAccount == ownerAccount || (grant && role != "VIEW" && role != "CONTRIBUTE"))
+        {
+            SendError(player, "INVALID_PROJECT_ACCESS");
+            return;
+        }
+        if (!CharacterDatabase.Query(
+                "SELECT owner_account_id FROM `{}` WHERE owner_account_id={} AND project_key='{}'",
+                PROJECTS, ownerAccount, projectKey))
+        {
+            SendError(player, "PROJECT_NOT_FOUND");
+            return;
+        }
+        auto transaction = CharacterDatabase.BeginTransaction();
+        if (grant)
+            transaction->Append(Acore::StringFormat(
+                "INSERT INTO `{}` (owner_account_id,project_key,member_account_id,role,granted_by_guid) "
+                "VALUES({},'{}',{},'{}',{}) ON DUPLICATE KEY UPDATE role=VALUES(role),granted_by_guid=VALUES(granted_by_guid)",
+                PROJECT_ACCESS, ownerAccount, projectKey, memberAccount, role,
+                player->GetGUID().GetCounter()));
+        else
+            transaction->Append(Acore::StringFormat(
+                "DELETE FROM `{}` WHERE owner_account_id={} AND project_key='{}' AND member_account_id={}",
+                PROJECT_ACCESS, ownerAccount, projectKey, memberAccount));
+        CharacterDatabase.DirectCommitTransaction(transaction);
+        QueryResult access = CharacterDatabase.Query(
+            "SELECT role FROM `{}` WHERE owner_account_id={} AND project_key='{}' AND member_account_id={}",
+            PROJECT_ACCESS, ownerAccount, projectKey, memberAccount);
+        if ((grant && (!access || access->Fetch()[0].Get<std::string>() != role)) || (!grant && access))
+        {
+            SendError(player, "RETRY");
+            return;
+        }
+        Send(player, Acore::StringFormat("{}PROJECT\tACCESS\t{}\t{}\t{}\t{}",
+            PREFIX, projectKey, memberAccount, grant ? role : "REVOKED", ownerAccount));
+    }
+
+    void ShowProject(Player* player, uint32 ownerAccount, std::string const& projectKey)
+    {
+        if (!ownerAccount || !IsValidToken(projectKey, 32)
+            || !CanAccessProject(player, ownerAccount, projectKey, false))
+        {
+            SendError(player, "PROJECT_ACCESS_DENIED");
+            return;
+        }
+        QueryResult project = CharacterDatabase.Query(
+            "SELECT p.item_entry,p.target_amount,p.reserved_amount,p.status, "
+            "(SELECT COUNT(DISTINCT r.contributor_account_id) FROM `{}` r "
+            "WHERE r.owner_account_id=p.owner_account_id AND r.project_key=p.project_key AND r.state='HELD') "
+            "FROM `{}` p WHERE p.owner_account_id={} AND p.project_key='{}'",
+            PROJECT_RESERVATIONS, PROJECTS, ownerAccount, projectKey);
+        if (!project)
+        {
+            SendError(player, "PROJECT_NOT_FOUND");
+            return;
+        }
+        Field* fields = project->Fetch();
+        Send(player, Acore::StringFormat("{}PROJECT\tSUMMARY\t{}\t{}\t{}\t{}\t{}\t{}",
+            PREFIX, ownerAccount, projectKey, fields[0].Get<uint32>(), fields[1].Get<uint64>(),
+            fields[2].Get<uint64>(), fields[3].Get<std::string>(), fields[4].Get<uint32>()));
+    }
+
+    void ReserveProject(Player* player, uint32 ownerAccount, std::string const& projectKey,
+                        uint64 amount, std::string const& requestId)
+    {
+        uint32 const account = CurrentAccountId(player);
+        uint32 const guid = player->GetGUID().GetCounter();
+        if (!account || !ownerAccount || !IsValidToken(projectKey, 32)
+            || !IsValidToken(requestId) || !amount || amount > MAX_OPERATION_AMOUNT
+            || !CanAccessProject(player, ownerAccount, projectKey, true))
+        {
+            SendError(player, "PROJECT_ACCESS_OR_REQUEST_INVALID");
+            return;
+        }
+        QueryResult project = CharacterDatabase.Query(
+            "SELECT item_entry FROM `{}` WHERE owner_account_id={} AND project_key='{}' AND status='OPEN'",
+            PROJECTS, ownerAccount, projectKey);
+        if (!project)
+        {
+            SendError(player, "PROJECT_NOT_OPEN");
+            return;
+        }
+        uint32 const itemEntry = project->Fetch()[0].Get<uint32>();
+        if (!Commodity(itemEntry))
+        {
+            SendError(player, "INVALID_COMMODITY");
+            return;
+        }
+        auto transaction = CharacterDatabase.BeginTransaction();
+        EnsureBalanceRow(transaction, guid, itemEntry);
+        transaction->Append(Acore::StringFormat(
+            "INSERT IGNORE INTO `{}` (owner_account_id,project_key,request_id,contributor_account_id,guid,item_entry,amount,state) "
+            "VALUES({},'{}','{}',{},{},{},{},'PENDING')", PROJECT_RESERVATIONS,
+            ownerAccount, projectKey, requestId, account, guid, itemEntry, amount));
+        transaction->Append(Acore::StringFormat(
+            "UPDATE `{}` b, `{}` p, `{}` r SET b.reserved=b.reserved+r.amount, "
+            "p.reserved_amount=p.reserved_amount+r.amount, r.state='HELD' "
+            "WHERE r.owner_account_id={} AND r.project_key='{}' AND r.request_id='{}' "
+            "AND r.state='PENDING' AND r.contributor_account_id={} AND r.guid={} "
+            "AND r.item_entry={} AND r.amount={} AND b.guid=r.guid AND b.item_entry=r.item_entry "
+            "AND p.owner_account_id=r.owner_account_id AND p.project_key=r.project_key "
+            "AND p.status='OPEN' AND b.balance-b.reserved>=r.amount "
+            "AND p.reserved_amount+r.amount<=p.target_amount "
+            "AND (p.owner_account_id={} OR EXISTS (SELECT 1 FROM `{}` a "
+            "WHERE a.owner_account_id=p.owner_account_id AND a.project_key=p.project_key "
+            "AND a.member_account_id={} AND a.role='CONTRIBUTE'))",
+            BALANCES, PROJECTS, PROJECT_RESERVATIONS, ownerAccount, projectKey, requestId,
+            account, guid, itemEntry, amount, account, PROJECT_ACCESS, account));
+        transaction->Append(Acore::StringFormat(
+            "UPDATE `{}` SET state='DENIED' WHERE owner_account_id={} AND project_key='{}' "
+            "AND request_id='{}' AND state='PENDING'", PROJECT_RESERVATIONS,
+            ownerAccount, projectKey, requestId));
+        CharacterDatabase.DirectCommitTransaction(transaction);
+        QueryResult result = CharacterDatabase.Query(
+            "SELECT contributor_account_id,guid,item_entry,amount,state FROM `{}` "
+            "WHERE owner_account_id={} AND project_key='{}' AND request_id='{}'",
+            PROJECT_RESERVATIONS, ownerAccount, projectKey, requestId);
+        if (!result)
+        {
+            SendError(player, "RETRY");
+            return;
+        }
+        Field* fields = result->Fetch();
+        if (fields[0].Get<uint32>() != account || fields[1].Get<uint32>() != guid
+            || fields[2].Get<uint32>() != itemEntry || fields[3].Get<uint64>() != amount)
+        {
+            SendError(player, "REQUEST_CONFLICT");
+            return;
+        }
+        Send(player, Acore::StringFormat("{}PROJECT\tRESERVATION\t{}\t{}\t{}\t{}\t{}",
+            PREFIX, requestId, fields[4].Get<std::string>(), itemEntry, amount, ownerAccount, projectKey));
+    }
+
+    void ReleaseProjectReservation(Player* player, uint32 ownerAccount,
+                                   std::string const& projectKey,
+                                   std::string const& reservationId,
+                                   std::string const& releaseId)
+    {
+        uint32 const account = CurrentAccountId(player);
+        if (!account || !ownerAccount || !IsValidToken(projectKey, 32)
+            || !IsValidToken(reservationId) || !IsValidToken(releaseId)
+            || !CanAccessProject(player, ownerAccount, projectKey, true))
+        {
+            SendError(player, "PROJECT_ACCESS_OR_REQUEST_INVALID");
+            return;
+        }
+        auto transaction = CharacterDatabase.BeginTransaction();
+        transaction->Append(Acore::StringFormat(
+            "UPDATE `{}` r, `{}` p, `{}` b SET r.state='RELEASED',r.release_request_id='{}', "
+            "p.reserved_amount=p.reserved_amount-r.amount,b.reserved=b.reserved-r.amount "
+            "WHERE r.owner_account_id={} AND r.project_key='{}' AND r.request_id='{}' "
+            "AND r.state='HELD' AND r.guid=b.guid AND r.item_entry=b.item_entry "
+            "AND p.owner_account_id=r.owner_account_id AND p.project_key=r.project_key "
+            "AND p.reserved_amount>=r.amount AND b.reserved>=r.amount "
+            "AND ({}=p.owner_account_id OR {}=r.contributor_account_id)",
+            PROJECT_RESERVATIONS, PROJECTS, BALANCES, releaseId, ownerAccount, projectKey,
+            reservationId, account, account));
+        CharacterDatabase.DirectCommitTransaction(transaction);
+        QueryResult result = CharacterDatabase.Query(
+            "SELECT state,COALESCE(release_request_id,'') FROM `{}` WHERE owner_account_id={} "
+            "AND project_key='{}' AND request_id='{}'", PROJECT_RESERVATIONS,
+            ownerAccount, projectKey, reservationId);
+        if (!result)
+        {
+            SendError(player, "PROJECT_RESERVATION_NOT_FOUND");
+            return;
+        }
+        Field* fields = result->Fetch();
+        if (fields[0].Get<std::string>() != "RELEASED"
+            || fields[1].Get<std::string>() != releaseId)
+        {
+            SendError(player, "PROJECT_RELEASE_CONFLICT");
+            return;
+        }
+        Send(player, Acore::StringFormat("{}PROJECT\tRELEASED\t{}\t{}\t{}",
+            PREFIX, releaseId, ownerAccount, projectKey));
+    }
+
     bool ParseAction(Player* player, std::vector<std::string> const& fields)
     {
         if (fields.size() < 2 || fields[0] != PREFIX_TOKEN)
@@ -750,6 +992,34 @@ namespace
                 SendError(player, "VERSION");
             else
                 Send(player, std::string(PREFIX) + "OK\t1");
+            return true;
+        }
+        if (action == "PROJECT")
+        {
+            uint32 account = 0;
+            uint32 itemEntry = 0;
+            uint32 memberAccount = 0;
+            uint64 amount = 0;
+            if (fields.size() == 6 && fields[2] == "CREATE"
+                && ParseUnsigned(fields[4], itemEntry) && ParseUnsigned(fields[5], amount))
+                CreateProject(player, fields[3], itemEntry, amount);
+            else if (fields.size() == 6 && fields[2] == "GRANT"
+                     && ParseUnsigned(fields[4], memberAccount))
+                ChangeProjectAccess(player, fields[3], memberAccount, fields[5], true);
+            else if (fields.size() == 5 && fields[2] == "REVOKE"
+                     && ParseUnsigned(fields[4], memberAccount))
+                ChangeProjectAccess(player, fields[3], memberAccount, "", false);
+            else if (fields.size() == 5 && fields[2] == "SHOW"
+                     && ParseUnsigned(fields[3], account))
+                ShowProject(player, account, fields[4]);
+            else if (fields.size() == 7 && fields[2] == "RESERVE"
+                     && ParseUnsigned(fields[3], account) && ParseUnsigned(fields[5], amount))
+                ReserveProject(player, account, fields[4], amount, fields[6]);
+            else if (fields.size() == 7 && fields[2] == "RELEASE"
+                     && ParseUnsigned(fields[3], account))
+                ReleaseProjectReservation(player, account, fields[4], fields[5], fields[6]);
+            else
+                SendError(player, "PROJECT_MALFORMED");
             return true;
         }
         if (action == "NEED")
@@ -924,7 +1194,7 @@ public:
             || fields[1] == "NEED" || fields[1] == "REAGENTS" || fields[1] == "SEARCH"
             || fields[1] == "SHARE" || fields[1] == "PLAN"
             || fields[1] == "PINS" || fields[1] == "PIN"
-            || fields[1] == "CREDIT" || fields[1] == "RESERVE"
+            || fields[1] == "CREDIT" || fields[1] == "RESERVE" || fields[1] == "PROJECT"
             || fields[1] == "RELEASE" || fields[1] == "CONSUME";
         if (!known)
             return;

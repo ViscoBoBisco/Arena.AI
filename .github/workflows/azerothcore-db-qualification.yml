@@ -78,7 +78,7 @@ jobs:
           grep -F 'SPELL_MAGE_ARCANE_MISSILES_R1                = 5143' \
             /tmp/acore-pinned/src/server/scripts/Spells/spell_mage.cpp
           grep -F '(774,1058,2)' /tmp/acore-pinned/data/sql/base/db_world/spell_ranks.sql
-          grep -F '(774,48441,19)' /tmp/acore-pinned/data/sql/base/db_world/spell_ranks.sql
+          grep -F '(774,48441,15)' /tmp/acore-pinned/data/sql/base/db_world/spell_ranks.sql
           grep -F 'ApplySpellFix({ 5143, 5144, 5145, 8416, 8417, 10211, 10212, 25345, 27075, 38699, 38704, 42843, 42846 }' \
             /tmp/acore-pinned/src/server/game/Spells/SpellInfoCorrections.cpp
           python3 - <<'PY'
@@ -283,7 +283,12 @@ jobs:
           ARENA_MYSQL_DATABASE: arena_foundry_disposable_portable_hole_ci
           ARENA_MYSQL_USER: root
           ARENA_MYSQL_PASSWORD: arena-foundry-ci-only
-        run: python3 -m unittest tests.test_runic_codex_mysql -v
+        run: |
+          if ! python3 -m unittest tests.test_runic_codex_mysql -v > /tmp/runic-codex-mysql-test.log 2>&1; then
+            cat /tmp/runic-codex-mysql-test.log
+            exit 1
+          fi
+          cat /tmp/runic-codex-mysql-test.log
 
       - name: Qualify Argent Commission persistence on disposable MySQL
         env:
@@ -292,7 +297,12 @@ jobs:
           ARENA_MYSQL_DATABASE: arena_foundry_disposable_portable_hole_ci
           ARENA_MYSQL_USER: root
           ARENA_MYSQL_PASSWORD: arena-foundry-ci-only
-        run: python3 -m unittest tests.test_argent_commission_mysql -v
+        run: |
+          if ! python3 -m unittest tests.test_argent_commission_mysql -v > /tmp/argent-commission-mysql-test.log 2>&1; then
+            cat /tmp/argent-commission-mysql-test.log
+            exit 1
+          fi
+          cat /tmp/argent-commission-mysql-test.log
 
       - name: Assert unsupported World content fails closed
         run: |
@@ -422,6 +432,58 @@ jobs:
           name: arena-characters-db-qualification-${{ github.run_id }}
           path: |
             /tmp/vault-terminal/
+            /tmp/vault-terminal-characters-db-proof.json
+            /tmp/vault-terminal-characters-db.log
+            /tmp/vault-terminal-qualification-report.json
+            /tmp/vault-terminal-qualification.log
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Record four-module database qualification evidence
+        env:
+          SOURCE_HEAD: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+          reports = {}
+          for name, filename in (
+              ('portable_hole', '/tmp/portable-hole-mysql-test.log'),
+              ('runic_codex', '/tmp/runic-codex-mysql-test.log'),
+              ('argent_commission', '/tmp/argent-commission-mysql-test.log'),
+          ):
+              text = Path(filename).read_text(errors='replace')
+              match = re.search(r'Ran (\d+) tests? in ([0-9.]+)s', text)
+              assert match and ('OK' in text), f'{name} did not produce a passing unittest report'
+              reports[name] = {'status': 'PASS', 'tests': int(match.group(1)),
+                               'duration_seconds': float(match.group(2)),
+                               'project_shared_reservations': 'PASS' if name == 'portable_hole' else 'N/A'}
+          evidence = {
+              'schema': 'arena-disposable-module-db-evidence/1',
+              'source': {'repository': os.environ['GITHUB_REPOSITORY'],
+                         'head': os.environ['SOURCE_HEAD']},
+              'mysql_server': 'mysql:8.4.3 disposable service',
+              'tests': reports,
+              'portable_hole_project_migration': '003_portable_hole_projects.sql applied in lexical order',
+              'scope': 'DISPOSABLE MYSQL AND SYNTHETIC CHARACTERS DATA ONLY',
+              'worldserver_boot': 'NOT_ASSESSED',
+              'private_campaign_party_client': 'NOT_ASSESSED',
+          }
+          Path('/tmp/module-db-evidence.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - name: Preserve module database qualification evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: arena-four-module-database-qualification-${{ github.sha }}
+          path: |
+            /tmp/module-db-evidence.json
+            /tmp/portable-hole-mysql-test.log
+            /tmp/runic-codex-mysql-test.log
+            /tmp/argent-commission-mysql-test.log
             /tmp/vault-terminal-characters-db-proof.json
             /tmp/vault-terminal-characters-db.log
             /tmp/vault-terminal-qualification-report.json

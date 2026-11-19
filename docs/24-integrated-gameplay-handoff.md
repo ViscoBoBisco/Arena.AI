@@ -15,12 +15,16 @@ The builder refuses overwrite and paths inside the repository. It does not copy 
 credentials, live DBs, or server binaries. `bundle.json` explicitly records that production readiness
 and physical item custody are false and the combined boot/client gate is not assessed.
 
-The public pinned workflow now additionally links the complete `worldserver` with the four modules
-installed together and executes the binary's version command. This is an integrated compile/linkage
-qualification only. A live boot still requires disposable World and Characters databases, the pinned
-core's full data/maps/vmaps inputs and core configuration; representative gameplay and addon protocol
-checks require a booted server and a legal build-12340 client. This sandbox has no CMake, container
-runtime, MySQL/MariaDB, AzerothCore data bundle or WoW client, so it cannot claim those results.
+The public pinned workflow links the complete `worldserver` with all four modules installed together,
+executes the binary version command, and emits an evidence JSON containing the source commit, exact
+AzerothCore pin, MySQL client/package versions, hashes of all four module trees, and the linked binary.
+On a passing run it builds an integrity-checked handoff containing that evidence. A separate disposable
+MySQL workflow records migration/ledger test evidence, including Portable Hole project reservations.
+These qualify compilation/linkage and database contracts, not a live gameplay loop. A live boot still
+requires verified maps/DBC/vmaps/mmaps inputs, world/auth/characters data and runtime configuration;
+login and addon protocol checks require a booted server and legal build-12340 client. Those inputs are
+not available in this workspace, so boot/login/live gameplay and private Campaign Party qualification
+remain explicitly unassessed.
 
 See generated `INSTALL.md`, `ROLLBACK.md`, `DEPENDENCIES.md`, and `PRIVATE-QUALIFICATION.md` for
 operator steps and the stop conditions. The package is for local disposable integration, not

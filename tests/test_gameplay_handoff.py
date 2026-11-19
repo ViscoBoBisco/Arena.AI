@@ -27,6 +27,7 @@ class GameplayHandoffBundle(unittest.TestCase):
             self.assertEqual(metadata["migration_order"], [
                 "migrations/characters/portable-hole/001_portable_hole_warehouse.sql",
                 "migrations/characters/portable-hole/002_portable_hole_vault_access.sql",
+                "migrations/characters/portable-hole/003_portable_hole_projects.sql",
                 "migrations/characters/runic-codex/001_runic_codex.sql",
                 "migrations/characters/runic-codex/002_runic_codex_inscriptions.sql",
                 "migrations/characters/runic-codex/003_runic_codex_registry_loadouts.sql",
