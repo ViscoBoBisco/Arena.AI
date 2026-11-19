@@ -81,11 +81,22 @@ jobs:
 
       - name: Compile Runic Codex against the pinned core
         run: |
-          python3 tools/compile_generated_module.py \
+          if ! python3 tools/compile_generated_module.py \
             --build-dir /tmp/azerothcore-build \
             --core-source /tmp/azerothcore \
             --module mod-runic-codex \
-            --registration AddRunicCodexScripts
+            --registration AddRunicCodexScripts > /tmp/runic-codex-compile.log 2>&1; then
+            cat /tmp/runic-codex-compile.log
+            python3 - <<'PY'
+          from pathlib import Path
+          lines = Path('/tmp/runic-codex-compile.log').read_text(errors='replace').strip().splitlines()
+          detail = '\\n'.join(lines[-30:]) if lines else 'Runic Codex compile command failed'
+          detail = detail.replace('%', '%25').replace('\\r', '%0D').replace('\\n', '%0A')
+          print(f'::error title=Runic Codex compile failure::{detail}')
+          PY
+            exit 1
+          fi
+          cat /tmp/runic-codex-compile.log
 
       - name: Compile Argent Commission against the pinned core
         run: |
