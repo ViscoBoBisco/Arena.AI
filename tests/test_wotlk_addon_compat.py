@@ -107,6 +107,22 @@ class WotlkAddonCompatibility(unittest.TestCase):
                     self.assertIn("\tLIST\t0\tENTRY", first[2])
                 elif addon == "RunicCodex":
                     self.assertIn("\tSTATE", first[2])
+                    lua.globals().TEST_FIRE("CHAT_MSG_ADDON", "RC1",
+                        "RC1\tPOWER\tarcane_echo\tArcane Echo\t1\t0\t255", "WHISPER", "Tester")
+                    frames = lua.globals().TEST_FRAMES
+                    slot_button = next(frames[i] for i in range(1, len(frames) + 1)
+                                       if frames[i].text == "Slot 1")
+                    slot_button.scripts.OnClick(slot_button)
+                    self.assertEqual(lua.globals().TEST_SENT[len(lua.globals().TEST_SENT)][2],
+                                     "RC1\tEQUIP\tarcane_echo\t0")
+                    name_input = next(frames[i] for i in range(1, len(frames) + 1)
+                                      if getattr(frames[i], "role", None) == "loadoutName")
+                    name_input.SetText(name_input, "raid")
+                    save_button = next(frames[i] for i in range(1, len(frames) + 1)
+                                       if frames[i].text == "Save set")
+                    save_button.scripts.OnClick(save_button)
+                    self.assertEqual(lua.globals().TEST_SENT[len(lua.globals().TEST_SENT)][2],
+                                     "RC1\tLOADOUT\tSAVE\traid")
                 else:
                     self.assertIn("\tSTATUS", first[2])
 

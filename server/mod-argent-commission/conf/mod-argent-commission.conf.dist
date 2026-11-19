@@ -1,0 +1,8 @@
+###################################################################################################
+# Argent Commission — server-authoritative character-bound faction benefits
+###################################################################################################
+# Honored field dressing remains a modest baseline; Exalted commission holders receive an upgrade.
+ArgentCommission.FieldDressing.HonoredPercent = 2
+ArgentCommission.FieldDressing.HonoredCap = 150
+ArgentCommission.FieldDressing.ExaltedPercent = 3
+ArgentCommission.FieldDressing.ExaltedCap = 250

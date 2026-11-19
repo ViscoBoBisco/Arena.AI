@@ -1,0 +1,7 @@
+###################################################################################################
+# Runic Codex — server-side spell power tuning
+###################################################################################################
+RunicCodex.arcane_echo.RefundPercent = 10
+RunicCodex.arcane_echo.RefundCap = 100
+RunicCodex.aegis_echo.RefundPercent = 5
+RunicCodex.aegis_echo.RefundCap = 60

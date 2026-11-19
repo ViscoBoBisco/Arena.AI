@@ -203,15 +203,16 @@
         "server cast hook",
         "WotLK 3.3.5 addon protocol"
       ],
-      "player_loop": "Obtain and use Gahz'ranka's source-verified Tome of Polymorph: Turtle and learn any Arcane Missiles rank, in either order, to unlock Arcane Echo; equip it in the addon and receive a bounded refund on paid casts.",
+      "player_loop": "Use the Gahz'ranka Polymorph: Turtle tome or quest-3121 Codex of Holy Word: Shield III, learn the matching stock spell chain, equip either of two powers in one of two slots, and save/apply character-bound loadouts for bounded paid-cast mana refunds.",
       "source_evidence": [
         "server/mod-runic-codex/src/RunicCodex.cpp",
-        "server/mod-runic-codex/src/ArcaneEchoPolicy.h",
+        "server/mod-runic-codex/src/RunicPowerRegistry.h",
         "server/mod-runic-codex/addon/RunicCodex/RunicCodex.lua",
         "server/mod-runic-codex/data/sql/characters/001_runic_codex.sql",
         "server/mod-runic-codex/data/sql/characters/002_runic_codex_inscriptions.sql",
+        "server/mod-runic-codex/data/sql/characters/003_runic_codex_registry_loadouts.sql",
         "tests/test_runic_codex_mysql.py",
-        "tests/native/runic_codex_policy_test.cpp"
+        "tests/native/runic_power_registry_test.cpp"
       ],
       "manifest_id_needs": [
         "effect schema/version",
@@ -228,7 +229,7 @@
         "Account/party sharing is not implemented"
       ],
       "risks": [
-        "The unlock records a server-observed use of the stock lootable tome and server-observed spell learning; exact gameplay timing still needs a booted-core test",
+        "The Arcane Tome is a confirmed Gahz'ranka drop; the Aegis Codex is quest 3121's confirmed reward; both server-observed item-use and spell-learning timings still need booted-core tests",
         "A pinned compile and disposable SQL test are not a booted gameplay qualification",
         "Native glyphs remain independent and Altbot capability is unproven"
       ],

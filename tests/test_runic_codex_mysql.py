@@ -20,8 +20,8 @@ _ENABLED = all(os.environ.get(key) is not None for key in _REQUIRED)
 _MIGRATIONS = sorted((helpers.REPO / "server/mod-runic-codex/data/sql/characters").glob("*.sql"))
 _MODULE = helpers.REPO / "server/mod-runic-codex/src/RunicCodex.cpp"
 _INSCRIPTION_MIGRATION = helpers.REPO / "server/mod-runic-codex/data/sql/characters/002_runic_codex_inscriptions.sql"
-_POLICY = helpers.REPO / "server/mod-runic-codex/src/ArcaneEchoPolicy.h"
-_POLICY_TEST = helpers.REPO / "tests/native/runic_codex_policy_test.cpp"
+_REGISTRY = helpers.REPO / "server/mod-runic-codex/src/RunicPowerRegistry.h"
+_REGISTRY_TEST = helpers.REPO / "tests/native/runic_power_registry_test.cpp"
 _ADDON = helpers.REPO / "server/mod-runic-codex/addon/RunicCodex/RunicCodex.lua"
 
 
@@ -53,6 +53,12 @@ class RunicCodexMySQL(unittest.TestCase):
         conn = db.connect(cls.pymysql)
         try:
             with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM runic_codex_loadout_powers WHERE guid BETWEEN 971000 AND %s",
+                               (cls.next_guid,))
+                cursor.execute("DELETE FROM runic_codex_loadouts WHERE guid BETWEEN 971000 AND %s",
+                               (cls.next_guid,))
+                cursor.execute("DELETE FROM runic_codex_discoveries WHERE guid BETWEEN 971000 AND %s",
+                               (cls.next_guid,))
                 cursor.execute("DELETE FROM runic_codex_inscriptions WHERE guid BETWEEN 971000 AND %s",
                                (cls.next_guid,))
                 cursor.execute("DELETE FROM runic_codex_powers WHERE guid BETWEEN 971000 AND %s",
@@ -132,12 +138,51 @@ class RunicCodexMySQL(unittest.TestCase):
         conn = db.connect(self.pymysql)
         try:
             with conn.cursor() as cursor:
-                cursor.execute("UPDATE runic_codex_powers SET equipped=1 WHERE guid=%s "
+                cursor.execute("UPDATE runic_codex_powers SET equipped=1,equipped_slot=0 WHERE guid=%s "
                                "AND power_key='arcane_echo' AND unlocked=1", (self.guid,))
             conn.commit()
         finally:
             conn.close()
         self.assertEqual(self.row(), (1, 1))
+        self.assertIsNone(self._read(self.guid + 999))
+
+    def test_registry_discoveries_two_slots_and_character_loadouts(self):
+        conn = db.connect(self.pymysql)
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("INSERT INTO runic_codex_discoveries(guid,power_key,item_entry) "
+                               "VALUES(%s,'arcane_echo',22739),(%s,'aegis_echo',3122)",
+                               (self.guid, self.guid))
+                cursor.execute("INSERT INTO runic_codex_powers(guid,power_key,unlocked,equipped,equipped_slot) "
+                               "VALUES(%s,'arcane_echo',1,1,0),(%s,'aegis_echo',1,1,1)",
+                               (self.guid, self.guid))
+                cursor.execute("INSERT INTO runic_codex_loadouts(guid,loadout_name) VALUES(%s,'raid')",
+                               (self.guid,))
+                cursor.execute("INSERT INTO runic_codex_loadout_powers(guid,loadout_name,slot_index,power_key) "
+                               "SELECT guid,'raid',equipped_slot,power_key FROM runic_codex_powers "
+                               "WHERE guid=%s AND equipped=1", (self.guid,))
+                cursor.execute("UPDATE runic_codex_powers SET equipped=0,equipped_slot=NULL WHERE guid=%s",
+                               (self.guid,))
+                cursor.execute("UPDATE runic_codex_powers p JOIN runic_codex_loadout_powers l "
+                               "ON l.guid=p.guid AND l.power_key=p.power_key "
+                               "SET p.equipped=1,p.equipped_slot=l.slot_index "
+                               "WHERE l.guid=%s AND l.loadout_name='raid' AND p.unlocked=1", (self.guid,))
+                cursor.execute("SELECT power_key,equipped_slot FROM runic_codex_powers "
+                               "WHERE guid=%s AND equipped=1 ORDER BY equipped_slot", (self.guid,))
+                slots = cursor.fetchall()
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(slots, (("arcane_echo", 0), ("aegis_echo", 1)))
+        conn = db.connect(self.pymysql)
+        try:
+            with self.assertRaises(self.pymysql.err.DatabaseError) as raised:
+                with conn.cursor() as cursor:
+                    cursor.execute("UPDATE runic_codex_powers SET equipped_slot=2 WHERE guid=%s "
+                                   "AND power_key='aegis_echo'", (self.guid,))
+            self.assertEqual(raised.exception.args[0], 3819)
+        finally:
+            conn.close()
         self.assertIsNone(self._read(self.guid + 999))
 
     def _read(self, guid):
@@ -161,37 +206,50 @@ class RunicCodexSourceContract(unittest.TestCase):
         self.assertIn("bool /*skipCheck*/", source)
         self.assertNotIn("skipCheck ||", source)
         self.assertIn("player->HasSpell(spell)", source)
-        self.assertIn("DISCOVERY_INSCRIPTION_ITEM = 22739", source)
-        self.assertIn("DISCOVERY_INSCRIPTION_SPELL = 28271", source)
-        self.assertIn("spell->m_CastItem->GetEntry() == DISCOVERY_INSCRIPTION_ITEM", source)
+        registry = _REGISTRY.read_text(encoding="utf-8")
+        self.assertIn('"arcane_echo", "Arcane Echo", 22739, 28271', registry)
+        self.assertIn('"aegis_echo", "Aegis Echo", 3122, 600', registry)
+        self.assertIn("RunicPowerRegistry::FindByDiscovery", source)
+        self.assertIn("RunicPowerRegistry::CalculateRefund", source)
+        self.assertIn("equipped_slot", source)
+        self.assertIn("AllowRequest(player)", source)
+        self.assertIn("std::chrono::milliseconds(200)", source)
+        self.assertIn("runic_codex_loadout_powers", source)
+        self.assertIn('"LOADOUT"', source)
+        self.assertIn('"RunicCodex." + std::string(power->key) + ".RefundPercent"', source)
         self.assertIn("spell->GetSpellInfo()->PowerType != POWER_MANA", source)
         self.assertIn("spell->GetPowerCost()", source)
-        self.assertIn("RunicCodexPolicy::ManaSpent", source)
-        self.assertIn("RunicCodexPolicy::CalculateRefund", source)
+        self.assertIn("RunicPowerRegistry::CalculateRefund", source)
+        self.assertIn("manaSpent", source)
         self.assertIn("ModifyPower(POWER_MANA, static_cast<int32>(refund))", source)
         self.assertIn("runic_codex_powers", source)
-        self.assertIn("runic_codex_inscriptions", source)
+        self.assertIn("runic_codex_discoveries", source)
         inscription_schema = _INSCRIPTION_MIGRATION.read_text(encoding="utf-8")
         self.assertIn("CREATE TABLE IF NOT EXISTS `runic_codex_inscriptions`", inscription_schema)
         self.assertIn("CHECK (`item_entry` = 22739)", inscription_schema)
+        registry_schema = (helpers.REPO / "server/mod-runic-codex/data/sql/characters/003_runic_codex_registry_loadouts.sql").read_text()
+        self.assertIn("CREATE TABLE IF NOT EXISTS `runic_codex_discoveries`", registry_schema)
+        self.assertIn("FOREIGN KEY (`guid`,`loadout_name`)", registry_schema)
+        self.assertIn("runic_codex_equipped_slot_unique", registry_schema)
         learn = source[source.index("void OnPlayerLearnSpell"):source.index("void OnPlayerSpellCast")]
-        self.assertIn("HasUsedInscription(player)", learn)
+        self.assertIn("HasUsedInscription(player, power)", learn)
         item_use = source[source.index("void OnPlayerSpellCast"):source.index("void OnPlayerUpdate")]
-        self.assertLess(item_use.index("RecordInscriptionUse(player)"),
-                        item_use.index("if (KnowsDiscoverySpell(player))"))
+        self.assertLess(item_use.index("RecordInscriptionUse(player, *discovery)"),
+                        item_use.index("PersistDiscovery(player, *discovery)"))
         self.assertIn('"EQUIP"', source)
         self.assertIn('SendAddonMessage(PREFIX', addon)
         self.assertIn('send("EQUIP"', addon)
         self.assertNotIn("GetGUID", addon)
-        self.assertIn("5143, 5144, 5145", _POLICY.read_text(encoding="utf-8"))
+        self.assertIn("5143,5144,5145", registry)
+        self.assertIn("600,3747,6065", registry)
 
-    @unittest.skipUnless(shutil.which("c++"), "a C++ compiler is required for policy regression")
-    def test_native_arcane_echo_policy_boundaries(self):
-        with tempfile.TemporaryDirectory(prefix="runic-codex-policy-") as directory:
-            executable = Path(directory) / "runic-codex-policy-test"
+    @unittest.skipUnless(shutil.which("c++"), "a C++ compiler is required for registry regression")
+    def test_native_power_registry_and_refund_policy(self):
+        with tempfile.TemporaryDirectory(prefix="runic-power-registry-") as directory:
+            executable = Path(directory) / "runic-power-registry-test"
             subprocess.run([
                 shutil.which("c++"), "-std=c++20", "-Wall", "-Wextra", "-Werror",
-                "-I", str(_POLICY.parent), str(_POLICY_TEST), "-o", str(executable),
+                "-I", str(_REGISTRY.parent), str(_REGISTRY_TEST), "-o", str(executable),
             ], check=True, capture_output=True, text=True)
             subprocess.run([str(executable)], check=True, capture_output=True, text=True)
 

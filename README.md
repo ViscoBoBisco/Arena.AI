@@ -77,15 +77,15 @@ explicit `--allow-unverified`; it is not release approval.
 
 ```
 README.md                     this page
-docs/                         knowledge base, catalog, Foundry/adapter contracts, handoffs, and project inventory (01–23)
+docs/                         knowledge base, catalog, Foundry/adapter contracts, handoffs, and project inventory (01–24)
 foundry/                      spec validation, ID policy, assets, generators, adapter, bundler, CLI
 specs/                        versioned declarative feature specifications
 designs/                      creative campaign and feature contracts; explicitly not Foundry input
 prototypes/frontier-operations/ synthetic in-memory mission state oracle; not installable gameplay
 packages/                     reproducible generated handoff bundles (evidence attached)
 server/mod-portable-hole/      character ledger, persistent pins, search/sort, and read-only bulk-deposit planning
-server/mod-runic-codex/        Arcane Missiles discovery, persistent equip, and bounded Arcane Echo refund
-server/mod-argent-commission/  Honored-gated persistent Argent Champion commission
+server/mod-runic-codex/        Registry-backed item discoveries, two power slots, saved loadouts and bounded refunds
+server/mod-argent-commission/  Honored-gated Argent commission with configurable Exalted Field Dressing upgrade
 catalog/alterations.json      110 levers: what you can change, what players see, patch cost
 tools/
   catalog.py                  query the catalog (layers, clocks, surfaces, patch kinds)
@@ -136,6 +136,7 @@ Makefile                      `make check`, `make preflight CLIENT=… SERVER=�
 | [21 — Systematic completion plan](docs/21-systematic-completion-plan.md) | Prioritized project-wide audit sequence, workstream exit criteria, evidence ledger, and progress log |
 | [22 — Expanded gameplay program](docs/22-expanded-gameplay-program.md) | Domain ownership, source-bound system register, current maturity and sequenced implementation PRs |
 | [23 — Portable Hole physical-item custody gate](docs/23-portable-hole-physical-custody.md) | Design-only custody invariants, pinned-core persistence findings, and runtime acceptance gates |
+| [24 — Integrated gameplay handoff](docs/24-integrated-gameplay-handoff.md) | Hashed four-module bundle builder, install/rollback procedures, dependency checks, combined-link gate and private-fork/client qualification boundary |
 
 ## Glossary
 

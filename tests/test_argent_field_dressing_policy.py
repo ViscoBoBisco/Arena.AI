@@ -26,6 +26,9 @@ int main() {
     assert(CalculateHeal(10000, 50) == 50); // never overheal
     assert(CalculateHeal(10000, 0) == 0); // full health
     assert(CalculateHeal(99, 99) == 1); // integer-floor rounding
+    assert(CalculateHeal(10000, 9000, 3, 250) == 250); // Exalted tier
+    assert(CalculateHeal(10000, 9000, 3, 0) == 0); // configured cap can disable benefit
+    assert(CalculateHeal(10000, 9000, 1000, 500) == 500); // percent is bounded
 }
 '''
         with tempfile.TemporaryDirectory() as temporary:
@@ -44,6 +47,8 @@ int main() {
         self.assertIn("earnedCommissions.find(guid) == earnedCommissions.end()", hook)
         self.assertIn("GetReputationRank(ARGENT_CRUSADE_FACTION) < REP_HONORED", hook)
         self.assertIn("CalculateHeal(", hook)
+        self.assertIn('"ArgentCommission.FieldDressing.ExaltedPercent"', hook)
+        self.assertIn('"ArgentCommission.FieldDressing.ExaltedCap"', hook)
         self.assertIn("ModifyHealth(static_cast<int32>(heal))", hook)
         self.assertIn("killer->GetMaxHealth() - killer->GetHealth()", hook)
         self.assertNotIn("SetFaction(", source)
