@@ -42,6 +42,8 @@ namespace
     std::unordered_map<uint32, std::chrono::steady_clock::time_point> lastRequest;
     std::mutex requestMutex;
 
+    void LoadState(Player* player);
+
     std::vector<std::string> SplitTabs(std::string const& value)
     {
         std::vector<std::string> fields;
