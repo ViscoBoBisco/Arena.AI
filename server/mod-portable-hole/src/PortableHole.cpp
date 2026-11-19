@@ -1,4 +1,4 @@
-// Portable Hole: character-private, server-authoritative commodity ledger.
+// Portable Hole: server-authoritative character ledger with explicit read-only account views.
 // This module stores fungible stackable counts only. It never owns/serializes
 // unique Item instances and never trusts a client-supplied character GUID.
 #include "ScriptMgr.h"
@@ -8,6 +8,7 @@
 #include "DatabaseEnv.h"
 #include "ObjectMgr.h"
 #include "StringFormat.h"
+#include "WorldSession.h"
 
 #include "mod-portable-hole.h"
 
@@ -37,6 +38,7 @@ namespace
     constexpr char const* BALANCES = "portable_hole_commodities";
     constexpr char const* RESERVATIONS = "portable_hole_reservations";
     constexpr char const* RECEIPTS = "portable_hole_receipts";
+    constexpr char const* VAULT_ACCESS = "portable_hole_vault_access";
 
     std::atomic_bool enabled{true};
     std::mutex throttleMutex;
@@ -286,13 +288,75 @@ namespace
         std::string name;
     };
 
-    void SendBalancePage(Player* player, uint32 page, std::string const& sort)
+    uint32 CurrentAccountId(Player* player)
+    {
+        return player && player->GetSession() ? player->GetSession()->GetAccountId() : 0;
+    }
+
+    bool CanViewVaultAccount(Player* player, uint32 ownerAccount)
+    {
+        uint32 const viewerAccount = CurrentAccountId(player);
+        if (ownerAccount == 0 || viewerAccount == 0)
+            return false;
+        if (ownerAccount == viewerAccount)
+            return true;
+        return CharacterDatabase.Query(
+            "SELECT owner_account_id FROM `{}` WHERE owner_account_id={} AND viewer_account_id={}",
+            VAULT_ACCESS, ownerAccount, viewerAccount) != nullptr;
+    }
+
+    void ShareVaultAccount(Player* player, uint32 viewerAccount, bool grant)
+    {
+        uint32 const ownerAccount = CurrentAccountId(player);
+        if (ownerAccount == 0 || viewerAccount == 0 || ownerAccount == viewerAccount)
+        {
+            SendError(player, "INVALID_SHARE_ACCOUNT");
+            return;
+        }
+        auto transaction = CharacterDatabase.BeginTransaction();
+        if (grant)
+            transaction->Append(Acore::StringFormat(
+                "INSERT IGNORE INTO `{}` (owner_account_id,viewer_account_id,granted_by_guid) "
+                "VALUES ({},{},{})", VAULT_ACCESS, ownerAccount, viewerAccount,
+                player->GetGUID().GetCounter()));
+        else
+            transaction->Append(Acore::StringFormat(
+                "DELETE FROM `{}` WHERE owner_account_id={} AND viewer_account_id={}",
+                VAULT_ACCESS, ownerAccount, viewerAccount));
+        CharacterDatabase.DirectCommitTransaction(transaction);
+        bool const persisted = CharacterDatabase.Query(
+            "SELECT owner_account_id FROM `{}` WHERE owner_account_id={} AND viewer_account_id={}",
+            VAULT_ACCESS, ownerAccount, viewerAccount) != nullptr;
+        if (persisted != grant)
+        {
+            SendError(player, "RETRY");
+            return;
+        }
+        Send(player, Acore::StringFormat("{}SHARE\t{}\t{}", PREFIX, viewerAccount,
+            grant ? "GRANTED" : "REVOKED"));
+    }
+
+    void SendBalancePage(Player* player, uint32 page, std::string const& sort,
+                         uint32 viewAccount = 0)
     {
         uint32 const guid = player->GetGUID().GetCounter();
+        if (viewAccount != 0 && !CanViewVaultAccount(player, viewAccount))
+        {
+            SendError(player, "VAULT_ACCESS_DENIED");
+            return;
+        }
         std::vector<BalanceLine> rows;
-        QueryResult result = CharacterDatabase.Query(
-            "SELECT item_entry,balance,reserved FROM `{}` WHERE guid={} ORDER BY item_entry",
-            BALANCES, guid);
+        QueryResult result = viewAccount == 0
+            ? CharacterDatabase.Query(
+                "SELECT item_entry,balance,reserved FROM `{}` WHERE guid={} ORDER BY item_entry",
+                BALANCES, guid)
+            : CharacterDatabase.Query(
+                "SELECT b.item_entry,SUM(b.balance),SUM(b.reserved) FROM `{}` b "
+                "INNER JOIN `characters` c ON c.guid=b.guid WHERE c.account={} "
+                "AND (c.account={} OR EXISTS (SELECT 1 FROM `{}` a "
+                "WHERE a.owner_account_id=c.account AND a.viewer_account_id={})) "
+                "GROUP BY b.item_entry ORDER BY b.item_entry",
+                BALANCES, viewAccount, CurrentAccountId(player), VAULT_ACCESS, CurrentAccountId(player));
         if (result)
         {
             do
@@ -335,10 +399,11 @@ namespace
                 PREFIX, page, row.item, row.balance, row.reserved, row.name));
             ++count;
         }
-        Send(player, Acore::StringFormat("{}END\t{}\t{}", PREFIX, page, count));
+        Send(player, Acore::StringFormat("{}END\t{}\t{}\t{}\t{}", PREFIX, page, count,
+            viewAccount, CurrentAccountId(player)));
     }
 
-    void SendSearch(Player* player, std::string const& term)
+    void SendSearch(Player* player, std::string const& term, uint32 viewAccount = 0)
     {
         if (term.empty() || term.size() > 32 || !std::all_of(term.begin(), term.end(),
             [](unsigned char c) { return std::isalnum(c) || c == ' ' || c == '-' || c == '\''; }))
@@ -348,10 +413,23 @@ namespace
         }
         std::string const needle = LowerAscii(term);
         uint32 const guid = player->GetGUID().GetCounter();
+        if (viewAccount != 0 && !CanViewVaultAccount(player, viewAccount))
+        {
+            SendError(player, "VAULT_ACCESS_DENIED");
+            return;
+        }
         std::vector<BalanceLine> matches;
-        QueryResult result = CharacterDatabase.Query(
-            "SELECT item_entry,balance,reserved FROM `{}` WHERE guid={} ORDER BY item_entry",
-            BALANCES, guid);
+        QueryResult result = viewAccount == 0
+            ? CharacterDatabase.Query(
+                "SELECT item_entry,balance,reserved FROM `{}` WHERE guid={} ORDER BY item_entry",
+                BALANCES, guid)
+            : CharacterDatabase.Query(
+                "SELECT b.item_entry,SUM(b.balance),SUM(b.reserved) FROM `{}` b "
+                "INNER JOIN `characters` c ON c.guid=b.guid WHERE c.account={} "
+                "AND (c.account={} OR EXISTS (SELECT 1 FROM `{}` a "
+                "WHERE a.owner_account_id=c.account AND a.viewer_account_id={})) "
+                "GROUP BY b.item_entry ORDER BY b.item_entry",
+                BALANCES, viewAccount, CurrentAccountId(player), VAULT_ACCESS, CurrentAccountId(player));
         if (result)
         {
             do
@@ -647,10 +725,22 @@ namespace
         }
         if (action == "SEARCH")
         {
-            if (fields.size() != 3)
+            uint32 viewAccount = 0;
+            if ((fields.size() != 3 && fields.size() != 4)
+                || (fields.size() == 4 && !ParseUnsigned(fields[3], viewAccount)))
                 SendError(player, "MALFORMED");
             else
-                SendSearch(player, fields[2]);
+                SendSearch(player, fields[2], viewAccount);
+            return true;
+        }
+        if (action == "SHARE")
+        {
+            uint32 viewerAccount = 0;
+            if (fields.size() != 4 || !ParseUnsigned(fields[2], viewerAccount)
+                || (fields[3] != "GRANT" && fields[3] != "REVOKE"))
+                SendError(player, "MALFORMED");
+            else
+                ShareVaultAccount(player, viewerAccount, fields[3] == "GRANT");
             return true;
         }
         if (action == "PINS")
@@ -674,13 +764,15 @@ namespace
         if (action == "LIST")
         {
             uint32 page = 0;
-            std::string sort = fields.size() == 4 ? fields[3] : "ENTRY";
-            if ((fields.size() != 3 && fields.size() != 4)
+            uint32 viewAccount = 0;
+            std::string sort = fields.size() >= 4 ? fields[3] : "ENTRY";
+            if ((fields.size() < 3 || fields.size() > 5)
                 || !ParseUnsigned(fields[2], page) || page > MAX_PAGE
+                || (fields.size() == 5 && !ParseUnsigned(fields[4], viewAccount))
                 || (sort != "ENTRY" && sort != "NAME" && sort != "BALANCE" && sort != "AVAILABLE"))
                 SendError(player, "BAD_PAGE_OR_SORT");
             else
-                SendBalancePage(player, page, sort);
+                SendBalancePage(player, page, sort, viewAccount);
             return true;
         }
         if (action == "CREDIT")
@@ -760,7 +852,7 @@ public:
         if (fields.size() < 2 || fields[0] != PREFIX_TOKEN)
             return;
         bool const known = fields[1] == "HELLO" || fields[1] == "LIST" || fields[1] == "BAG"
-            || fields[1] == "NEED" || fields[1] == "SEARCH" || fields[1] == "PLAN"
+            || fields[1] == "NEED" || fields[1] == "SEARCH" || fields[1] == "SHARE" || fields[1] == "PLAN"
             || fields[1] == "PINS" || fields[1] == "PIN"
             || fields[1] == "CREDIT" || fields[1] == "RESERVE"
             || fields[1] == "RELEASE" || fields[1] == "CONSUME";

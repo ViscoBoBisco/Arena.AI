@@ -95,7 +95,16 @@ jobs:
           unit_update = player_cpp.index('Unit::Update(p_time);')
           script_update = player_cpp.index('sScriptMgr->OnPlayerUpdate(this, p_time);', unit_update)
           assert script_update > unit_update, 'refund observer must run after Unit spell processing'
-          print('Pinned cast hook precedes power deduction; player update follows Unit spell processing.')
+          world = Path('/tmp/acore-pinned/data/sql/base/db_world')
+          item_line = next(line for line in (world / 'item_template.sql').read_text().splitlines()
+                           if line.startswith('(22739,'))
+          assert "(22739,9,0,-1,'Tome of Polymorph: Turtle'" in item_line
+          assert ',28271,6,' in item_line, 'inscription must retain its native item-use spell'
+          loot_line = next(line for line in (world / 'creature_loot_template.sql').read_text().splitlines()
+                           if line.startswith('(15114,22739,'))
+          assert ',0,15,0,1,0,1,1,' in loot_line and 'Tome of Polymorph: Turtle' in loot_line
+          print('Pinned Tome item-use and Gahz’ranka loot source verified.')
+          print('Cast hook precedes power deduction; player update follows Unit spell processing.')
           PY
 
       - name: Initialize exact pinned World DDL and exercise process-crash recovery

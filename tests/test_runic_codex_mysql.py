@@ -17,8 +17,9 @@ import portable_hole_mysql as db  # noqa: E402
 
 _REQUIRED = ("ARENA_MYSQL_HOST", "ARENA_MYSQL_DATABASE", "ARENA_MYSQL_USER", "ARENA_MYSQL_PASSWORD")
 _ENABLED = all(os.environ.get(key) is not None for key in _REQUIRED)
-_MIGRATION = helpers.REPO / "server/mod-runic-codex/data/sql/characters/001_runic_codex.sql"
+_MIGRATIONS = sorted((helpers.REPO / "server/mod-runic-codex/data/sql/characters").glob("*.sql"))
 _MODULE = helpers.REPO / "server/mod-runic-codex/src/RunicCodex.cpp"
+_INSCRIPTION_MIGRATION = helpers.REPO / "server/mod-runic-codex/data/sql/characters/002_runic_codex_inscriptions.sql"
 _POLICY = helpers.REPO / "server/mod-runic-codex/src/ArcaneEchoPolicy.h"
 _POLICY_TEST = helpers.REPO / "tests/native/runic_codex_policy_test.cpp"
 _ADDON = helpers.REPO / "server/mod-runic-codex/addon/RunicCodex/RunicCodex.lua"
@@ -36,11 +37,12 @@ class RunicCodexMySQL(unittest.TestCase):
         conn = db.connect(pymysql)
         try:
             with conn.cursor() as cursor:
-                for statement in _MIGRATION.read_text(encoding="utf-8").split(";"):
-                    statement = "\n".join(line for line in statement.splitlines()
-                                           if not line.lstrip().startswith("--")).strip()
-                    if statement:
-                        cursor.execute(statement)
+                for migration in _MIGRATIONS:
+                    for statement in migration.read_text(encoding="utf-8").split(";"):
+                        statement = "\n".join(line for line in statement.splitlines()
+                                               if not line.lstrip().startswith("--")).strip()
+                        if statement:
+                            cursor.execute(statement)
             conn.commit()
         finally:
             conn.close()
@@ -51,6 +53,8 @@ class RunicCodexMySQL(unittest.TestCase):
         conn = db.connect(cls.pymysql)
         try:
             with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM runic_codex_inscriptions WHERE guid BETWEEN 971000 AND %s",
+                               (cls.next_guid,))
                 cursor.execute("DELETE FROM runic_codex_powers WHERE guid BETWEEN 971000 AND %s",
                                (cls.next_guid,))
             conn.commit()
@@ -96,7 +100,26 @@ class RunicCodexMySQL(unittest.TestCase):
         try:
             conn.begin()
             with conn.cursor() as cursor:
-                # Learning a verified spell chain is represented as an idempotent entitlement insert.
+                # The inscription step is durable and duplicate use is idempotent, but does not
+                # itself unlock the power until a discovery spell is also known.
+                for _ in range(2):
+                    cursor.execute("INSERT IGNORE INTO runic_codex_inscriptions(guid,power_key,item_entry) "
+                                   "VALUES(%s,'arcane_echo',22739)", (self.guid,))
+                cursor.execute("SELECT item_entry FROM runic_codex_inscriptions "
+                               "WHERE guid=%s AND power_key='arcane_echo'", (self.guid,))
+                inscription = cursor.fetchone()
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(inscription, (22739,))
+        self.assertEqual(self.row(), (0, 0))
+
+        conn = db.connect(self.pymysql)
+        try:
+            conn.begin()
+            with conn.cursor() as cursor:
+                # Once the player has both the recorded inscription and a validated spell-rank
+                # event, the entitlement write is durable and duplicate-safe.
                 for _ in range(2):
                     cursor.execute("INSERT INTO runic_codex_powers(guid,power_key,unlocked,equipped) "
                                    "VALUES(%s,'arcane_echo',1,0) ON DUPLICATE KEY UPDATE unlocked=1",
@@ -138,12 +161,24 @@ class RunicCodexSourceContract(unittest.TestCase):
         self.assertIn("bool /*skipCheck*/", source)
         self.assertNotIn("skipCheck ||", source)
         self.assertIn("player->HasSpell(spell)", source)
+        self.assertIn("DISCOVERY_INSCRIPTION_ITEM = 22739", source)
+        self.assertIn("DISCOVERY_INSCRIPTION_SPELL = 28271", source)
+        self.assertIn("spell->m_CastItem->GetEntry() == DISCOVERY_INSCRIPTION_ITEM", source)
         self.assertIn("spell->GetSpellInfo()->PowerType != POWER_MANA", source)
         self.assertIn("spell->GetPowerCost()", source)
         self.assertIn("RunicCodexPolicy::ManaSpent", source)
         self.assertIn("RunicCodexPolicy::CalculateRefund", source)
         self.assertIn("ModifyPower(POWER_MANA, static_cast<int32>(refund))", source)
         self.assertIn("runic_codex_powers", source)
+        self.assertIn("runic_codex_inscriptions", source)
+        inscription_schema = _INSCRIPTION_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("CREATE TABLE IF NOT EXISTS `runic_codex_inscriptions`", inscription_schema)
+        self.assertIn("CHECK (`item_entry` = 22739)", inscription_schema)
+        learn = source[source.index("void OnPlayerLearnSpell"):source.index("void OnPlayerSpellCast")]
+        self.assertIn("HasUsedInscription(player)", learn)
+        item_use = source[source.index("void OnPlayerSpellCast"):source.index("void OnPlayerUpdate")]
+        self.assertLess(item_use.index("RecordInscriptionUse(player)"),
+                        item_use.index("if (KnowsDiscoverySpell(player))"))
         self.assertIn('"EQUIP"', source)
         self.assertIn('SendAddonMessage(PREFIX', addon)
         self.assertIn('send("EQUIP"', addon)

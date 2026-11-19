@@ -6,8 +6,10 @@
 #include "ReputationMgr.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
+#include "ArgentFieldDressingPolicy.h"
 
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -16,6 +18,7 @@ namespace
     constexpr uint32 ARGENT_CRUSADE_FACTION = 1106;
     constexpr uint32 ARGENT_CHAMPION_SPELL = 57819;
     constexpr std::size_t MAX_FRAME = 160;
+    std::unordered_set<uint32> earnedCommissions;
 
     std::vector<std::string> SplitTabs(std::string const& value)
     {
@@ -89,6 +92,7 @@ namespace
             Send(player, std::string(PREFIX) + "\tERR\tRETRY");
             return;
         }
+        earnedCommissions.insert(guid);
         if (!ApplyChampionMechanic(player))
         {
             Send(player, std::string(PREFIX) + "\tERR\tSPELL_UNAVAILABLE");
@@ -101,13 +105,35 @@ namespace
     {
     public:
         ArgentCommissionPlayerScript() : PlayerScript("ArgentCommissionPlayerScript", {
-            PLAYERHOOK_ON_BEFORE_SEND_CHAT_MESSAGE, PLAYERHOOK_ON_LOGIN
+            PLAYERHOOK_ON_BEFORE_SEND_CHAT_MESSAGE, PLAYERHOOK_ON_LOGIN, PLAYERHOOK_ON_LOGOUT,
+            PLAYERHOOK_ON_CREATURE_KILL
         }) { }
 
         void OnPlayerLogin(Player* player) override
         {
+            uint32 const guid = player->GetGUID().GetCounter();
             if (HasCommission(player))
+            {
+                earnedCommissions.insert(guid);
                 ApplyChampionMechanic(player);
+            }
+        }
+
+        void OnPlayerLogout(Player* player) override
+        {
+            earnedCommissions.erase(player->GetGUID().GetCounter());
+        }
+
+        void OnPlayerCreatureKill(Player* killer, Creature* /*killed*/) override
+        {
+            uint32 const guid = killer->GetGUID().GetCounter();
+            if (earnedCommissions.find(guid) == earnedCommissions.end()
+                || killer->GetReputationRank(ARGENT_CRUSADE_FACTION) < REP_HONORED)
+                return;
+            uint32 const heal = ArgentFieldDressingPolicy::CalculateHeal(
+                killer->GetMaxHealth(), killer->GetMaxHealth() - killer->GetHealth());
+            if (heal > 0)
+                killer->ModifyHealth(static_cast<int32>(heal));
         }
 
         void OnPlayerBeforeSendChatMessage(Player* player, uint32& /*type*/, uint32& language,

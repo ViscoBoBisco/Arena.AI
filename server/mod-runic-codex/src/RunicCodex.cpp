@@ -18,6 +18,8 @@ namespace
 {
     constexpr char const* PREFIX = "RC1";
     constexpr char const* POWER_KEY = "arcane_echo";
+    constexpr uint32 DISCOVERY_INSCRIPTION_ITEM = 22739; // Tome of Polymorph: Turtle
+    constexpr uint32 DISCOVERY_INSCRIPTION_SPELL = 28271;
     constexpr uint32 MAX_FRAME = 180;
     struct State
     {
@@ -69,8 +71,26 @@ namespace
         return RunicCodexPolicy::IsDiscoverySpell(spell);
     }
 
+    bool HasUsedInscription(Player* player)
+    {
+        return CharacterDatabase.Query(
+            "SELECT guid FROM `runic_codex_inscriptions` WHERE guid={} AND power_key='{}' AND item_entry={}",
+            player->GetGUID().GetCounter(), POWER_KEY, DISCOVERY_INSCRIPTION_ITEM) != nullptr;
+    }
+
+    void RecordInscriptionUse(Player* player)
+    {
+        auto transaction = CharacterDatabase.BeginTransaction();
+        transaction->Append(Acore::StringFormat(
+            "INSERT IGNORE INTO `runic_codex_inscriptions` (guid,power_key,item_entry) VALUES({},'{}',{})",
+            player->GetGUID().GetCounter(), POWER_KEY, DISCOVERY_INSCRIPTION_ITEM));
+        CharacterDatabase.DirectCommitTransaction(transaction);
+    }
+
     void PersistDiscovery(Player* player)
     {
+        if (!KnowsDiscoverySpell(player) || !HasUsedInscription(player))
+            return;
         uint32 const guid = player->GetGUID().GetCounter();
         auto transaction = CharacterDatabase.BeginTransaction();
         transaction->Append(Acore::StringFormat(
@@ -100,8 +120,6 @@ namespace
         if (!row)
         {
             playerStates[guid] = {};
-            if (KnowsDiscoverySpell(player))
-                PersistDiscovery(player);
             return;
         }
         Field* fields = row->Fetch();
@@ -114,7 +132,7 @@ namespace
         State const state = playerStates[guid];
         Send(player, Acore::StringFormat("{}\tSTATE\t{}\t{}\t{}",
             PREFIX, state.unlocked ? 1 : 0, state.equipped ? 1 : 0,
-            state.unlocked ? "Arcane Echo" : "Learn Arcane Missiles to discover this power"));
+            state.unlocked ? "Arcane Echo" : "Learn Arcane Missiles, then use the Tome of Polymorph: Turtle from Gahz'ranka"));
     }
 
     void SetEquipped(Player* player, bool equipped)
@@ -162,14 +180,29 @@ namespace
         void OnPlayerLearnSpell(Player* player, uint32 spellID) override
         {
             if (IsDiscoverySpell(spellID))
-                PersistDiscovery(player);
+            {
+                if (HasUsedInscription(player))
+                    PersistDiscovery(player);
+                SendState(player);
+            }
         }
 
         void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skipCheck*/) override
         {
             // The pinned core commonly passes skipCheck=true for normal casts after
             // validating them during prepare; it is not evidence of a triggered cast.
-            if (!spell || !IsDiscoverySpell(spell->GetSpellInfo()->Id)
+            if (!spell)
+                return;
+            if (spell->m_CastItem
+                && spell->m_CastItem->GetEntry() == DISCOVERY_INSCRIPTION_ITEM
+                && spell->GetSpellInfo()->Id == DISCOVERY_INSCRIPTION_SPELL)
+            {
+                RecordInscriptionUse(player);
+                if (KnowsDiscoverySpell(player))
+                    PersistDiscovery(player);
+                SendState(player);
+            }
+            if (!IsDiscoverySpell(spell->GetSpellInfo()->Id)
                 || spell->GetSpellInfo()->PowerType != POWER_MANA)
                 return;
             uint32 const guid = player->GetGUID().GetCounter();
