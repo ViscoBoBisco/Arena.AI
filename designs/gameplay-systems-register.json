@@ -46,8 +46,8 @@
       ],
       "implementation_state": "SYNTHETIC",
       "outstanding_tests": [
-        "Run hosted MySQL integration against exact pinned World DDL for apply/retry/foreign collision/full-row rollback/process crash across all seven supported generated tables",
-        "Verify the v3 source/schema/receipt-bound attestation promotes only the World database gate through foundry qualify"
+        "Exercise full pinned AzerothCore World initialization/base rows and test foreign collisions against populated disposable data (current qualifier deliberately requires empty schema)",
+        "Add supported MariaDB/server-version matrix and independent backup/restore proof before any non-empty DB workflow"
       ],
       "risks": [
         "Legacy World SQL qualification remains fail-closed",
@@ -55,7 +55,7 @@
         "Changed manifests/versions are refused rather than upgraded",
         "Never use against production or populated shared DBs"
       ],
-      "next_milestone": "Run and repair the integrated exact-schema seven-table MySQL/restart/receipt-attestation CI; only then begin the Portable Hole commodity vertical on the qualified ownership contracts.",
+      "next_milestone": "Integrate the qualifier with full pinned World base data on a disposable restored DB and prove foreign-row collisions; keep the gate scoped to synthetic fixtures until that populated-data acceptance is passed. Portable Hole now builds on the tested receipt/reservation contract.",
       "completed_evidence": [
         {
           "kind": "SYNTHETIC_DISPOSABLE_MYSQL",
@@ -71,6 +71,14 @@
           "source_sha": "e981f72e47d2d97443ce78b5af51d71925cca4d6",
           "upstream_source_sha": "6ffb62abb867dabb258de6813ff5d06d6b011543",
           "scope": "MySQL 8.4 fresh empty disposable DB; seven pinned generated-table DDL sources hashed and initialized, runtime InnoDB engines/PKs checked; abrupt worker death after item INSERT, transaction/journal/receipt absence, same-request restart apply/replay and owned rollback verified. Not all generated tables' writes; no base rows imported."
+        },
+        {
+          "kind": "SYNTHETIC_DISPOSABLE_MYSQL_PINNED_SCHEMA",
+          "status": "PASS",
+          "run_id": "44422708326",
+          "source_sha": "d4cc8cc5a13518994f30a8221460891b4977c660",
+          "upstream_source_sha": "6ffb62abb867dabb258de6813ff5d06d6b011543",
+          "scope": "MySQL 8.4 all seven supported generated tables: exact-pinned DDL, late foreign collision atomic rollback, changed-row rollback refusal, process death after npc_vendor INSERT with multiple uncommitted tables, same-request restart/replay, v3 source/schema/code/receipt attestation; foundry qualify World DB gate PASS for the synthetic fixture only; package release remained BLOCKED. No base rows imported."
         }
       ]
     },
@@ -144,38 +152,44 @@
     },
     {
       "id": "portable-hole-commodity-vault",
-      "owner": "Future Portable Hole runtime module; AzerothCore owns actual item state",
+      "owner": "Portable Hole AzerothCore module; current slice is character-private virtual commodities",
       "dependencies": [
-        "server-side ACL contract",
-        "InnoDB receipts/reservations",
-        "Characters item lifecycle adapter",
-        "Campaign Party authorization boundary"
+        "pinned AzerothCore PlayerScript addon channel",
+        "Characters InnoDB ledger/receipt/reservation tables",
+        "ObjectMgr stackable-item validation",
+        "server-authorized credit source"
       ],
-      "player_loop": "Search authorized shared holdings, preview an exact material deposit/withdrawal, then receive a durable receipt.",
+      "player_loop": "Browse character-owned virtual commodity counts, reserve counts, release reservations, or consume a full reservation; GM/server code can seed balances with durable receipts.",
       "source_evidence": [
-        "Directive requirements; no implementation in this checkout"
+        "server/mod-portable-hole/src/PortableHole.cpp",
+        "server/mod-portable-hole/src/mod-portable-hole_loader.cpp",
+        "server/mod-portable-hole/addon/PortableHole/PortableHole.lua",
+        "server/mod-portable-hole/data/sql/characters/001_portable_hole_warehouse.sql",
+        "server/mod-portable-hole/harness/portable_hole_mysql.py",
+        "tests/test_portable_hole_mysql.py"
       ],
       "manifest_id_needs": [
-        "account-group and vault identities",
-        "permission revision",
-        "item/source provenance",
-        "idempotent request receipt",
-        "reservation/project identity"
+        "server-derived character GUID",
+        "item_template entry from server lookup",
+        "exact request fingerprint and durable receipt",
+        "reservation identity/state",
+        "credit source and actor GUID"
       ],
-      "implementation_state": "DESIGN_ONLY",
+      "implementation_state": "SYNTHETIC",
       "outstanding_tests": [
-        "Concurrent final-balance withdrawals",
-        "timeouts/retries/disconnect/crash",
-        "ACL revocation and wrong-account access",
-        "bag capacity/partial stacks/overflow",
-        "reserved resources and duplicate deposits"
+        "Hosted disposable MySQL receipt/replay, competing reservation, process-death and rollback suite",
+        "Pinned-core module compile and registration linkage",
+        "Physical item deposit/withdraw recovery across core saves and inventory capacity",
+        "Revocable account/group ACL and Campaign Party adapter",
+        "Profession/reward source integration and end-to-end gameplay/client qualification"
       ],
       "risks": [
-        "Never trust addon-supplied account identity",
-        "Do not mutate live item tables behind the core object model",
-        "Cross-database atomicity is not assumed"
+        "This virtual-balance slice does not destroy or materialize physical bag items",
+        "Never trust addon-supplied character/account identity",
+        "No account/party sharing until an explicit revocable ACL adapter exists",
+        "Cross-database or core inventory state atomicity is not assumed"
       ],
-      "next_milestone": "Build a synthetic transactional state machine and disposable MySQL commodity-balance slice before core item hooks."
+      "next_milestone": "Qualify the hosted SQL/module slice, then design and test a recoverable core item-custody saga before connecting profession rewards or shared ACLs."
     },
     {
       "id": "runic-codex",
@@ -738,13 +752,17 @@
     },
     {
       "id": "P1-03",
-      "title": "Portable Hole commodity transaction slice",
-      "status": "not started",
+      "title": "Portable Hole commodity reservation vertical",
+      "status": "synthetic implementation; hosted MySQL pending",
       "acceptance": [
-        "ACL",
-        "virtual 64-bit balance",
-        "exactly-once receipts",
-        "concurrent/crash MySQL tests"
+        "private character GUID ACL with no client-supplied owner",
+        "stackable/unlimited item-template validation",
+        "virtual uint64 balance and reservation ledger",
+        "server-only/GM credit, reserve, release and consume receipts",
+        "same-ID replay, conflicting-payload refusal, competing final-balance reservation",
+        "process-death rollback and same-ID retry on disposable MySQL",
+        "pinned AzerothCore module compilation and static registration linkage",
+        "no physical item custody, account/party sharing, or gameplay claim"
       ]
     },
     {

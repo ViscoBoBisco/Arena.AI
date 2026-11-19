@@ -201,6 +201,26 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Qualify Portable Hole commodity reservations on disposable MySQL
+        env:
+          ARENA_MYSQL_HOST: 127.0.0.1
+          ARENA_MYSQL_PORT: 3306
+          ARENA_MYSQL_DATABASE: arena_foundry_disposable_portable_hole_ci
+          ARENA_MYSQL_USER: root
+          ARENA_MYSQL_PASSWORD: arena-foundry-ci-only
+        run: |
+          mysql --defaults-extra-file=/tmp/arena-foundry-mysql.cnf \
+            --execute='CREATE DATABASE arena_foundry_disposable_portable_hole_ci CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'
+          python3 -m unittest tests.test_portable_hole_mysql -v
+          python3 - <<'PY'
+          import os
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              print('## Portable Hole commodity ledger', file=summary)
+              print('', file=summary)
+              print('- MySQL 8.4 InnoDB receipts, private GUID scope, reservations, competing requests and abrupt-process rollback: **PASS**', file=summary)
+              print('- Credits in this slice are GM/server-authorized virtual commodity grants; physical item transfer and Party sharing are not implemented.', file=summary)
+          PY
+
       - name: Assert unsupported World content fails closed
         run: |
           python3 tools/foundry.py verify packages/frost-armory

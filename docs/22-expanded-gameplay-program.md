@@ -22,7 +22,7 @@ server, qualify a client, or integrate private Campaign Party.
 | Selected character/Altbot, roster, party permissions, deployment and orchestration | Campaign Party (separate/private) | Define versioned transport-neutral contracts and test doubles | No invented private APIs or assumed source/baseline |
 | Bot movement, combat and tactics | Playerbots | Develop explicitly versioned strategy capability contracts | Bots are not NPC squad simulation and new powers are not automatically bot-supported |
 | Entitlements, loadouts, provenance, operation receipts and audit | Each runtime subsystem owns its domain state; shared envelope can correlate operations | Specify common identity/version/receipt vocabulary and generate artifacts | Shared metadata does not transfer authority across domains or databases |
-| Portable Hole | Future runtime module and core item adapter | Define ACL, commodity/instance custody contracts, tests and packages | Never infer account ownership from an addon or mutate live item tables behind the core object model |
+| Portable Hole | Executable character-private virtual commodity ledger, reservations, receipts, addon UI and GM/server credit in `server/mod-portable-hole` | Qualify MySQL/module in CI; next add recoverable physical item custody and explicit revocable ACL adapters | No physical item deposit/withdrawal, account/party sharing, or profession reward integration is claimed; never infer ownership from addon data or bypass the core item object model |
 | Runic Codex | Future runtime module; AzerothCore executes effects | Define typed effects, unlock sources, packaging and qualification | Native glyphs remain separate; no guessed DBC rows, assets or unqualified class effects |
 | Faction Operations | Future module; AzerothCore retains native reputation and hostility | Define authority/accord packages and tests | Native reputation, faction authority, personal accords and FactionTemplate hostility are separate |
 | Arena Foundry | Arena repository | Declarative specs, source-aware IDs, generators, packages, qualification and handoff | A generated artifact is not installed gameplay; maturity labels follow evidence only |
@@ -37,16 +37,11 @@ permission-checked adapter with exact receipts and independent disable/recovery 
 
 ## Current implementation/evidence matrix
 
-The complete row-by-row state is in the JSON register. At this baseline:
+The complete row-by-row state is in the JSON register. Current bounded maturity:
 
-- **Implemented, bounded:** Foundry specification, asset-index, package, qualification, and offline
-  FakeHost adapter. PR #32 lifecycle changes are preserved.
-- **Synthetic:** faction-operation typed foundation; Frontier Operations state oracle; Vault Terminal
-  protocol/state tests; the World-row ownership service introduced alongside this chapter, until its
-  disposable MySQL run passes.
-- **Design-only or blocked:** Portable Hole, Runic Codex, Equipment Mastery, Catalytic Crafting's
-  actual recipe operations, Party Build Architect, source-bound DBC materialization, and public-core
-  full boot. The historical Frost Armory preview is not a playable package.
+- **Implemented, bounded:** Foundry specification, asset-index, package, qualification, offline FakeHost adapter, and the exact-pinned disposable World ownership/receipt attestation path from PR #35. That World proof qualifies only its synthetic fixture; it is not a populated-World or release qualification.
+- **Synthetic executable slice:** Portable Hole character-private virtual balances, reservations, GM/server credits, exact receipts, a native AzerothCore PlayerScript/addon surface, and a disposable-MySQL crash/concurrency test contract. It does not yet move physical items, share account/party ACLs, connect profession rewards, or claim gameplay.
+- **Synthetic/design-only or blocked:** faction-operation typed foundation; Frontier Operations state oracle; Runic Codex; Equipment Mastery; Catalytic Crafting's actual recipe operations; Party Build Architect; source-bound DBC materialization; and public-core full boot. The historical Frost Armory preview is not a playable package.
 - **External/unavailable:** build-12340 client exercise and private Campaign Party integration. No
   current source checkout or contract establishes either.
 - **Compile evidence is not runtime evidence:** prior PR #32 checks reported pinned public-core
