@@ -1,11 +1,22 @@
 # Integrated gameplay handoff bundle
 
-Build the reproducible source bundle into a new directory outside the checkout:
+Use the repeatable, guarded local bootstrap to run the audit, repository checks, source bundle generation, prerequisite inventory, and (where tools exist) an isolated pinned-core build. It writes a readable qualification report and integrity-checked source handoff outside the checkout:
+
+```sh
+OUT="${TMPDIR:-/tmp}/arena-local-$(date -u +%Y%m%dT%H%M%SZ)"
+test ! -e "$OUT"
+python3 tools/local_gameplay.py qualify --workspace "$OUT"
+cat "$OUT/QUALIFICATION.md"
+```
+
+For the source-only bundle builder directly:
 
 ```sh
 python3 tools/build_gameplay_handoff.py --out /tmp/arena-gameplay-handoff
 python3 /tmp/arena-gameplay-handoff/verify.py
 ```
+
+See `docs/25-local-integration-bootstrap.md` for explicit disposable database creation, guarded test-client addon installation, bounded public boot attempt, disable and recovery commands.
 
 The bundle contains the three maintained AzerothCore modules and addons, the generated Vault Terminal
 module/addon/config, all additive Characters SQL migrations in a machine-readable order, source evidence,

@@ -24,6 +24,7 @@ ADDONS = (
 )
 TESTS = (
     "tests/helpers.py",
+    "tests/test_local_gameplay.py",
     "tests/test_portable_hole_mysql.py",
     "tests/test_portable_hole_planner.py",
     "tests/test_portable_hole_custody_gate.py",
@@ -40,11 +41,32 @@ DOCS = (
     "docs/18-local-runtime-handoff.md",
     "docs/23-portable-hole-physical-custody.md",
     "docs/24-integrated-gameplay-handoff.md",
+    "docs/25-local-integration-bootstrap.md",
 )
 
 
 def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def module_tree_digest(root: Path) -> str:
+    files = {path.relative_to(root).as_posix(): digest(path.read_bytes())
+             for path in sorted(root.rglob("*")) if path.is_file() and not path.is_symlink()}
+    return digest(json.dumps(files, sort_keys=True, separators=(",", ":")).encode())
+
+
+def source_snapshot() -> tuple[str, int]:
+    names = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                           cwd=ROOT, check=True, capture_output=True).stdout.split(b"\0")
+    files: dict[str, str] = {}
+    for raw in names:
+        if not raw:
+            continue
+        name = raw.decode("utf-8", errors="surrogateescape")
+        path = ROOT / name
+        files[name] = digest(path.read_bytes()) if path.is_file() else "DELETED"
+    payload = json.dumps(files, sort_keys=True, separators=(",", ":")).encode()
+    return digest(payload), len(files)
 
 
 def git(*args: str) -> str:
@@ -69,6 +91,7 @@ def main() -> int:
         source_head = git("rev-parse", "HEAD")
         source_branch = git("branch", "--show-current")
         status = git("status", "--porcelain=v1")
+        snapshot_sha256, snapshot_files = source_snapshot()
         ci_evidence = None
         if args.ci_evidence:
             if status:
@@ -138,6 +161,19 @@ def main() -> int:
             provenance_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(generated / "manifest.json", provenance_dir / "vault-terminal-manifest.json")
             shutil.copy2(generated / "evidence.json", provenance_dir / "vault-terminal-evidence.json")
+        if ci_evidence is not None:
+            evidence_modules = ci_evidence["modules"]
+            packaged_modules = {
+                "mod-vault-terminal": out / "modules/mod-vault-terminal",
+                "mod-portable-hole": out / "modules/mod-portable-hole",
+                "mod-runic-codex": out / "modules/mod-runic-codex",
+                "mod-argent-commission": out / "modules/mod-argent-commission",
+            }
+            for name, module_root in packaged_modules.items():
+                actual = module_tree_digest(module_root)
+                if actual != evidence_modules[name]:
+                    raise ValueError(f"CI module source hash mismatch for {name}: "
+                                     f"evidence={evidence_modules[name]} package={actual}")
         for addon in ADDONS:
             shutil.copytree(ROOT / addon, out / "addons" / Path(addon).name)
         for module in MODULES:
@@ -173,6 +209,11 @@ def main() -> int:
         (out / "verify.py").write_text(VERIFY, encoding="utf-8")
         shutil.copy2(ROOT / "tools/check_gameplay_handoff_dependencies.py",
                      out / "check_dependencies.py")
+        local_tools = out / "qualification/tools"
+        local_tools.mkdir(parents=True, exist_ok=True)
+        for tool_name in ("local_gameplay.py", "build_gameplay_handoff.py",
+                          "check_gameplay_handoff_dependencies.py"):
+            shutil.copy2(ROOT / "tools" / tool_name, local_tools / tool_name)
         for path in sorted(p for p in out.rglob("*") if p.is_file() and p.name != "bundle.json"):
             rel = path.relative_to(out).as_posix()
             payload = path.read_bytes()
@@ -181,7 +222,9 @@ def main() -> int:
             "schema": "arena-gameplay-integration-handoff/1",
             "source": {"repository": "ViscoBoBisco/Arena.AI", "branch": source_branch,
                        "head": source_head, "worktree_dirty": bool(status),
-                       "status_porcelain": status.splitlines()},
+                       "status_porcelain": status.splitlines(),
+                       "worktree_snapshot_sha256": snapshot_sha256,
+                       "worktree_snapshot_file_count": snapshot_files},
             "core": {"repository": "https://github.com/azerothcore/azerothcore-wotlk.git",
                      "revision": pin},
             "components": ["Vault Terminal", "Portable Hole", "Runic Codex", "Argent Commission"],
@@ -210,8 +253,11 @@ def main() -> int:
         missing_migrations = [name for name in metadata["migration_order"] if not (out / name).is_file()]
         if missing_migrations:
             raise ValueError(f"ordered migration list references missing files: {missing_migrations}")
-        if ci_evidence and metadata["core"]["revision"] != ci_evidence.get("core", {}).get("revision"):
-            raise ValueError("CI evidence core pin does not match this bundle")
+        if ci_evidence:
+            if metadata["core"]["revision"] != ci_evidence.get("core", {}).get("revision"):
+                raise ValueError("CI evidence core pin does not match this bundle")
+            if metadata["source"]["head"] != ci_evidence.get("source", {}).get("head"):
+                raise ValueError("CI evidence must be a successful combined build/link for this exact HEAD")
         (out / "bundle.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n",
                                          encoding="utf-8")
     except Exception:

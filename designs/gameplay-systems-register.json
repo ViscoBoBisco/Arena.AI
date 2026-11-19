@@ -2,9 +2,9 @@
   "schema": "arena-gameplay-systems-register/1",
   "baseline": {
     "repository": "ViscoBoBisco/Arena.AI",
-    "main_sha": "186dcdf73b0063db26177654982a7642c7786b29",
-    "pr_32_head": "f75d3b086c18c5f3694660ba65552bc32fcb1365",
-    "scope_note": "The baseline is recorded for audit; feature states below are derived from this checkout and are not claims of runtime integration."
+    "main_sha": "850cae42040ac31b9fdcd9f15d0fe91d94bf7f6b",
+    "pr_42_head": "94aa51516e80ea74ce2e489854f2d3cf9d85fe18",
+    "scope_note": "The merged-main baseline is recorded for audit. Public compile/link and disposable Characters DB results are source-bound to PR #42; live boot, client and private-fork states remain distinct and unclaimed."
   },
   "state_vocabulary": [
     "DESIGN_ONLY",
@@ -159,7 +159,7 @@
         "ObjectMgr stackable-item validation",
         "server-authorized credit source"
       ],
-      "player_loop": "Browse character-owned virtual commodity counts, reserve/release/consume only on the current character, grant another account a revocable read-only aggregate view, or compare a known profession recipe's native reagents against carried and advisory virtual counts.",
+      "player_loop": "Browse character-owned virtual commodity counts, reserve/release/consume only on the current character, grant another account a revocable read-only aggregate view, plan recipe preparation against authorized shared project budgets, or compare a known profession recipe's native reagents against carried and advisory virtual counts.",
       "source_evidence": [
         "server/mod-portable-hole/src/PortableHole.cpp",
         "server/mod-portable-hole/src/mod-portable-hole_loader.cpp",
@@ -176,14 +176,28 @@
         "reservation identity/state",
         "credit source and actor GUID"
       ],
-      "implementation_state": "SYNTHETIC",
+      "implementation_state": "COMPILE_QUALIFIED",
+      "completed_evidence": [
+        {
+          "kind": "PUBLIC_PINNED_FOUR_MODULE_BUILD_LINK",
+          "status": "PASS",
+          "run_id": "44589482453",
+          "source_sha": "94aa51516e80ea74ce2e489854f2d3cf9d85fe18",
+          "core_sha": "6ffb62abb867dabb258de6813ff5d06d6b011543",
+          "scope": "Portable Hole compiled and linked with the other three modules; exact executable and handoff artifact recorded in the run."
+        },
+        {
+          "kind": "DISPOSABLE_CHARACTERS_MYSQL",
+          "status": "PASS",
+          "run_id": "44589482595",
+          "source_sha": "94aa51516e80ea74ce2e489854f2d3cf9d85fe18",
+          "scope": "Ledger receipts/replay, races, project caps, access revocation, owner recovery, process disconnect/retry, authorized preparation planning; physical Item custody excluded."
+        }
+      ],
       "outstanding_tests": [
-        "Hosted disposable MySQL receipt/replay, competing reservation, process-death and rollback suite",
-        "Pinned-core module compile and registration linkage",
+        "Booted-core and build-12340 client qualification, including live read/write protocol and module initialization",
         "Physical item deposit/withdraw recovery across core saves and inventory capacity",
-        "Hosted MySQL test of explicit account grants, revocation, and shared-view aggregation",
-        "Campaign Party adapter and profession/reward source integration",
-        "End-to-end booted gameplay/client qualification"
+        "Campaign Party adapter and profession/reward source integration"
       ],
       "risks": [
         "This virtual-balance slice does not destroy or materialize physical bag items",
@@ -203,7 +217,7 @@
         "server cast hook",
         "WotLK 3.3.5 addon protocol"
       ],
-      "player_loop": "Use the Gahz'ranka Polymorph: Turtle tome or quest-3121 Codex of Holy Word: Shield III, learn the matching stock spell chain, equip either of two powers in one of two slots, and save/apply character-bound loadouts for bounded paid-cast mana refunds.",
+      "player_loop": "Use one of the source-verified stock tomes, learn its native prerequisite spell chain, discover one of six powers (two mana refunds, three bounded combat effects, or a Shadow-school ward), equip up to two powers, and save/apply character-bound loadouts.",
       "source_evidence": [
         "server/mod-runic-codex/src/RunicCodex.cpp",
         "server/mod-runic-codex/src/RunicPowerRegistry.h",
@@ -221,19 +235,43 @@
         "character-scoped entitlement",
         "loadout revision"
       ],
-      "implementation_state": "SYNTHETIC",
+      "implementation_state": "COMPILE_QUALIFIED",
+      "completed_evidence": [
+        {
+          "kind": "PUBLIC_PINNED_FOUR_MODULE_BUILD_LINK",
+          "status": "PASS",
+          "run_id": "44589482453",
+          "source_sha": "94aa51516e80ea74ce2e489854f2d3cf9d85fe18",
+          "core_sha": "6ffb62abb867dabb258de6813ff5d06d6b011543",
+          "scope": "All six registry powers compiled and linked with the other three modules; exact executable and handoff artifact recorded in the run."
+        },
+        {
+          "kind": "DISPOSABLE_CHARACTERS_MYSQL",
+          "status": "PASS",
+          "run_id": "44589482595",
+          "source_sha": "94aa51516e80ea74ce2e489854f2d3cf9d85fe18",
+          "scope": "Registry persistence, discovery, two-slot state, character loadouts, and SQL contracts; runtime combat not exercised."
+        },
+        {
+          "kind": "PYTHON_3_9_AND_3_12",
+          "status": "PASS",
+          "run_id": "44589482530",
+          "source_sha": "94aa51516e80ea74ce2e489854f2d3cf9d85fe18",
+          "scope": "Lua 5.1 addon syntax and native C++ registry regression tests included."
+        }
+      ],
       "outstanding_tests": [
-        "Booted-core discovery from spell learning and durable equip state across relog",
-        "Booted test for paid-cost timing when a cast is interrupted after mana deduction",
-        "Lua 5.1 addon behavior and malformed frame handling",
+        "Booted-core discovery/equip state across relog and actual combat bonus/refund observations",
+        "Interrupted paid-cast and runtime mana accounting under the pinned core",
+        "Live client addon request/response and malformed-frame handling",
         "Account/party sharing is not implemented"
       ],
       "risks": [
-        "The Arcane Tome is a confirmed Gahz'ranka drop; the Aegis Codex is quest 3121's confirmed reward; both server-observed item-use and spell-learning timings still need booted-core tests",
-        "A pinned compile and disposable SQL test are not a booted gameplay qualification",
-        "Native glyphs remain independent and Altbot capability is unproven"
+        "All six item/spell/rank and acquisition paths are source-checked against the public pin; server-observed discovery/effect timing still needs a booted-core test",
+        "Pinned compile and disposable SQL qualification are not a booted gameplay qualification",
+        "Native glyphs remain independent and private Playerbots capability is unproven"
       ],
-      "next_milestone": "Boot the pinned public core with DBC data and qualify Arcane Echo discovery, equip persistence, mana accounting, and addon exchange under runtime failure tests."
+      "next_milestone": "Run the guarded local bootstrap with matching public-core data and disposable databases; exercise discovery, equip persistence, combat effects, mana accounting, and addon exchange. Keep private-fork/client results separate."
     },
     {
       "id": "equipment-mastery-relics",
@@ -276,7 +314,7 @@
         "server-side native championing effect",
         "native AzerothCore reputation rank"
       ],
-      "player_loop": "Reach Honored with the Argent Crusade, claim the commission, retain native Argent Championing, and while still Honored receive a small capped heal on credited creature kills without changing hostile-faction rules.",
+      "player_loop": "Reach Honored with the Argent Crusade, claim the commission, retain native Argent Championing, receive a small capped heal on credited creature kills, and request native Cure Disease from a nearby living stock Argent Medic while still Honored.",
       "source_evidence": [
         "server/mod-argent-commission/src/ArgentCommission.cpp",
         "server/mod-argent-commission/src/ArgentFieldDressingPolicy.h",
@@ -293,17 +331,34 @@
         "Honored claim evidence",
         "qualification receipt"
       ],
-      "implementation_state": "SYNTHETIC",
+      "implementation_state": "COMPILE_QUALIFIED",
+      "completed_evidence": [
+        {
+          "kind": "PUBLIC_PINNED_FOUR_MODULE_BUILD_LINK",
+          "status": "PASS",
+          "run_id": "44589482453",
+          "source_sha": "94aa51516e80ea74ce2e489854f2d3cf9d85fe18",
+          "core_sha": "6ffb62abb867dabb258de6813ff5d06d6b011543",
+          "scope": "Commission, field-dressing effect and bounded Argent Medic handler compiled and linked with the other modules."
+        },
+        {
+          "kind": "DISPOSABLE_CHARACTERS_MYSQL",
+          "status": "PASS",
+          "run_id": "44589482595",
+          "source_sha": "94aa51516e80ea74ce2e489854f2d3cf9d85fe18",
+          "scope": "Persistent entitlement schema and DB contracts passed; does not claim a live reputation or NPC request."
+        }
+      ],
       "outstanding_tests": [
         "Booted-core test of Honored claim and login reapplication with real DBC data",
-        "Verify no change to native reputation values, global hostility, or party membership",
-        "Runtime client test of commission addon"
+        "Verify no change to native reputation values, global hostility, or party membership during live claims/services",
+        "Runtime client test of commission and medic addon requests"
       ],
       "risks": [
-        "The entitlement and effect compile/SQL paths are not yet a booted runtime qualification",
+        "Native reputation authority, hostility, and SmartAI remain core-owned; the new service is only compiled/source-checked until runtime qualification",
         "FactionTemplate and native reputation remain distinct"
       ],
-      "next_milestone": "Run a pinned-core runtime test that claims only at REP_HONORED and verifies the core Argent Champion aura preserves native hostility and reputation authority."
+      "next_milestone": "Run the guarded local bootstrap with pinned DBC/server data and a disposable world/characters setup; test Honored gates, native championing, NPC Cure Disease, and unchanged hostility."
     },
     {
       "id": "frontier-operations",
@@ -423,15 +478,27 @@
         "boot log and bounded exercise result"
       ],
       "implementation_state": "COMPILE_QUALIFIED",
+      "completed_evidence": [
+        {
+          "kind": "PUBLIC_PINNED_FOUR_MODULE_BUILD_LINK",
+          "status": "PASS",
+          "run_id": "44589482453",
+          "source_sha": "94aa51516e80ea74ce2e489854f2d3cf9d85fe18",
+          "core_sha": "6ffb62abb867dabb258de6813ff5d06d6b011543",
+          "worldserver_version_command": "PASS",
+          "binary_sha256_location": "arena-four-module-integration-94aa51516e80ea74ce2e489854f2d3cf9d85fe18/qualification/ci-integration-evidence.json"
+        }
+      ],
       "outstanding_tests": [
-        "Full-core boot with a reproducible resource/data setup",
-        "Module-load and bounded runtime request",
+        "Full-core boot with a reproducible resource/data setup and disposable auth/world/characters schemas",
+        "Module initialization log assertions and representative live requests",
         "Keep public core separate from private Campaign Party/client gates"
       ],
       "risks": [
-        "Existing compile proof is not boot, client, Playerbot or Campaign Party qualification"
+        "Compile/link and disposable Characters contracts are not server boot, gameplay request, client, Playerbot or Campaign Party qualification",
+        "Local check found CMake, SQL client, server data and client executable unavailable; no boot was run in this environment"
       ],
-      "next_milestone": "Run an opt-in isolated full-core build/boot attempt and classify missing resources explicitly."
+      "next_milestone": "Use tools/local_gameplay.py qualify with verified data and an isolated core; attempt bounded boot and record concrete missing inputs or module/request evidence."
     },
     {
       "id": "portable-hole-unique-instance-custody",
@@ -684,14 +751,14 @@
         "No market prices or AHBot ownership assumptions",
         "No auto-sale of protected gear"
       ],
-      "next_milestone": "Implement deterministic Material Exchange only after a real recipe operation and custody contract exist."
+      "next_milestone": "Use the guarded local bootstrap on a disposable full-core environment to verify live addon authorization and project requests; retain virtual-only resource accounting until a separately reconciled custody/crafting bridge is qualified."
     }
   ],
   "prioritized_prs": [
     {
       "id": "P0-01a",
       "title": "Transactional World ownership journal",
-      "status": "implemented; synthetic MySQL CI passed; exact pinned schema proof pending",
+      "status": "implemented; disposable MySQL and exact pinned-schema recovery qualification passed in CI; populated World rows and production admission remain out of scope",
       "acceptance": [
         "InnoDB-only atomic DML plus journal",
         "full-row snapshot protection",
@@ -703,7 +770,7 @@
     {
       "id": "P0-01b",
       "title": "Pinned-schema World qualification and recovery proof",
-      "status": "blocked on P0-01a CI and exact schema execution",
+      "status": "pinned World DDL/recovery proof passed on disposable CI schemas; no populated World base rows or production admission",
       "acceptance": [
         "disposable MySQL against exact pinned schema",
         "crash/reconnect and fresh receipt",
@@ -736,7 +803,7 @@
     {
       "id": "P0-04",
       "title": "Public-core boot qualification",
-      "status": "not started",
+      "status": "pinned four-module compile/link and version command passed; live boot/request remain not assessed",
       "acceptance": [
         "opt-in pinned build/boot",
         "bounded request",
@@ -756,7 +823,7 @@
     {
       "id": "P1-02",
       "title": "Runic Codex discovery-to-equip-to-effect vertical",
-      "status": "executable synthetic vertical; hosted pinned compile/Characters qualification pending",
+      "status": "six-power vertical source-verified; pinned four-module compile/link, disposable Characters DB and Python 3.9/3.12 CI passed; live combat/client remain not assessed",
       "acceptance": [
         "source-verified Arcane Missiles learning discovery",
         "durable character unlock and equip state",
@@ -768,7 +835,7 @@
     {
       "id": "P1-03",
       "title": "Portable Hole commodity reservation vertical",
-      "status": "synthetic implementation; hosted MySQL pending",
+      "status": "project/receipt suite passed on disposable MySQL; source compiled/linked with the four-module set; physical custody and live Campaign Party integration remain blocked by local gates",
       "acceptance": [
         "private character GUID ACL with no client-supplied owner",
         "stackable/unlimited item-template validation",
@@ -784,7 +851,7 @@
     {
       "id": "P1-04",
       "title": "Profession reagent overlay and pins",
-      "status": "implemented synthetic client/server paths: carried count, synchronized server-persisted character pins, name search, balance sorting, bag-gap comparison, and read-only bulk-deposit plan; no transfer or recipe integration",
+      "status": "implemented virtual-only client/server planner and project-budget prep contract; pinned four-module build and disposable Characters DB passed; Campaign Party caller remains local integration, and no physical transfer/craft consumption is enabled",
       "acceptance": [
         "server-derived read-only carried count for an eligible item; bank excluded",
         "bag versus virtual quantity distinction",
@@ -797,7 +864,7 @@
     {
       "id": "P1-05",
       "title": "Argent reputation-gated commission",
-      "status": "executable synthetic vertical; hosted pinned compile/Characters qualification pending",
+      "status": "commission and medic service compiled/linked; disposable Characters DB and Python CI passed; native reputation/NPC/client runtime remain not assessed",
       "acceptance": [
         "source-verified Argent Crusade 1106 and Argent Champion spell 57819",
         "persistent idempotent entitlement gated at Honored",

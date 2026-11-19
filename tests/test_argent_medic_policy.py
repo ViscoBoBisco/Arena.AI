@@ -49,6 +49,8 @@ int main() {
         self.assertIn("FindNearestCreature(ArgentMedicPolicy::MEDIC_CREATURE_ENTRY", source)
         self.assertIn("medic->CastSpell(player, ArgentMedicPolicy::CURE_DISEASE_SPELL, true)", source)
         self.assertIn("std::chrono::steady_clock", source)
+        self.assertIn('GetOption<bool>("ArgentCommission.Enable", true)', source)
+        self.assertIn("ArgentCommission.Enable = 1", (ROOT / "server/mod-argent-commission/conf/mod-argent-commission.conf.dist").read_text())
         self.assertNotIn("ModifyReputation(", source)
         self.assertNotIn("SetFaction(", source)
 

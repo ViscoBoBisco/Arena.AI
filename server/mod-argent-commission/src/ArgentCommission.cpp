@@ -238,5 +238,10 @@ namespace
 
 void AddArgentCommissionScripts()
 {
+    if (!sConfigMgr->GetOption<bool>("ArgentCommission.Enable", true))
+    {
+        LOG_INFO("module", "Argent Commission disabled by ArgentCommission.Enable");
+        return;
+    }
     new ArgentCommissionPlayerScript();
 }

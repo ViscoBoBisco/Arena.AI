@@ -225,6 +225,8 @@ class RunicCodexSourceContract(unittest.TestCase):
         self.assertIn("equipped_slot", source)
         self.assertIn("AllowRequest(player)", source)
         self.assertIn("std::chrono::milliseconds(200)", source)
+        self.assertIn('GetOption<bool>("RunicCodex.Enable", true)', source)
+        self.assertIn("RunicCodex.Enable = 1", (helpers.REPO / "server/mod-runic-codex/conf/mod-runic-codex.conf.dist").read_text())
         self.assertIn("runic_codex_loadout_powers", source)
         self.assertIn('"LOADOUT"', source)
         self.assertIn('"RunicCodex." + std::string(power->key) + ".RefundPercent"', source)

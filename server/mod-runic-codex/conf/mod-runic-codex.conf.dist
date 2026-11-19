@@ -1,6 +1,8 @@
 ###################################################################################################
 # Runic Codex — server-side spell power tuning
 ###################################################################################################
+# Set to 0 to disable discovery, loadouts, and combat effects without deleting player state.
+RunicCodex.Enable = 1
 RunicCodex.arcane_echo.RefundPercent = 10
 RunicCodex.arcane_echo.RefundCap = 100
 RunicCodex.aegis_echo.RefundPercent = 5

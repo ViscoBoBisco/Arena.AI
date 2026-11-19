@@ -77,7 +77,7 @@ explicit `--allow-unverified`; it is not release approval.
 
 ```
 README.md                     this page
-docs/                         knowledge base, catalog, Foundry/adapter contracts, handoffs, and project inventory (01–24)
+docs/                         knowledge base, catalog, Foundry/adapter contracts, handoffs, and project inventory (01–25)
 foundry/                      spec validation, ID policy, assets, generators, adapter, bundler, CLI
 specs/                        versioned declarative feature specifications
 designs/                      creative campaign and feature contracts; explicitly not Foundry input
@@ -137,6 +137,7 @@ Makefile                      `make check`, `make preflight CLIENT=… SERVER=�
 | [22 — Expanded gameplay program](docs/22-expanded-gameplay-program.md) | Domain ownership, source-bound system register, current maturity and sequenced implementation PRs |
 | [23 — Portable Hole physical-item custody gate](docs/23-portable-hole-physical-custody.md) | Design-only custody invariants, pinned-core persistence findings, and runtime acceptance gates |
 | [24 — Integrated gameplay handoff](docs/24-integrated-gameplay-handoff.md) | Hashed four-module bundle builder, install/rollback procedures, dependency checks, combined-link gate and private-fork/client qualification boundary |
+| [25 — Local integration bootstrap](docs/25-local-integration-bootstrap.md) | One-command guarded local qualification, isolated public-core build, disposable DB/client gates, recovery commands and evidence limits |
 
 ## Glossary
 
