@@ -140,6 +140,16 @@ local function bagCount()
     send("BAG", item)
 end
 
+local function compareNeed()
+    local item = uint(itemInput:GetText(), 4294967295)
+    local required = uint(amountInput:GetText(), 1000000000)
+    if not item or not required then
+        statusText:SetText("Enter a positive item entry and required count.")
+        return
+    end
+    send("NEED", item, required)
+end
+
 local function updatePinStatus(data)
     pinStatus:SetText(string.format("Saved pins %d/%d", #data.pins, MAX_PINS))
 end
@@ -201,7 +211,15 @@ local function onMessage(_, prefix, message, distribution, sender)
         or not validFrame(message) then return end
     local fields = splitTabs(message)
     if fields[1] ~= PREFIX then return end
-    if fields[2] == "BAG" and #fields == 5 then
+    if fields[2] == "NEED" and #fields == 8 then
+        local required, carried = tonumber(fields[4]), tonumber(fields[5])
+        local gap, available = tonumber(fields[6]), tonumber(fields[7])
+        if required and carried and gap and available then
+            statusText:SetText(fields[8] .. ": need " .. tostring(required) .. ", carried "
+                .. tostring(carried) .. ", bag gap " .. tostring(gap) .. "; virtual available "
+                .. tostring(available) .. " (not craftable from this view).")
+        end
+    elseif fields[2] == "BAG" and #fields == 5 then
         local item, count = tonumber(fields[3]), tonumber(fields[4])
         if item and count and item >= 1 and count >= 0 then
             statusText:SetText("Carried: " .. tostring(count) .. " x " .. fields[5]
@@ -305,8 +323,11 @@ local function createFrame()
     local nextPinButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
     nextPinButton:SetSize(92, 24); nextPinButton:SetPoint("LEFT", pinButton, "RIGHT", 8, 0)
     nextPinButton:SetText("Next pin"); nextPinButton:SetScript("OnClick", cyclePin)
+    local compareButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    compareButton:SetSize(92, 24); compareButton:SetPoint("LEFT", nextPinButton, "RIGHT", 8, 0)
+    compareButton:SetText("Compare need"); compareButton:SetScript("OnClick", compareNeed)
     pinStatus = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    pinStatus:SetPoint("LEFT", nextPinButton, "RIGHT", 12, 0)
+    pinStatus:SetPoint("LEFT", compareButton, "RIGHT", 12, 0)
     updatePinStatus(savedData())
 
     for i = 1, 5 do

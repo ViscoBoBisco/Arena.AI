@@ -215,6 +215,39 @@ namespace
             receipt.balance, receipt.reserved));
     }
 
+    void SendNeedComparison(Player* player, uint32 itemEntry, uint64 required)
+    {
+        ItemTemplate const* item = Commodity(itemEntry);
+        if (!item || required == 0 || required > MAX_OPERATION_AMOUNT)
+        {
+            SendError(player, "INVALID_COMMODITY_OR_AMOUNT");
+            return;
+        }
+
+        uint64 balance = 0;
+        uint64 reserved = 0;
+        QueryResult row = CharacterDatabase.Query(
+            "SELECT balance, reserved FROM `{}` WHERE guid={} AND item_entry={}",
+            BALANCES, player->GetGUID().GetCounter(), itemEntry);
+        if (row)
+        {
+            Field* fields = row->Fetch();
+            balance = fields[0].Get<uint64>();
+            reserved = fields[1].Get<uint64>();
+        }
+        if (reserved > balance)
+        {
+            SendError(player, "LEDGER_INCONSISTENT");
+            return;
+        }
+
+        uint64 const carried = player->GetItemCount(itemEntry);
+        uint64 const bagGap = required > carried ? required - carried : 0;
+        uint64 const virtualAvailable = balance - reserved;
+        Send(player, Acore::StringFormat("{}NEED\t{}\t{}\t{}\t{}\t{}\t{}",
+            PREFIX, itemEntry, required, carried, bagGap, virtualAvailable, SafeLabel(item->Name1)));
+    }
+
     void SendBagCount(Player* player, uint32 itemEntry)
     {
         ItemTemplate const* item = Commodity(itemEntry);
@@ -413,6 +446,17 @@ namespace
                 Send(player, std::string(PREFIX) + "OK\t1");
             return true;
         }
+        if (action == "NEED")
+        {
+            uint32 itemEntry = 0;
+            uint64 required = 0;
+            if (fields.size() != 4 || !ParseUnsigned(fields[2], itemEntry)
+                || !ParseUnsigned(fields[3], required))
+                SendError(player, "MALFORMED");
+            else
+                SendNeedComparison(player, itemEntry, required);
+            return true;
+        }
         if (action == "BAG")
         {
             uint32 itemEntry = 0;
@@ -508,6 +552,7 @@ public:
         if (fields.size() < 2 || fields[0] != PREFIX_TOKEN)
             return;
         bool const known = fields[1] == "HELLO" || fields[1] == "LIST" || fields[1] == "BAG"
+            || fields[1] == "NEED"
             || fields[1] == "CREDIT" || fields[1] == "RESERVE"
             || fields[1] == "RELEASE" || fields[1] == "CONSUME";
         if (!known)

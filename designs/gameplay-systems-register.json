@@ -462,7 +462,7 @@
         "source-provenance catalog",
         "WotLK 3.3.5 Lua UI"
       ],
-      "player_loop": "Pin a reagent or recipe, compare bags/shared holdings, see exact shortage and grounded nearest source.",
+      "player_loop": "Pin eligible item entries, compare carried count with a requested amount and separately view character-private virtual availability; later add only source-grounded nearest locations.",
       "source_evidence": [
         "server/mod-portable-hole/src/PortableHole.cpp",
         "server/mod-portable-hole/addon/PortableHole/PortableHole.lua",
@@ -477,7 +477,7 @@
       "implementation_state": "SYNTHETIC",
       "outstanding_tests": [
         "bag versus virtual quantity distinction in a booted client/server session",
-        "source-grounded shortage/closest-source display and stale inventory refresh",
+        "source-grounded world-source/closest-source display and stale inventory refresh",
         "withdraw authorization and partial native stack capacity",
         "no invented vendor/AH/gathering source"
       ],
@@ -486,7 +486,7 @@
         "Never claim native TradeSkill UI consumes virtual warehouse stock",
         "The current count call is carried inventory only; it excludes bank and shared holdings"
       ],
-      "next_milestone": "Build a provenance-backed shortage/source view from the saved local pins; keep withdraw disabled until an authorized, recoverable inventory transfer passes its own gates."
+      "next_milestone": "Add only source-verified map/vendor/gathering locations to pins; keep withdraw disabled until an authorized, recoverable inventory transfer passes its own gates."
     },
     {
       "id": "expedition-quartermaster",
@@ -771,7 +771,7 @@
     {
       "id": "P1-04",
       "title": "Profession reagent overlay and pins",
-      "status": "partial: carried count and local pins; no shared counts, provenance view, or withdraw",
+      "status": "partial: carried count, local pins and bag-gap/virtual-availability comparison; no map-source provenance or withdraw",
       "acceptance": [
         "server-derived read-only carried count for an eligible item; bank excluded",
         "bag versus virtual quantity distinction",

@@ -350,6 +350,18 @@ class PortableHoleStaticContract(unittest.TestCase):
         self.assertEqual(len(lua.globals().PortableHoleDB.characters["Player-B"].pins), 1)
         self.assertEqual(len(lua.globals().PortableHoleDB.characters["Player-A"].pins), 10)
 
+    def test_need_comparison_separates_carried_gap_and_virtual_available(self):
+        source = _MODULE.read_text(encoding="utf-8")
+        need = source.split("void SendNeedComparison(", 1)[1].split("void SendBagCount(", 1)[0]
+        self.assertIn("player->GetItemCount(itemEntry)", need)
+        self.assertIn("required > carried ? required - carried : 0", need)
+        self.assertIn("balance - reserved", need)
+        self.assertIn("bagGap, virtualAvailable", need)
+        lua = (helpers.REPO / "server/mod-portable-hole/addon/PortableHole/PortableHole.lua").read_text(
+            encoding="utf-8")
+        self.assertIn('send("NEED", item, required)', lua)
+        self.assertIn("not craftable from this view", lua)
+
     def test_bag_count_is_read_only_server_derived_and_excludes_bank(self):
         source = _MODULE.read_text(encoding="utf-8")
         bag_count = source.split("void SendBagCount(", 1)[1].split("void SendBalancePage(", 1)[0]
