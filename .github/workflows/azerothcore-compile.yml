@@ -172,20 +172,21 @@ jobs:
 
       - name: Link complete worldserver with all four modules installed together
         run: |
-          if ! cmake --build /tmp/azerothcore-build --target worldserver --parallel 2 > /tmp/worldserver-build.log 2>&1; then
-            tail -n 80 /tmp/worldserver-build.log
-            python3 - <<'PY'
-          from pathlib import Path
-          lines = Path('/tmp/worldserver-build.log').read_text(errors='replace').strip().splitlines()
-          detail = '\\n'.join(lines[-40:]) if lines else 'worldserver build/link failed'
-          detail = detail.replace('%', '%25').replace('\\r', '%0D').replace('\\n', '%0A')
-          print(f'::error title=Combined worldserver build failure::{detail}')
-          PY
+          set -o pipefail
+          # Stream compiler/linker output into the Actions log so failures remain diagnosable
+          # even when GitHub's temporary run-log download is unavailable.
+          cmake --build /tmp/azerothcore-build --target worldserver --parallel 2 \
+            2>&1 | tee /tmp/worldserver-build.log
+
+      - name: Verify linked worldserver executable
+        run: |
+          set -euo pipefail
+          if [ ! -x /tmp/azerothcore-build/bin/worldserver ]; then
+            echo '::error title=worldserver executable missing::The complete target reported success but did not produce bin/worldserver.'
+            find /tmp/azerothcore-build -maxdepth 4 -type f -name worldserver -print
             exit 1
           fi
-          cat /tmp/worldserver-build.log
-          test -x /tmp/azerothcore-build/bin/worldserver
-          /tmp/azerothcore-build/bin/worldserver --version | tee /tmp/worldserver-version.txt
+          /tmp/azerothcore-build/bin/worldserver --version 2>&1 | tee /tmp/worldserver-version.txt
 
       - name: Create source and binary-bound integration evidence and handoff
         env:

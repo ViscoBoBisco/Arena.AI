@@ -23,6 +23,10 @@ class DemangledSymbols(unittest.TestCase):
         self.assertIn("-DUSE_SCRIPTPCH=1", configure)
         self.assertNotIn("-DUSE_COREPCH=0", configure)
         self.assertNotIn("-DUSE_SCRIPTPCH=0", configure)
+        workflow = (REPO / ".github" / "workflows" / "azerothcore-compile.yml").read_text(
+            encoding="utf-8")
+        self.assertIn("2>&1 | tee /tmp/worldserver-build.log", workflow)
+        self.assertIn("- name: Verify linked worldserver executable", workflow)
 
     def test_accepts_source_spelling_against_nm_function_spelling(self):
         output = "0000000000000000 T AddFrostArmoryScripts()\n"
