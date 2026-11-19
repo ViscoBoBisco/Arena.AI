@@ -1,6 +1,7 @@
 // Runic Codex: registry-driven, character-bound spell discovery and loadouts.
 #include "ScriptMgr.h"
 #include "Player.h"
+#include "Unit.h"
 #include "Spell.h"
 #include "Chat.h"
 #include "Config.h"
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -304,14 +306,18 @@ namespace
             if (!spell || !spell->GetSpellInfo())
                 return;
             uint32 const spellId = spell->GetSpellInfo()->Id;
+            bool discoveredPower = false;
             if (spell->m_CastItem)
-                if (RunicPowerRegistry::PowerDefinition const* discovery =
-                    RunicPowerRegistry::FindByDiscovery(spell->m_CastItem->GetEntry(), spellId))
-                {
-                    RecordInscriptionUse(player, *discovery);
-                    PersistDiscovery(player, *discovery);
-                    SendState(player);
-                }
+                for (RunicPowerRegistry::PowerDefinition const& discovery : RunicPowerRegistry::POWERS)
+                    if (discovery.discoveryItem == spell->m_CastItem->GetEntry()
+                        && discovery.discoveryCastSpell == spellId)
+                    {
+                        RecordInscriptionUse(player, discovery);
+                        PersistDiscovery(player, discovery);
+                        discoveredPower = true;
+                    }
+            if (discoveredPower)
+                SendState(player);
             if (spell->GetSpellInfo()->PowerType != POWER_MANA)
                 return;
             for (RunicPowerRegistry::PowerDefinition const& power : RunicPowerRegistry::POWERS)
@@ -389,9 +395,66 @@ namespace
             }
         }
     };
+
+    class RunicCodexCombatScript final : public UnitScript
+    {
+    public:
+        RunicCodexCombatScript() : UnitScript("RunicCodexCombatScript", true, {
+            UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN, UNITHOOK_MODIFY_HEAL_RECEIVED
+        }) { }
+
+        void ModifySpellDamageTaken(Unit* target, Unit* /*attacker*/, int32& damage,
+                                    SpellInfo const* /*spellInfo*/) override
+        {
+            Player* player = target ? target->ToPlayer() : nullptr;
+            if (!player || damage <= 0)
+                return;
+            for (RunicPowerRegistry::PowerDefinition const& power : RunicPowerRegistry::POWERS)
+            {
+                if (power.spellDamageReductionPercent == 0)
+                    continue;
+                State const state = GetState(player, power);
+                uint32 const percent = sConfigMgr->GetOption<uint32>(
+                    "RunicCodex." + std::string(power.key) + ".SpellDamageReductionPercent",
+                    power.spellDamageReductionPercent);
+                uint32 const cap = sConfigMgr->GetOption<uint32>(
+                    "RunicCodex." + std::string(power.key) + ".SpellDamageReductionCap",
+                    power.spellDamageReductionCap);
+                uint32 const reduction = RunicPowerRegistry::CalculateCombatBonus(
+                    static_cast<uint32>(damage), percent, cap, state.unlocked, state.equipped);
+                damage -= static_cast<int32>(reduction);
+            }
+        }
+
+        void ModifyHealReceived(Unit* target, Unit* /*healer*/, uint32& heal,
+                                SpellInfo const* /*spellInfo*/) override
+        {
+            Player* player = target ? target->ToPlayer() : nullptr;
+            if (!player || heal == 0)
+                return;
+            for (RunicPowerRegistry::PowerDefinition const& power : RunicPowerRegistry::POWERS)
+            {
+                if (power.healingReceivedBonusPercent == 0)
+                    continue;
+                State const state = GetState(player, power);
+                uint32 const percent = sConfigMgr->GetOption<uint32>(
+                    "RunicCodex." + std::string(power.key) + ".HealingReceivedBonusPercent",
+                    power.healingReceivedBonusPercent);
+                uint32 const cap = sConfigMgr->GetOption<uint32>(
+                    "RunicCodex." + std::string(power.key) + ".HealingReceivedBonusCap",
+                    power.healingReceivedBonusCap);
+                uint32 const bonus = RunicPowerRegistry::CalculateCombatBonus(
+                    heal, percent, cap, state.unlocked, state.equipped);
+                uint64 const increased = static_cast<uint64>(heal) + bonus;
+                heal = static_cast<uint32>(std::min<uint64>(
+                increased, std::numeric_limits<uint32>::max()));
+            }
+        }
+    };
 }
 
 void AddRunicCodexScripts()
 {
     new RunicCodexPlayerScript();
+    new RunicCodexCombatScript();
 }

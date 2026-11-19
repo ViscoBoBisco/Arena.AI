@@ -77,6 +77,8 @@ jobs:
         run: |
           grep -F 'SPELL_MAGE_ARCANE_MISSILES_R1                = 5143' \
             /tmp/acore-pinned/src/server/scripts/Spells/spell_mage.cpp
+          grep -F '(774,1058,2)' /tmp/acore-pinned/data/sql/base/db_world/spell_ranks.sql
+          grep -F '(774,48441,19)' /tmp/acore-pinned/data/sql/base/db_world/spell_ranks.sql
           grep -F 'ApplySpellFix({ 5143, 5144, 5145, 8416, 8417, 10211, 10212, 25345, 27075, 38699, 38704, 42843, 42846 }' \
             /tmp/acore-pinned/src/server/game/Spells/SpellInfoCorrections.cpp
           python3 - <<'PY'

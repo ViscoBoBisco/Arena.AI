@@ -5,3 +5,7 @@ RunicCodex.arcane_echo.RefundPercent = 10
 RunicCodex.arcane_echo.RefundCap = 100
 RunicCodex.aegis_echo.RefundPercent = 5
 RunicCodex.aegis_echo.RefundCap = 60
+RunicCodex.arcane_ward.SpellDamageReductionPercent = 8
+RunicCodex.arcane_ward.SpellDamageReductionCap = 300
+RunicCodex.verdant_ward.HealingReceivedBonusPercent = 8
+RunicCodex.verdant_ward.HealingReceivedBonusCap = 300

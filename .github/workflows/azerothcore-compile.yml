@@ -10,7 +10,9 @@ permissions:
 jobs:
   compile-generated-module:
     name: Compile generated module against pinned AzerothCore
-    runs-on: ubuntu-22.04
+    # Noble provides Oracle MySQL 8.0 client development headers; Jammy's
+    # MariaDB compatibility package lacks APIs used by the pinned core.
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -19,9 +21,25 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake git libboost-all-dev libmariadb-dev \
-            libmariadb-dev-compat libssl-dev libreadline-dev zlib1g-dev \
-            libbz2-dev libncurses5-dev
+            build-essential cmake git libboost-all-dev libmysqlclient-dev \
+            libssl-dev libreadline-dev zlib1g-dev libbz2-dev libncurses5-dev
+          # Pin the API compatibility line and fail early if the runner's package
+          # source silently selects a MariaDB-compatible implementation.
+          mysql_config --version | tee /tmp/mysql-client-version.txt
+          mysql_config --version | grep -Eq '^8\.0\.'
+          dpkg-query -W -f='${Version}\n' libmysqlclient-dev | tee /tmp/mysql-client-package-version.txt
+          cat > /tmp/mysql-api-probe.c <<'EOF'
+          #include <mysql.h>
+          int main(void) {
+              enum mysql_ssl_mode mode = SSL_MODE_REQUIRED;
+              MYSQL *connection = 0;
+              MYSQL_STMT *statement = 0;
+              MYSQL_BIND *bindings = 0;
+              (void)mysql_options(connection, MYSQL_OPT_SSL_MODE, &mode);
+              return mysql_stmt_bind_named_param(statement, bindings, 0, 0);
+          }
+          EOF
+          cc $(mysql_config --cflags) -Werror -c /tmp/mysql-api-probe.c -o /tmp/mysql-api-probe.o
 
       - name: Checkout exact source pin
         run: |
@@ -71,8 +89,8 @@ jobs:
             python3 - <<'PY'
           from pathlib import Path
           lines = Path('/tmp/portable-hole-compile.log').read_text(errors='replace').strip().splitlines()
-          detail = '\\n'.join(lines[-40:]) if lines else 'Portable Hole compile command failed'
-          detail = detail.replace('%', '%25').replace('\\r', '%0D').replace('\\n', '%0A')
+          detail = '\n'.join(lines[-40:]) if lines else 'Portable Hole compile command failed'
+          detail = detail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
           print(f'::error title=Portable Hole compile failure::{detail}')
           PY
             exit 1
