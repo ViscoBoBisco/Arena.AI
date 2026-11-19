@@ -74,6 +74,9 @@ class PortableHoleMySQL(unittest.TestCase):
         conn = ledger.connect(cls.pymysql)
         try:
             with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM portable_hole_project_reservations WHERE owner_account_id BETWEEN 10900000 AND 10901000")
+                cursor.execute("DELETE FROM portable_hole_project_access WHERE owner_account_id BETWEEN 10900000 AND 10901000")
+                cursor.execute("DELETE FROM portable_hole_projects WHERE owner_account_id BETWEEN 10900000 AND 10901000")
                 cursor.execute("DELETE FROM portable_hole_vault_access WHERE owner_account_id BETWEEN 9907100 AND 9907199")
                 for guid in range(990701, cls._next_guid + 1):
                     cursor.execute("DELETE FROM portable_hole_receipts WHERE guid=%s", (guid,))
@@ -110,6 +113,104 @@ class PortableHoleMySQL(unittest.TestCase):
                 cursor.execute("SELECT balance,reserved FROM portable_hole_commodities "
                                "WHERE guid=%s AND item_entry=%s", (guid or self.guid, self.item))
                 return cursor.fetchone()
+        finally:
+            conn.close()
+
+    def test_shared_project_reservations_are_authorized_capped_replayable_and_releasable(self):
+        owner = 9910000 + self.guid
+        contributor, viewer = owner + 1, owner + 2
+        key = f"p{self.guid}"
+        primary_guid, second_guid = self.guid + 3000, self.guid + 4000
+        conn = ledger.connect(self.pymysql)
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("INSERT INTO portable_hole_projects "
+                               "(owner_account_id,project_key,item_entry,target_amount,created_by_guid) "
+                               "VALUES(%s,%s,%s,50,%s)", (owner, key, self.item, self.guid))
+                cursor.execute("INSERT INTO portable_hole_project_access "
+                               "(owner_account_id,project_key,member_account_id,role,granted_by_guid) "
+                               "VALUES(%s,%s,%s,'CONTRIBUTE',%s),(%s,%s,%s,'VIEW',%s)",
+                               (owner, key, contributor, self.guid, owner, key, viewer, self.guid))
+                for guid in (primary_guid, second_guid):
+                    cursor.execute("INSERT INTO portable_hole_commodities "
+                                   "(guid,item_entry,balance,reserved) VALUES(%s,%s,100,0)",
+                                   (guid, self.item))
+            conn.commit()
+        finally:
+            conn.close()
+
+        def reserve(contributor_account, guid, request_id, amount):
+            connection = ledger.connect(self.pymysql)
+            try:
+                connection.begin()
+                with connection.cursor() as cursor:
+                    cursor.execute("INSERT IGNORE INTO portable_hole_project_reservations "
+                                   "(owner_account_id,project_key,request_id,contributor_account_id,guid,item_entry,amount,state) "
+                                   "VALUES(%s,%s,%s,%s,%s,%s,%s,'PENDING')",
+                                   (owner, key, request_id, contributor_account, guid, self.item, amount))
+                    cursor.execute("UPDATE portable_hole_commodities b, portable_hole_projects p, "
+                                   "portable_hole_project_reservations r "
+                                   "SET b.reserved=b.reserved+r.amount,p.reserved_amount=p.reserved_amount+r.amount, "
+                                   "r.state='HELD' WHERE r.owner_account_id=%s AND r.project_key=%s "
+                                   "AND r.request_id=%s AND r.state='PENDING' AND r.contributor_account_id=%s "
+                                   "AND r.guid=%s AND r.item_entry=%s AND r.amount=%s "
+                                   "AND b.guid=r.guid AND b.item_entry=r.item_entry "
+                                   "AND p.owner_account_id=r.owner_account_id AND p.project_key=r.project_key "
+                                   "AND p.status='OPEN' AND b.balance-b.reserved>=r.amount "
+                                   "AND p.reserved_amount+r.amount<=p.target_amount "
+                                   "AND (p.owner_account_id=%s OR EXISTS (SELECT 1 FROM portable_hole_project_access a "
+                                   "WHERE a.owner_account_id=p.owner_account_id AND a.project_key=p.project_key "
+                                   "AND a.member_account_id=%s AND a.role='CONTRIBUTE'))",
+                                   (owner, key, request_id, contributor_account, guid, self.item, amount,
+                                    contributor_account, contributor_account))
+                    cursor.execute("UPDATE portable_hole_project_reservations SET state='DENIED' "
+                                   "WHERE owner_account_id=%s AND project_key=%s AND request_id=%s AND state='PENDING'",
+                                   (owner, key, request_id))
+                connection.commit()
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT state FROM portable_hole_project_reservations "
+                                   "WHERE owner_account_id=%s AND project_key=%s AND request_id=%s",
+                                   (owner, key, request_id))
+                    return cursor.fetchone()[0]
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+
+        self.assertEqual(reserve(contributor, primary_guid, "project-hold-a", 35), "HELD")
+        # A duplicate request is a replay and cannot reserve a second time.
+        self.assertEqual(reserve(contributor, primary_guid, "project-hold-a", 35), "HELD")
+        self.assertEqual(reserve(contributor, second_guid, "project-hold-b", 20), "DENIED")
+        conn = ledger.connect(self.pymysql)
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT reserved_amount,target_amount FROM portable_hole_projects "
+                               "WHERE owner_account_id=%s AND project_key=%s", (owner, key))
+                self.assertEqual(cursor.fetchone(), (35, 50))
+                cursor.execute("SELECT reserved FROM portable_hole_commodities "
+                               "WHERE guid=%s AND item_entry=%s", (primary_guid, self.item))
+                self.assertEqual(cursor.fetchone(), (35,))
+                cursor.execute("SELECT role FROM portable_hole_project_access WHERE owner_account_id=%s "
+                               "AND project_key=%s AND member_account_id=%s", (owner, key, viewer))
+                self.assertEqual(cursor.fetchone(), ("VIEW",))
+                cursor.execute("UPDATE portable_hole_project_reservations r, portable_hole_projects p, "
+                               "portable_hole_commodities b SET r.state='RELEASED',r.release_request_id='project-release-a', "
+                               "p.reserved_amount=p.reserved_amount-r.amount,b.reserved=b.reserved-r.amount "
+                               "WHERE r.owner_account_id=%s AND r.project_key=%s AND r.request_id='project-hold-a' "
+                               "AND r.state='HELD' AND r.guid=b.guid AND r.item_entry=b.item_entry "
+                               "AND p.owner_account_id=r.owner_account_id AND p.project_key=r.project_key "
+                               "AND p.reserved_amount>=r.amount AND b.reserved>=r.amount "
+                               "AND (%s=p.owner_account_id OR %s=r.contributor_account_id)",
+                               (owner, key, contributor, contributor))
+                cursor.execute("SELECT state,release_request_id FROM portable_hole_project_reservations "
+                               "WHERE owner_account_id=%s AND project_key=%s AND request_id='project-hold-a'",
+                               (owner, key))
+                self.assertEqual(cursor.fetchone(), ("RELEASED", "project-release-a"))
+                cursor.execute("SELECT reserved_amount FROM portable_hole_projects "
+                               "WHERE owner_account_id=%s AND project_key=%s", (owner, key))
+                self.assertEqual(cursor.fetchone(), (0,))
+            conn.commit()
         finally:
             conn.close()
 
@@ -369,6 +470,28 @@ class PortableHoleStaticContract(unittest.TestCase):
         self.assertIn("player->GetGUID().GetCounter()", reserve)
         self.assertNotIn("viewAccount", reserve,
                          "shared views must not redirect mutations or reservation ownership")
+
+    def test_projects_are_account_acl_gated_virtual_reservations_not_item_transfers(self):
+        source = _MODULE.read_text(encoding="utf-8")
+        addon = (helpers.REPO / "server/mod-portable-hole/addon/PortableHole/PortableHole.lua").read_text(
+            encoding="utf-8")
+        migration = (helpers.REPO / "server/mod-portable-hole/data/sql/characters/003_portable_hole_projects.sql").read_text(
+            encoding="utf-8")
+        self.assertIn('action == "PROJECT"', source)
+        self.assertIn("CanAccessProject(player, ownerAccount, projectKey, true)", source)
+        self.assertIn("a.role='CONTRIBUTE'", source)
+        self.assertIn("p.reserved_amount+r.amount<=p.target_amount", source)
+        self.assertIn("b.balance-b.reserved>=r.amount", source)
+        self.assertIn("r.state='RELEASED'", source)
+        self.assertIn("release_request_id", source)
+        self.assertIn("portable_hole_project_access_fk", migration)
+        self.assertIn("CHECK (`role` IN ('VIEW','CONTRIBUTE'))", migration)
+        self.assertIn("CHECK (`reserved_amount` <= `target_amount`)", migration)
+        self.assertIn("sendMutation(\"PROJECT\", { \"RESERVE\"", addon)
+        self.assertIn('action == "PROJECT"', addon)
+        self.assertIn("/ph project create", (helpers.REPO / "server/mod-portable-hole/README.md").read_text())
+        for forbidden in ("RemoveItem(", "StoreItem(", "DestroyItem(", "AddItem("):
+            self.assertNotIn(forbidden, source)
 
     def test_profession_recipe_reagents_are_server_verified_and_read_only(self):
         source = _MODULE.read_text(encoding="utf-8")

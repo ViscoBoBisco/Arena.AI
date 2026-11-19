@@ -209,8 +209,13 @@ class RunicCodexSourceContract(unittest.TestCase):
         registry = _REGISTRY.read_text(encoding="utf-8")
         self.assertIn('"arcane_echo", "Arcane Echo", 22739, 28271', registry)
         self.assertIn('"aegis_echo", "Aegis Echo", 3122, 600', registry)
-        self.assertIn("RunicPowerRegistry::FindByDiscovery", source)
+        self.assertIn("discovery.discoveryItem == spell->m_CastItem->GetEntry()", source)
         self.assertIn("RunicPowerRegistry::CalculateRefund", source)
+        self.assertIn("UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN", source)
+        self.assertIn("UNITHOOK_MODIFY_HEAL_RECEIVED", source)
+        self.assertIn("RunicPowerRegistry::CalculateCombatBonus", source)
+        self.assertIn('"arcane_ward", "Arcane Ward", 22739, 28271', registry)
+        self.assertIn('"verdant_ward", "Verdant Ward", 22739, 28271', registry)
         self.assertIn("equipped_slot", source)
         self.assertIn("AllowRequest(player)", source)
         self.assertIn("std::chrono::milliseconds(200)", source)
@@ -234,8 +239,8 @@ class RunicCodexSourceContract(unittest.TestCase):
         learn = source[source.index("void OnPlayerLearnSpell"):source.index("void OnPlayerSpellCast")]
         self.assertIn("HasUsedInscription(player, power)", learn)
         item_use = source[source.index("void OnPlayerSpellCast"):source.index("void OnPlayerUpdate")]
-        self.assertLess(item_use.index("RecordInscriptionUse(player, *discovery)"),
-                        item_use.index("PersistDiscovery(player, *discovery)"))
+        self.assertLess(item_use.index("RecordInscriptionUse(player, discovery)"),
+                        item_use.index("PersistDiscovery(player, discovery)"))
         self.assertIn('"EQUIP"', source)
         self.assertIn('SendAddonMessage(PREFIX', addon)
         self.assertIn('send("EQUIP"', addon)

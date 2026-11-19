@@ -30,12 +30,14 @@ TESTS = (
     "tests/test_argent_commission_mysql.py",
     "tests/test_argent_field_dressing_policy.py",
     "tests/test_wotlk_addon_compat.py",
+    "tests/test_gameplay_handoff.py",
     "tests/native/runic_power_registry_test.cpp",
 )
 DOCS = (
     "docs/17-vault-terminal-client-acceptance.md",
     "docs/18-local-runtime-handoff.md",
     "docs/23-portable-hole-physical-custody.md",
+    "docs/24-integrated-gameplay-handoff.md",
 )
 
 
@@ -52,6 +54,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True,
                         help="new output directory outside the repository")
+    parser.add_argument("--ci-evidence", type=Path,
+                        help="optional successful pinned four-module build/link evidence JSON for this exact HEAD")
     args = parser.parse_args()
     out = args.out.expanduser().absolute()
     if out == ROOT or ROOT in out.parents:
@@ -63,6 +67,15 @@ def main() -> int:
         source_head = git("rev-parse", "HEAD")
         source_branch = git("branch", "--show-current")
         status = git("status", "--porcelain=v1")
+        ci_evidence = None
+        if args.ci_evidence:
+            if status:
+                raise ValueError("CI evidence can only be bundled from a clean source checkout")
+            ci_evidence = json.loads(args.ci_evidence.expanduser().resolve().read_text(encoding="utf-8"))
+            if ci_evidence.get("source", {}).get("head") != source_head:
+                raise ValueError("CI evidence HEAD does not match the bundle source HEAD")
+            if ci_evidence.get("combined_worldserver_build_link") != "PASS":
+                raise ValueError("CI evidence does not prove successful combined worldserver build/link")
         pin = json.loads((ROOT / "foundry/core-pins.json").read_text())[
             "azerothcore_wotlk"]["revision"]
         included: dict[str, dict] = {}
@@ -102,7 +115,8 @@ def main() -> int:
                 shutil.copy2(config, out / "config" / config.name)
             sql_dir = ROOT / module / "data/sql/characters"
             for sql in sorted(sql_dir.glob("*.sql")):
-                target = out / "migrations/characters" / Path(module).name / sql.name
+                component = Path(module).name.removeprefix("mod-")
+                target = out / "migrations/characters" / component / sql.name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(sql, target)
         for test in TESTS:
@@ -114,6 +128,10 @@ def main() -> int:
             target = out / "qualification" / Path(doc).name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / doc, target)
+        if ci_evidence is not None:
+            evidence_target = out / "qualification/ci-integration-evidence.json"
+            evidence_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(args.ci_evidence.expanduser().resolve(), evidence_target)
         for source in ("foundry/core-pins.json", "specs/vault-terminal.json"):
             target = out / "provenance" / Path(source).name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -140,6 +158,7 @@ def main() -> int:
             "migration_order": [
                 "migrations/characters/portable-hole/001_portable_hole_warehouse.sql",
                 "migrations/characters/portable-hole/002_portable_hole_vault_access.sql",
+                "migrations/characters/portable-hole/003_portable_hole_projects.sql",
                 "migrations/characters/runic-codex/001_runic_codex.sql",
                 "migrations/characters/runic-codex/002_runic_codex_inscriptions.sql",
                 "migrations/characters/runic-codex/003_runic_codex_registry_loadouts.sql",
@@ -147,16 +166,22 @@ def main() -> int:
                 "migrations/characters/vault-terminal/vault_terminal_claims.sql",
             ],
             "qualification": {"package_integrity": "SELF_VERIFIABLE_HASH_MANIFEST",
-                              "source_compile": "PINNED_MODULE_COMPILE_CI_ONLY",
-                              "combined_worldserver_build_and_link": "CI_GATE_CONFIGURED_RESULT_PENDING",
+                              "source_compile": "PASS" if ci_evidence else "CI_GATE_CONFIGURED_RESULT_PENDING",
+                              "combined_worldserver_build_and_link": "PASS" if ci_evidence else "CI_GATE_CONFIGURED_RESULT_PENDING",
                               "worldserver_boot": "NOT_ASSESSED",
                               "database_migrations": "DISPOSABLE_DB_CI_ONLY",
-                              "private_campaign_party_client": "REQUIRES_LOCAL_QUALIFICATION"},
+                              "private_campaign_party_client": "REQUIRES_LOCAL_QUALIFICATION",
+                              "ci_evidence": "qualification/ci-integration-evidence.json" if ci_evidence else None},
             "safety": {"production_database_modified": False, "client_data_included": False,
                        "credentials_included": False, "physical_item_custody_enabled": False,
                        "ready_for_production": False},
             "files": included,
         }
+        missing_migrations = [name for name in metadata["migration_order"] if not (out / name).is_file()]
+        if missing_migrations:
+            raise ValueError(f"ordered migration list references missing files: {missing_migrations}")
+        if ci_evidence and metadata["core"]["revision"] != ci_evidence.get("core", {}).get("revision"):
+            raise ValueError("CI evidence core pin does not match this bundle")
         (out / "bundle.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n",
                                          encoding="utf-8")
     except Exception:

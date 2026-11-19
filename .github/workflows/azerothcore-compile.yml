@@ -10,18 +10,78 @@ permissions:
 jobs:
   compile-generated-module:
     name: Compile generated module against pinned AzerothCore
-    runs-on: ubuntu-22.04
+    # Install the exact Oracle MySQL 8.4.13 LTS client package. The pinned core
+    # uses mysql_stmt_bind_named_param (added after MySQL 8.0), absent from MariaDB.
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
       - name: Install AzerothCore configure dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential cmake git libboost-all-dev libmariadb-dev \
-            libmariadb-dev-compat libssl-dev libreadline-dev zlib1g-dev \
-            libbz2-dev libncurses5-dev
+          set -euo pipefail
+          if ! curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2025 -o /tmp/mysql-repo.asc; then
+            echo '::error title=MySQL 8.4 repository key download::Could not fetch the official Oracle MySQL APT signing key.'
+            exit 1
+          fi
+          gpg --dearmor < /tmp/mysql-repo.asc | sudo tee /usr/share/keyrings/mysql-apt.gpg >/dev/null
+          echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/mysql-apt.gpg] https://repo.mysql.com/apt/ubuntu/ noble mysql-8.4-lts' \
+            | sudo tee /etc/apt/sources.list.d/mysql-8.4-lts.list
+          if ! sudo apt-get update > /tmp/mysql-apt-update.log 2>&1; then
+            tail -n 60 /tmp/mysql-apt-update.log
+            python3 - <<'PY'
+          from pathlib import Path
+          detail = '\n'.join(Path('/tmp/mysql-apt-update.log').read_text(errors='replace').splitlines()[-45:])
+          detail = detail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print(f'::error title=Pinned MySQL 8.4 APT repository::{detail}')
+          PY
+            exit 1
+          fi
+          if ! sudo apt-get install -y \
+            build-essential cmake git libboost-all-dev libmysqlclient-dev=8.4.13-1ubuntu24.04 \
+            libssl-dev libreadline-dev zlib1g-dev libbz2-dev libncurses5-dev \
+            > /tmp/mysql-apt-install.log 2>&1; then
+            tail -n 60 /tmp/mysql-apt-install.log
+            python3 - <<'PY'
+          from pathlib import Path
+          detail = '\n'.join(Path('/tmp/mysql-apt-install.log').read_text(errors='replace').splitlines()[-45:])
+          detail = detail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print(f'::error title=Pinned MySQL 8.4 package install::{detail}')
+          PY
+            exit 1
+          fi
+          cat /tmp/mysql-apt-install.log
+          mysql_config --version | tee /tmp/mysql-client-version.txt
+          if [ "$(mysql_config --version)" != '8.4.13' ]; then
+            echo "::error title=MySQL client version mismatch::Expected 8.4.13, got $(mysql_config --version)"
+            exit 1
+          fi
+          dpkg-query -W -f='${Version}\n' libmysqlclient-dev | tee /tmp/mysql-client-package-version.txt
+          if [ "$(cat /tmp/mysql-client-package-version.txt)" != '8.4.13-1ubuntu24.04' ]; then
+            echo "::error title=MySQL client package mismatch::Expected 8.4.13-1ubuntu24.04, got $(cat /tmp/mysql-client-package-version.txt)"
+            exit 1
+          fi
+          cat > /tmp/mysql-api-probe.c <<'EOF'
+          #include <mysql.h>
+          int main(void) {
+              enum mysql_ssl_mode mode = SSL_MODE_REQUIRED;
+              MYSQL *connection = 0;
+              MYSQL_STMT *statement = 0;
+              MYSQL_BIND *bindings = 0;
+              (void)mysql_options(connection, MYSQL_OPT_SSL_MODE, &mode);
+              return mysql_stmt_bind_named_param(statement, bindings, 0, 0);
+          }
+          EOF
+          if ! cc $(mysql_config --cflags) -Werror -c /tmp/mysql-api-probe.c -o /tmp/mysql-api-probe.o > /tmp/mysql-api-probe.log 2>&1; then
+            cat /tmp/mysql-api-probe.log
+            python3 - <<'PY'
+          from pathlib import Path
+          detail = '\n'.join(Path('/tmp/mysql-api-probe.log').read_text(errors='replace').splitlines()[-30:])
+          detail = detail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print(f'::error title=MySQL 8.4 required API probe::{detail}')
+          PY
+            exit 1
+          fi
 
       - name: Checkout exact source pin
         run: |
@@ -37,8 +97,12 @@ jobs:
           cp -a server/mod-portable-hole /tmp/azerothcore/modules/
           cp -a server/mod-runic-codex /tmp/azerothcore/modules/
           cp -a server/mod-argent-commission /tmp/azerothcore/modules/
+          # Keep AzerothCore's normal core/script PCHs enabled for a production-shaped
+          # worldserver build. Several upstream script translation units rely on ScriptPCH.h
+          # to provide CellImpl template definitions; disabling PCH produces undefined refs
+          # at the final link even though every module TU compiles successfully.
           cmake -S /tmp/azerothcore -B /tmp/azerothcore-build \
-            -DWITHOUT_GIT=1 -DNOJEM=1 -DUSE_COREPCH=0 -DUSE_SCRIPTPCH=0 \
+            -DWITHOUT_GIT=1 -DNOJEM=1 -DUSE_COREPCH=1 -DUSE_SCRIPTPCH=1 \
             -DTOOLS_BUILD=none -DWITH_WARNINGS=0 -DMODULES=static
 
       - name: Compile generated Vault Terminal module against the pinned core
@@ -71,8 +135,8 @@ jobs:
             python3 - <<'PY'
           from pathlib import Path
           lines = Path('/tmp/portable-hole-compile.log').read_text(errors='replace').strip().splitlines()
-          detail = '\\n'.join(lines[-40:]) if lines else 'Portable Hole compile command failed'
-          detail = detail.replace('%', '%25').replace('\\r', '%0D').replace('\\n', '%0A')
+          detail = '\n'.join(lines[-40:]) if lines else 'Portable Hole compile command failed'
+          detail = detail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
           print(f'::error title=Portable Hole compile failure::{detail}')
           PY
             exit 1
@@ -108,17 +172,88 @@ jobs:
 
       - name: Link complete worldserver with all four modules installed together
         run: |
-          if ! cmake --build /tmp/azerothcore-build --target worldserver --parallel 2 > /tmp/worldserver-build.log 2>&1; then
-            tail -n 80 /tmp/worldserver-build.log
-            python3 - <<'PY'
-          from pathlib import Path
-          lines = Path('/tmp/worldserver-build.log').read_text(errors='replace').strip().splitlines()
-          detail = '\\n'.join(lines[-40:]) if lines else 'worldserver build/link failed'
-          detail = detail.replace('%', '%25').replace('\\r', '%0D').replace('\\n', '%0A')
-          print(f'::error title=Combined worldserver build failure::{detail}')
-          PY
+          set -o pipefail
+          # Stream compiler/linker output into the Actions log so failures remain diagnosable
+          # even when GitHub's temporary run-log download is unavailable.
+          cmake --build /tmp/azerothcore-build --target worldserver --parallel 2 \
+            2>&1 | tee /tmp/worldserver-build.log
+
+      - name: Verify linked worldserver executable
+        run: |
+          set -euo pipefail
+          if [ ! -x /tmp/azerothcore-build/bin/worldserver ]; then
+            echo '::error title=worldserver executable missing::The complete target reported success but did not produce bin/worldserver.'
+            find /tmp/azerothcore-build -maxdepth 4 -type f -name worldserver -print
             exit 1
           fi
-          cat /tmp/worldserver-build.log
-          test -x /tmp/azerothcore-build/bin/worldserver
-          /tmp/azerothcore-build/bin/worldserver --version
+          /tmp/azerothcore-build/bin/worldserver --version 2>&1 | tee /tmp/worldserver-version.txt
+
+      - name: Create source and binary-bound integration evidence and handoff
+        env:
+          SOURCE_HEAD: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          def file_hash(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          core = Path('/tmp/azerothcore')
+          modules = ('mod-vault-terminal', 'mod-portable-hole', 'mod-runic-codex', 'mod-argent-commission')
+          module_hashes = {}
+          for name in modules:
+              root = core / 'modules' / name
+              assert root.is_dir(), f'module missing from combined build: {name}'
+              files = {p.relative_to(root).as_posix(): file_hash(p)
+                       for p in sorted(root.rglob('*')) if p.is_file()}
+              module_hashes[name] = hashlib.sha256(json.dumps(
+                  files, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+          mysql_version = Path('/tmp/mysql-client-version.txt').read_text().strip()
+          package_version = Path('/tmp/mysql-client-package-version.txt').read_text().strip()
+          assert mysql_version == '8.4.13', mysql_version
+          binary = Path('/tmp/azerothcore-build/bin/worldserver')
+          version_output = Path('/tmp/worldserver-version.txt').read_text(errors='replace').strip()
+          assert version_output, 'worldserver --version returned no output'
+          evidence = {
+              'schema': 'arena-public-core-integration-evidence/1',
+              'source': {'repository': os.environ['GITHUB_REPOSITORY'],
+                         'head': os.environ['SOURCE_HEAD']},
+              'core': {'repository': 'https://github.com/azerothcore/azerothcore-wotlk.git',
+                       'revision': subprocess.check_output(
+                           ['git', '-C', str(core), 'rev-parse', 'HEAD'], text=True).strip()},
+              'mysql_client': {'compatibility_line': 'Oracle MySQL 8.4 LTS',
+                               'mysql_config_version': mysql_version,
+                               'libmysqlclient_dev_package': package_version,
+                               'required_api_probe': 'PASS'},
+              'modules': module_hashes,
+              'combined_worldserver_build_link': 'PASS',
+              'worldserver_version_command': {'status': 'PASS', 'output': version_output},
+              'worldserver_binary_sha256': file_hash(binary),
+              'worldserver_boot': 'NOT_RUN_NO_VERIFIED_SERVER_DATA_AND_DATABASE_BOOT_FIXTURE',
+              'client_login_and_gameplay': 'NOT_ASSESSED',
+              'private_campaign_party_client': 'NOT_ASSESSED',
+          }
+          Path('/tmp/integration-evidence.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + '\n')
+          PY
+          python3 tools/build_gameplay_handoff.py --out /tmp/arena-gameplay-handoff \
+            --ci-evidence /tmp/integration-evidence.json
+          python3 /tmp/arena-gameplay-handoff/verify.py
+
+      - name: Preserve combined build and integrated handoff evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: arena-four-module-integration-${{ github.sha }}
+          path: |
+            /tmp/integration-evidence.json
+            /tmp/arena-gameplay-handoff/
+            /tmp/mysql-client-version.txt
+            /tmp/mysql-client-package-version.txt
+            /tmp/worldserver-build.log
+            /tmp/worldserver-version.txt
+          if-no-files-found: error
+          retention-days: 30
