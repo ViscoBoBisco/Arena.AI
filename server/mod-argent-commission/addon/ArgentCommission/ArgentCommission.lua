@@ -12,7 +12,7 @@ end
 
 local function paint()
     if earned then
-        statusText:SetText("Argent Commission earned. The core Argent Champion effect is active.")
+        statusText:SetText("Commission earned: Argent Champion plus Field Dressing (2% max health per creature kill, capped at 150). Requires current Honored standing.")
         claimButton:SetText("Claimed")
         claimButton:Disable()
     elseif honored then
@@ -27,8 +27,16 @@ local function paint()
 end
 
 local function createFrame()
-    frame = CreateFrame("Frame", "ArgentCommissionFrame", UIParent, "BasicFrameTemplateWithInset")
+    frame = CreateFrame("Frame", "ArgentCommissionFrame", UIParent)
     frame:SetSize(420, 150)
+    frame:SetBackdrop({
+        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 },
+    })
+    frame:SetBackdropColor(0.04, 0.05, 0.07, 0.96)
+    frame:SetBackdropBorderColor(0.75, 0.5, 0.22, 1)
     frame:SetPoint("CENTER")
     frame:SetMovable(true)
     frame:EnableMouse(true)
@@ -36,7 +44,9 @@ local function createFrame()
     frame:SetScript("OnDragStart", frame.StartMoving)
     frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
     frame:Hide()
-    frame.TitleText:SetText("Argent Commission")
+    local titleText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    titleText:SetPoint("TOPLEFT", 20, -12)
+    titleText:SetText("Argent Commission")
     statusText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     statusText:SetPoint("TOPLEFT", 20, -50)
     statusText:SetWidth(380)
@@ -53,7 +63,6 @@ events:RegisterEvent("PLAYER_LOGIN")
 events:RegisterEvent("CHAT_MSG_ADDON")
 events:SetScript("OnEvent", function(_, event, prefix, message, distribution, sender)
     if event == "PLAYER_LOGIN" then
-        RegisterAddonMessagePrefix(PREFIX)
         createFrame()
         SLASH_ARGENTCOMMISSION1 = "/argentcommission"
         SlashCmdList.ARGENTCOMMISSION = function()

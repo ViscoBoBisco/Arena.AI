@@ -17,7 +17,7 @@ import portable_hole_mysql as ledger  # noqa: E402
 _REQUIRED = ("ARENA_MYSQL_HOST", "ARENA_MYSQL_DATABASE", "ARENA_MYSQL_USER",
              "ARENA_MYSQL_PASSWORD")
 _ENABLED = all(os.environ.get(key) is not None for key in _REQUIRED)
-_MIGRATION = helpers.REPO / "server/mod-portable-hole/data/sql/characters/001_portable_hole_warehouse.sql"
+_MIGRATIONS = sorted((helpers.REPO / "server/mod-portable-hole/data/sql/characters").glob("*.sql"))
 _MODULE = helpers.REPO / "server/mod-portable-hole/src/PortableHole.cpp"
 
 
@@ -58,12 +58,13 @@ class PortableHoleMySQL(unittest.TestCase):
         cls.item = 9907001  # synthetic fixture key; not a shipped/stock item claim
         cls.conn = ledger.connect(pymysql)
         with cls.conn.cursor() as cursor:
-            sql = "\n".join(line for line in _MIGRATION.read_text(encoding="utf-8").splitlines()
-                               if not line.lstrip().startswith("--"))
-            for statement in sql.split(";"):
-                statement = statement.strip()
-                if statement:
-                    cursor.execute(statement)
+            for migration in _MIGRATIONS:
+                sql = "\n".join(line for line in migration.read_text(encoding="utf-8").splitlines()
+                                   if not line.lstrip().startswith("--"))
+                for statement in sql.split(";"):
+                    statement = statement.strip()
+                    if statement:
+                        cursor.execute(statement)
         cls.conn.commit()
         cls.conn.close()
         cls._next_guid = 990710
@@ -73,6 +74,7 @@ class PortableHoleMySQL(unittest.TestCase):
         conn = ledger.connect(cls.pymysql)
         try:
             with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM portable_hole_vault_access WHERE owner_account_id BETWEEN 9907100 AND 9907199")
                 for guid in range(990701, cls._next_guid + 1):
                     cursor.execute("DELETE FROM portable_hole_receipts WHERE guid=%s", (guid,))
                     cursor.execute("DELETE FROM portable_hole_reservations WHERE guid=%s", (guid,))
@@ -108,6 +110,37 @@ class PortableHoleMySQL(unittest.TestCase):
                 cursor.execute("SELECT balance,reserved FROM portable_hole_commodities "
                                "WHERE guid=%s AND item_entry=%s", (guid or self.guid, self.item))
                 return cursor.fetchone()
+        finally:
+            conn.close()
+
+    def test_vault_access_is_explicit_idempotent_and_revocable(self):
+        owner_account, viewer_account, actor_guid = 9907101, 9907102, 990701
+        conn = ledger.connect(self.pymysql)
+        try:
+            with conn.cursor() as cursor:
+                for _ in range(2):
+                    cursor.execute(
+                        "INSERT IGNORE INTO portable_hole_vault_access "
+                        "(owner_account_id,viewer_account_id,granted_by_guid) VALUES(%s,%s,%s)",
+                        (owner_account, viewer_account, actor_guid))
+                cursor.execute("SELECT granted_by_guid FROM portable_hole_vault_access "
+                               "WHERE owner_account_id=%s AND viewer_account_id=%s",
+                               (owner_account, viewer_account))
+                self.assertEqual(cursor.fetchall(), ((actor_guid,),))
+                with self.assertRaises(self.pymysql.err.DatabaseError) as raised:
+                    cursor.execute(
+                        "INSERT INTO portable_hole_vault_access "
+                        "(owner_account_id,viewer_account_id,granted_by_guid) VALUES(%s,%s,%s)",
+                        (owner_account, owner_account, actor_guid))
+                self.assertEqual(raised.exception.args[0], 3819)
+                cursor.execute("DELETE FROM portable_hole_vault_access "
+                               "WHERE owner_account_id=%s AND viewer_account_id=%s",
+                               (owner_account, viewer_account))
+                cursor.execute("SELECT owner_account_id FROM portable_hole_vault_access "
+                               "WHERE owner_account_id=%s AND viewer_account_id=%s",
+                               (owner_account, viewer_account))
+                self.assertEqual(cursor.fetchall(), ())
+            conn.commit()
         finally:
             conn.close()
 
@@ -308,11 +341,53 @@ class PortableHoleStaticContract(unittest.TestCase):
         self.assertIn("portable_hole_pin_state", source)
         self.assertIn("request_id", source)
         self.assertNotIn("GetGUID", lua, "client must not choose a character identity")
-        self.assertIn("RegisterAddonMessagePrefix(PREFIX)", lua)
+        self.assertNotIn("RegisterAddonMessagePrefix", lua,
+                         "Interface 30300 clients do not expose modern prefix registration")
         self.assertIn("data.pending", lua)
         header = (helpers.REPO / "server/mod-portable-hole/src/mod-portable-hole.h").read_text()
         self.assertIn("PortableHoleCreditFromServer", header)
         self.assertIn("PortableHoleConsumeReservation", header)
+
+    def test_shared_vault_requires_owner_consent_and_only_expands_read_views(self):
+        source = _MODULE.read_text(encoding="utf-8")
+        addon = (helpers.REPO / "server/mod-portable-hole/addon/PortableHole/PortableHole.lua").read_text(
+            encoding="utf-8")
+        migration = (helpers.REPO / "server/mod-portable-hole/data/sql/characters/002_portable_hole_vault_access.sql").read_text(
+            encoding="utf-8")
+        self.assertIn("player->GetSession()->GetAccountId()", source)
+        self.assertIn("owner_account_id={} AND viewer_account_id={}", source)
+        self.assertIn('action == "SHARE"', source)
+        self.assertIn('fields[3] != "GRANT" && fields[3] != "REVOKE"', source)
+        self.assertIn("INNER JOIN `characters` c ON c.guid=b.guid WHERE c.account={}", source)
+        self.assertIn('SendError(player, "VAULT_ACCESS_DENIED")', source)
+        self.assertIn("CREATE TABLE IF NOT EXISTS `portable_hole_vault_access`", migration)
+        self.assertIn("PRIMARY KEY (`owner_account_id`, `viewer_account_id`)", migration)
+        self.assertIn('send("SHARE", account, grant and "GRANT" or "REVOKE")', addon)
+        self.assertIn('send("LIST", page, sortModes[sortIndex], viewAccountId)', addon)
+        self.assertIn("read-only account view", addon)
+        reserve = source[source.index("void HandleReserve("):source.index("void HandleReservationTransition(")]
+        self.assertIn("player->GetGUID().GetCounter()", reserve)
+        self.assertNotIn("viewAccount", reserve,
+                         "shared views must not redirect mutations or reservation ownership")
+
+    def test_profession_recipe_reagents_are_server_verified_and_read_only(self):
+        source = _MODULE.read_text(encoding="utf-8")
+        addon = (helpers.REPO / "server/mod-portable-hole/addon/PortableHole/PortableHole.lua").read_text(
+            encoding="utf-8")
+        planner = source[source.index("void SendProfessionReagentPlan("):source.index("void SendBagCount(")]
+        self.assertIn("sSpellMgr->GetSpellInfo(spellId)", planner)
+        self.assertIn("player->HasSpell(spellId)", planner)
+        self.assertIn("spellInfo->IsProfession()", planner)
+        self.assertIn("MAX_SPELL_REAGENTS", planner)
+        self.assertIn("spellInfo->ReagentCount[index]", planner)
+        self.assertIn("player->GetItemCount(itemEntry)", planner)
+        self.assertIn("VIRTUAL_AVAILABLE_NOT_CRAFTABLE", planner)
+        self.assertIn("STANDARD_BAG_ONLY", planner)
+        self.assertIn('action == "REAGENTS"', source)
+        self.assertIn('send("REAGENTS", spell)', addon)
+        self.assertIn("crafting still uses bags", addon)
+        for mutation in ("RemoveItem(", "StoreItem(", "DestroyItem("):
+            self.assertNotIn(mutation, planner)
 
     def test_saved_pins_are_per_character_deduplicated_and_capped(self):
         try:
@@ -323,19 +398,22 @@ class PortableHoleStaticContract(unittest.TestCase):
             encoding="utf-8")
         lua = LuaRuntime(unpack_returned_tuples=True)
         lua.execute(r"""
-            created, activeGuid = {}, "Player-A"
+            created, activeGuid, sent, clock = {}, "Player-A", {}, 1
             UIParent, SlashCmdList, PortableHoleDB = {}, {}, {}
             function UnitGUID() return activeGuid end
             function UnitName() return "Tester" end
             function RegisterAddonMessagePrefix() end
-            function SendAddonMessage() end
+            function SendAddonMessage(_, payload) sent[#sent + 1] = payload end
             function time() return 1 end
-            function GetTime() return 1 end
+            function GetTime() return clock end
             function CreateFrame()
                 local f = { scripts = {}, shown = false, text = "",
                             TitleText = { SetText = function() end } }
                 function f:SetSize() end
                 function f:SetPoint() end
+                function f:SetBackdrop() end
+                function f:SetBackdropColor() end
+                function f:SetBackdropBorderColor() end
                 function f:SetMovable() end
                 function f:EnableMouse() end
                 function f:RegisterForDrag() end
@@ -363,6 +441,7 @@ class PortableHoleStaticContract(unittest.TestCase):
         lua.execute(source)
         event_frame = lua.globals().created[1]
         event_frame.scripts.OnEvent(event_frame, "PLAYER_LOGIN")
+        lua.globals().SlashCmdList.PORTABLEHOLE()
         created = lua.globals().created
         item_input = next(created[index] for index in range(1, len(created) + 1)
                           if created[index].numeric and created[index].text == "0")
@@ -391,6 +470,34 @@ class PortableHoleStaticContract(unittest.TestCase):
         buttons["Pin item"].scripts.OnClick(buttons["Pin item"])
         self.assertEqual(len(lua.globals().PortableHoleDB.characters["Player-B"].pins), 1)
         self.assertEqual(len(lua.globals().PortableHoleDB.characters["Player-A"].pins), 10)
+
+        vault_input = next(created[index] for index in range(1, len(created) + 1)
+                           if created[index].role == "vaultAccount")
+        share_input = next(created[index] for index in range(1, len(created) + 1)
+                           if created[index].role == "shareAccount")
+        account_buttons = {created[index].text: created[index]
+                           for index in range(1, len(created) + 1)
+                           if created[index].text in ("Open view", "Grant", "Revoke")}
+        vault_input.SetText(vault_input, "12345")
+        lua.globals().clock = 2
+        account_buttons["Open view"].scripts.OnClick(account_buttons["Open view"])
+        self.assertEqual(lua.globals().sent[len(lua.globals().sent)],
+                         "PH1\tLIST\t0\tENTRY\t12345")
+        share_input.SetText(share_input, "98765")
+        lua.globals().clock = 3
+        account_buttons["Grant"].scripts.OnClick(account_buttons["Grant"])
+        self.assertEqual(lua.globals().sent[len(lua.globals().sent)], "PH1\tSHARE\t98765\tGRANT")
+        lua.globals().clock = 4
+        account_buttons["Revoke"].scripts.OnClick(account_buttons["Revoke"])
+        self.assertEqual(lua.globals().sent[len(lua.globals().sent)], "PH1\tSHARE\t98765\tREVOKE")
+        recipe_input = next(created[index] for index in range(1, len(created) + 1)
+                            if created[index].role == "recipeSpell")
+        reagent_button = next(created[index] for index in range(1, len(created) + 1)
+                              if created[index].text == "Reagents")
+        recipe_input.SetText(recipe_input, "1234")
+        lua.globals().clock = 5
+        reagent_button.scripts.OnClick(reagent_button)
+        self.assertEqual(lua.globals().sent[len(lua.globals().sent)], "PH1\tREAGENTS\t1234")
 
     def test_need_comparison_separates_carried_gap_and_virtual_available(self):
         source = _MODULE.read_text(encoding="utf-8")
@@ -429,7 +536,7 @@ class PortableHoleStaticContract(unittest.TestCase):
             self.assertNotIn(forbidden, planner)
         lua = (helpers.REPO / "server/mod-portable-hole/addon/PortableHole/PortableHole.lua").read_text(
             encoding="utf-8")
-        self.assertIn('send("SEARCH", query)', lua)
+        self.assertIn('send("SEARCH", query, viewAccountId)', lua)
         self.assertIn('send("PLAN", item, amount)', lua)
         self.assertIn("PLAN ONLY — no item moved", lua)
 

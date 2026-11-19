@@ -152,19 +152,20 @@
     },
     {
       "id": "portable-hole-commodity-vault",
-      "owner": "Portable Hole AzerothCore module; current slice is character-private virtual commodities",
+      "owner": "Portable Hole AzerothCore module; character-owned mutations with explicit read-only account sharing",
       "dependencies": [
         "pinned AzerothCore PlayerScript addon channel",
         "Characters InnoDB ledger/receipt/reservation tables",
         "ObjectMgr stackable-item validation",
         "server-authorized credit source"
       ],
-      "player_loop": "Browse character-owned virtual commodity counts, reserve counts, release reservations, or consume a full reservation; GM/server code can seed balances with durable receipts.",
+      "player_loop": "Browse character-owned virtual commodity counts, reserve/release/consume only on the current character, grant another account a revocable read-only aggregate view, or compare a known profession recipe's native reagents against carried and advisory virtual counts.",
       "source_evidence": [
         "server/mod-portable-hole/src/PortableHole.cpp",
         "server/mod-portable-hole/src/mod-portable-hole_loader.cpp",
         "server/mod-portable-hole/addon/PortableHole/PortableHole.lua",
         "server/mod-portable-hole/data/sql/characters/001_portable_hole_warehouse.sql",
+        "server/mod-portable-hole/data/sql/characters/002_portable_hole_vault_access.sql",
         "server/mod-portable-hole/harness/portable_hole_mysql.py",
         "tests/test_portable_hole_mysql.py"
       ],
@@ -180,16 +181,17 @@
         "Hosted disposable MySQL receipt/replay, competing reservation, process-death and rollback suite",
         "Pinned-core module compile and registration linkage",
         "Physical item deposit/withdraw recovery across core saves and inventory capacity",
-        "Revocable account/group ACL and Campaign Party adapter",
-        "Profession/reward source integration and end-to-end gameplay/client qualification"
+        "Hosted MySQL test of explicit account grants, revocation, and shared-view aggregation",
+        "Campaign Party adapter and profession/reward source integration",
+        "End-to-end booted gameplay/client qualification"
       ],
       "risks": [
         "This virtual-balance slice does not destroy or materialize physical bag items",
         "Never trust addon-supplied character/account identity",
-        "No account/party sharing until an explicit revocable ACL adapter exists",
+        "Account views are read-only; no cross-account mutation, party ACL, or Campaign Party adapter is enabled",
         "Cross-database or core inventory state atomicity is not assumed"
       ],
-      "next_milestone": "Qualify the hosted SQL/module slice, then design and test a recoverable core item-custody saga before connecting profession rewards or shared ACLs."
+      "next_milestone": "Run hosted ACL/account-aggregate qualification and booted-client exercise; only then prototype a profession consumer that proves recipe/reagent atomicity before any virtual balance can satisfy crafting, and keep physical item movement behind the separate custody gate."
     },
     {
       "id": "runic-codex",
@@ -201,12 +203,13 @@
         "server cast hook",
         "WotLK 3.3.5 addon protocol"
       ],
-      "player_loop": "Learn Arcane Missiles through normal gameplay to unlock Arcane Echo, equip it in the addon, and receive a bounded refund on successful paid casts.",
+      "player_loop": "Obtain and use Gahz'ranka's source-verified Tome of Polymorph: Turtle and learn any Arcane Missiles rank, in either order, to unlock Arcane Echo; equip it in the addon and receive a bounded refund on paid casts.",
       "source_evidence": [
         "server/mod-runic-codex/src/RunicCodex.cpp",
         "server/mod-runic-codex/src/ArcaneEchoPolicy.h",
         "server/mod-runic-codex/addon/RunicCodex/RunicCodex.lua",
         "server/mod-runic-codex/data/sql/characters/001_runic_codex.sql",
+        "server/mod-runic-codex/data/sql/characters/002_runic_codex_inscriptions.sql",
         "tests/test_runic_codex_mysql.py",
         "tests/native/runic_codex_policy_test.cpp"
       ],
@@ -225,7 +228,7 @@
         "Account/party sharing is not implemented"
       ],
       "risks": [
-        "The vertical uses server-side spell learning as discovery; no physical token/loot delivery is included",
+        "The unlock records a server-observed use of the stock lootable tome and server-observed spell learning; exact gameplay timing still needs a booted-core test",
         "A pinned compile and disposable SQL test are not a booted gameplay qualification",
         "Native glyphs remain independent and Altbot capability is unproven"
       ],
@@ -272,10 +275,12 @@
         "server-side native championing effect",
         "native AzerothCore reputation rank"
       ],
-      "player_loop": "Reach Honored with the Argent Crusade, claim the commission, and retain the native Argent Championing reputation effect without changing hostile-faction rules.",
+      "player_loop": "Reach Honored with the Argent Crusade, claim the commission, retain native Argent Championing, and while still Honored receive a small capped heal on credited creature kills without changing hostile-faction rules.",
       "source_evidence": [
         "server/mod-argent-commission/src/ArgentCommission.cpp",
+        "server/mod-argent-commission/src/ArgentFieldDressingPolicy.h",
         "server/mod-argent-commission/addon/ArgentCommission/ArgentCommission.lua",
+        "tests/test_argent_field_dressing_policy.py",
         "server/mod-argent-commission/data/sql/characters/001_argent_commission.sql",
         "tests/test_argent_commission_mysql.py",
         ".github/workflows/azerothcore-db-qualification.yml",
@@ -771,7 +776,8 @@
         "same-ID replay, conflicting-payload refusal, competing final-balance reservation",
         "process-death rollback and same-ID retry on disposable MySQL",
         "pinned AzerothCore module compilation and static registration linkage",
-        "no physical item custody, account/party sharing, or gameplay claim"
+        "owner-consented, revocable account grants for read-only aggregate vault views",
+        "no physical item custody, party sharing, or gameplay claim"
       ]
     },
     {

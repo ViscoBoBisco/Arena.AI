@@ -28,15 +28,23 @@ local function paint()
         equipButton:SetText(equipped and "Unequip" or "Equip")
         equipButton:Enable()
     else
-        statusText:SetText("Discover Arcane Echo by learning Arcane Missiles.")
+        statusText:SetText("Discover Arcane Echo by using Gahz'ranka's Tome of Polymorph: Turtle and learning Arcane Missiles; either step may come first.")
         equipButton:SetText("Locked")
         equipButton:Disable()
     end
 end
 
 local function createFrame()
-    frame = CreateFrame("Frame", "RunicCodexFrame", UIParent, "BasicFrameTemplateWithInset")
+    frame = CreateFrame("Frame", "RunicCodexFrame", UIParent)
     frame:SetSize(430, 170)
+    frame:SetBackdrop({
+        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 },
+    })
+    frame:SetBackdropColor(0.04, 0.05, 0.07, 0.96)
+    frame:SetBackdropBorderColor(0.45, 0.55, 0.8, 1)
     frame:SetPoint("CENTER")
     frame:SetMovable(true)
     frame:EnableMouse(true)
@@ -44,7 +52,9 @@ local function createFrame()
     frame:SetScript("OnDragStart", frame.StartMoving)
     frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
     frame:Hide()
-    frame.TitleText:SetText("Runic Codex")
+    local titleText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    titleText:SetPoint("TOPLEFT", 20, -12)
+    titleText:SetText("Runic Codex")
     statusText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     statusText:SetPoint("TOPLEFT", 20, -48)
     statusText:SetWidth(380)
@@ -63,7 +73,6 @@ events:RegisterEvent("PLAYER_LOGIN")
 events:RegisterEvent("CHAT_MSG_ADDON")
 events:SetScript("OnEvent", function(_, event, prefix, message, distribution, sender)
     if event == "PLAYER_LOGIN" then
-        RegisterAddonMessagePrefix(PREFIX)
         createFrame()
         SLASH_RUNICCODEX1 = "/runiccodex"
         SlashCmdList.RUNICCODEX = function()

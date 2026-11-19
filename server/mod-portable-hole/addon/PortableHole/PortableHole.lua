@@ -31,6 +31,8 @@ local function savedData()
     return data
 end
 local frame, statusText, itemInput, amountInput, reservationInput, rowButtons, pageLabel, pinStatus
+local vaultAccountInput, shareAccountInput, recipeSpellInput, accountInfo
+local viewAccountId, ownAccountId, reagentSpellId = 0, 0, 0
 local page = 0
 local pendingPinAdds = {}
 local sortModes, sortIndex = { "ENTRY", "NAME", "BALANCE", "AVAILABLE" }, 1
@@ -98,7 +100,7 @@ local function sendMutation(action, arguments)
         pending = { action = action, arguments = canonical, id = requestId() }
         data.pending = pending
     end
-    local values = { strsplit("\t", pending.arguments) }
+    local values = splitTabs(pending.arguments)
     values[#values + 1] = pending.id
     retryAt = GetTime() + 5
     return send(action, unpack(values))
@@ -107,7 +109,7 @@ end
 local function retryPending()
     local pending = savedData().pending
     if not pending then return end
-    local arguments = { strsplit("\t", pending.arguments or "") }
+    local arguments = splitTabs(pending.arguments or "")
     arguments[#arguments + 1] = pending.id
     retryAt = GetTime() + 5
     send(pending.action, unpack(arguments))
@@ -125,8 +127,65 @@ local function repaint(rows)
     end
 end
 
+local function repaintReagentRows(rows)
+    for i = 1, #rowButtons do rowButtons[i]:Hide() end
+    for i, row in ipairs(rows) do
+        if i > #rowButtons then break end
+        local button = rowButtons[i]
+        button.itemEntry = row.item
+        local virtual = row.status == "VIRTUAL_AVAILABLE_NOT_CRAFTABLE"
+            and tostring(row.available) or "not eligible"
+        button:SetText(string.format("%s: need %d, carried %d, gap %d, virtual %s (not craftable)",
+            row.name, row.required, row.carried, row.gap, virtual))
+        button:Show()
+    end
+end
+
+local function sendProfessionReagents()
+    local spell = uint(recipeSpellInput:GetText(), 4294967295)
+    if not spell then
+        statusText:SetText("Enter a positive known profession recipe spell ID.")
+        return
+    end
+    reagentSpellId = spell
+    frame.reagentRows = {}
+    repaintReagentRows(frame.reagentRows)
+    send("REAGENTS", spell)
+end
+
 local function refresh()
-    send("LIST", page, sortModes[sortIndex])
+    send("LIST", page, sortModes[sortIndex], viewAccountId)
+end
+
+local function selectedAccount(box, allowCurrentCharacter)
+    local value = box:GetText()
+    if allowCurrentCharacter and (value == "" or value == "0") then return 0 end
+    if type(value) ~= "string" or not value:match("^%d+$") then return nil end
+    local account = tonumber(value)
+    if not account or account < 1 or account > 4294967295 then return nil end
+    return math.floor(account)
+end
+
+local function openVaultView()
+    local account = selectedAccount(vaultAccountInput, true)
+    if account == nil then
+        statusText:SetText("Enter a valid account ID, or 0 for this character's vault.")
+        return
+    end
+    viewAccountId = account
+    page = 0
+    frame.rows = {}
+    repaint(frame.rows)
+    refresh()
+end
+
+local function changeShare(grant)
+    local account = selectedAccount(shareAccountInput, false)
+    if not account then
+        statusText:SetText("Enter the other account's numeric ID.")
+        return
+    end
+    send("SHARE", account, grant and "GRANT" or "REVOKE")
 end
 
 local function reserve()
@@ -258,6 +317,29 @@ local function onMessage(_, prefix, message, distribution, sender)
     elseif fields[2] == "FINDEND" and #fields == 4 then
         if fields[4] == "1" then statusText:SetText("Showing first five matches; narrow the search.")
         elseif (tonumber(fields[3]) or 0) == 0 then statusText:SetText("No matching ledger entries.") end
+    elseif fields[2] == "RGT" and #fields == 10 then
+        local spell, item, required = tonumber(fields[3]), tonumber(fields[4]), tonumber(fields[5])
+        local carried, gap, available = tonumber(fields[6]), tonumber(fields[7]), tonumber(fields[8])
+        if spell == reagentSpellId and item and required and carried and gap and available then
+            local rows = frame.reagentRows or {}
+            rows[#rows + 1] = { item = item, required = required, carried = carried,
+                gap = gap, available = available, status = fields[9], name = fields[10] }
+            frame.reagentRows = rows
+            repaintReagentRows(rows)
+        end
+    elseif fields[2] == "REAGEND" and #fields == 4 then
+        local spell, count = tonumber(fields[3]), tonumber(fields[4])
+        if spell == reagentSpellId and count then
+            statusText:SetText("Recipe " .. tostring(spell) .. ": " .. tostring(count)
+                .. " reagent line(s). Virtual availability is advisory only; crafting still uses bags.")
+        end
+    elseif fields[2] == "SHARE" and #fields == 4 then
+        local account = tonumber(fields[3])
+        if account and fields[4] == "GRANTED" then
+            statusText:SetText("Granted read-only vault access to account " .. tostring(account) .. ".")
+        elseif account and fields[4] == "REVOKED" then
+            statusText:SetText("Revoked read-only vault access for account " .. tostring(account) .. ".")
+        end
     elseif fields[2] == "PLAN" and #fields == 7 then
         local item, requested, carried, planned = tonumber(fields[3]), tonumber(fields[4]),
             tonumber(fields[5]), tonumber(fields[6])
@@ -302,10 +384,19 @@ local function onMessage(_, prefix, message, distribution, sender)
             frame.rows = rows
             repaint(rows)
         end
-    elseif fields[2] == "END" and #fields == 4 then
+    elseif fields[2] == "END" and (#fields == 4 or #fields == 6) then
         if tonumber(fields[3]) == page then
             pageLabel:SetText("Page " .. tostring(page + 1))
-            statusText:SetText((tonumber(fields[4]) or 0) .. " commodity row(s) on this page.")
+            if #fields == 6 then
+                local targetAccount, currentAccount = tonumber(fields[5]), tonumber(fields[6])
+                if targetAccount and currentAccount then
+                    ownAccountId = currentAccount
+                    accountInfo:SetText("Your account ID: " .. tostring(ownAccountId)
+                        .. "  |  View: " .. (targetAccount == 0 and "this character" or tostring(targetAccount)))
+                end
+            end
+            local viewNote = viewAccountId == 0 and "current character" or "read-only account view"
+            statusText:SetText((tonumber(fields[4]) or 0) .. " commodity row(s) on this page (" .. viewNote .. ").")
         end
     elseif fields[2] == "RCPT" and #fields == 9 then
         local id, result = fields[3], fields[4]
@@ -347,8 +438,16 @@ local function showPage(newPage)
 end
 
 local function createFrame()
-    frame = CreateFrame("Frame", "PortableHoleFrame", UIParent, "BasicFrameTemplateWithInset")
-    frame:SetSize(620, 420)
+    frame = CreateFrame("Frame", "PortableHoleFrame", UIParent)
+    frame:SetSize(620, 470)
+    frame:SetBackdrop({
+        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 },
+    })
+    frame:SetBackdropColor(0.04, 0.05, 0.07, 0.96)
+    frame:SetBackdropBorderColor(0.75, 0.62, 0.35, 1)
     frame:SetPoint("CENTER")
     frame:SetMovable(true)
     frame:EnableMouse(true)
@@ -358,7 +457,12 @@ local function createFrame()
     frame:Hide()
     frame.rows = {}
     rowButtons = {}
-    frame.TitleText:SetText("Portable Hole — Warehouse")
+    local titleText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    titleText:SetPoint("TOPLEFT", 18, -10)
+    titleText:SetText("Portable Hole - Warehouse")
+    accountInfo = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    accountInfo:SetPoint("TOPRIGHT", -18, -14)
+    accountInfo:SetText("Account IDs load when the list opens")
 
     statusText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     statusText:SetPoint("TOPLEFT", 18, -35)
@@ -411,7 +515,7 @@ local function createFrame()
     searchButton:SetText("Search")
     searchButton:SetScript("OnClick", function()
         local query = searchInput:GetText()
-        if query and query ~= "" then send("SEARCH", query) end
+        if query and query ~= "" then send("SEARCH", query, viewAccountId) end
     end)
     local planButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
     planButton:SetSize(112, 22); planButton:SetPoint("LEFT", searchButton, "RIGHT", 8, 0)
@@ -429,9 +533,44 @@ local function createFrame()
         showPage(page)
     end)
 
-    for i = 1, 5 do
+    vaultAccountInput = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
+    vaultAccountInput.role = "vaultAccount"
+    vaultAccountInput:SetSize(90, 22); vaultAccountInput:SetPoint("TOPLEFT", 20, -154)
+    vaultAccountInput:SetAutoFocus(false); vaultAccountInput:SetNumeric(true); vaultAccountInput:SetText("0")
+    local vaultLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    vaultLabel:SetPoint("BOTTOMLEFT", vaultAccountInput, "TOPLEFT", 0, 2)
+    vaultLabel:SetText("View account (0 = this character)")
+    local viewButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    viewButton:SetSize(78, 22); viewButton:SetPoint("LEFT", vaultAccountInput, "RIGHT", 6, 0)
+    viewButton:SetText("Open view"); viewButton:SetScript("OnClick", openVaultView)
+
+    shareAccountInput = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
+    shareAccountInput.role = "shareAccount"
+    shareAccountInput:SetSize(90, 22); shareAccountInput:SetPoint("LEFT", viewButton, "RIGHT", 28, 0)
+    shareAccountInput:SetAutoFocus(false); shareAccountInput:SetNumeric(true); shareAccountInput:SetText("")
+    local shareLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    shareLabel:SetPoint("BOTTOMLEFT", shareAccountInput, "TOPLEFT", 0, 2)
+    shareLabel:SetText("Share with account")
+    local grantButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    grantButton:SetSize(68, 22); grantButton:SetPoint("LEFT", shareAccountInput, "RIGHT", 6, 0)
+    grantButton:SetText("Grant"); grantButton:SetScript("OnClick", function() changeShare(true) end)
+    local revokeButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    revokeButton:SetSize(68, 22); revokeButton:SetPoint("LEFT", grantButton, "RIGHT", 4, 0)
+    revokeButton:SetText("Revoke"); revokeButton:SetScript("OnClick", function() changeShare(false) end)
+    recipeSpellInput = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
+    recipeSpellInput.role = "recipeSpell"
+    recipeSpellInput:SetSize(62, 22); recipeSpellInput:SetPoint("LEFT", revokeButton, "RIGHT", 8, 0)
+    recipeSpellInput:SetAutoFocus(false); recipeSpellInput:SetNumeric(true); recipeSpellInput:SetText("")
+    local recipeLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    recipeLabel:SetPoint("BOTTOMLEFT", recipeSpellInput, "TOPLEFT", 0, 2)
+    recipeLabel:SetText("Recipe ID")
+    local reagentButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    reagentButton:SetSize(62, 22); reagentButton:SetPoint("LEFT", recipeSpellInput, "RIGHT", 4, 0)
+    reagentButton:SetText("Reagents"); reagentButton:SetScript("OnClick", sendProfessionReagents)
+
+    for i = 1, 8 do
         local b = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-        b:SetSize(570, 26); b:SetPoint("TOPLEFT", 20, -160 - (i - 1) * 31)
+        b:SetSize(570, 22); b:SetPoint("TOPLEFT", 20, -190 - (i - 1) * 25)
         b:SetScript("OnClick", function() if b.itemEntry then itemInput:SetText(tostring(b.itemEntry)) end end)
         b:Hide(); rowButtons[i] = b
     end
@@ -477,13 +616,11 @@ events:RegisterEvent("CHAT_MSG_ADDON")
 events:RegisterEvent("PLAYER_LOGIN")
 events:SetScript("OnEvent", function(self, event, ...)
     if event == "PLAYER_LOGIN" then
-        RegisterAddonMessagePrefix(PREFIX)
         createFrame()
         SLASH_PORTABLEHOLE1 = "/portablehole"
         SLASH_PORTABLEHOLE2 = "/ph"
         SlashCmdList.PORTABLEHOLE = function()
             frame:Show()
-            send("HELLO", 1)
             showPage(0)
         end
     else
