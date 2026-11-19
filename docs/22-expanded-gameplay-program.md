@@ -28,7 +28,9 @@ server, qualify a client, or integrate private Campaign Party.
 | Arena Foundry | Arena repository | Declarative specs, source-aware IDs, generators, packages, qualification and handoff | A generated artifact is not installed gameplay; maturity labels follow evidence only |
 
 Portable Hole should become the authorized resource custody layer used by professions, expedition
-provisioning and faction supply. Runic Codex consumes source-aware unlock/provenance and exposes
+provisioning and faction supply. Physical item transfers remain blocked by unresolved live inventory
+save-state reconciliation; see the design-only acceptance gate in
+[`23 — Portable Hole physical-item custody`](23-portable-hole-physical-custody.md). Runic Codex consumes source-aware unlock/provenance and exposes
 active powers through a versioned loadout. Equipment mastery links real item-instance identity to
 bounded progress, not a template ID. Faction Operations supplies scoped benefits and deployments.
 Campaign Party chooses and authorizes members and actions; Playerbots execute compatible bot

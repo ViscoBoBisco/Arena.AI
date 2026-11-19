@@ -132,6 +132,7 @@ Makefile                      `make check`, `make preflight CLIENT=… SERVER=�
 | [20 — Project stocktake](docs/20-project-stocktake.md) | Repository-wide area/leaf inventory, current local evidence, gaps, and external qualification boundaries |
 | [21 — Systematic completion plan](docs/21-systematic-completion-plan.md) | Prioritized project-wide audit sequence, workstream exit criteria, evidence ledger, and progress log |
 | [22 — Expanded gameplay program](docs/22-expanded-gameplay-program.md) | Domain ownership, source-bound system register, current maturity and sequenced implementation PRs |
+| [23 — Portable Hole physical-item custody gate](docs/23-portable-hole-physical-custody.md) | Design-only custody invariants, pinned-core persistence findings, and runtime acceptance gates |
 
 ## Glossary
 

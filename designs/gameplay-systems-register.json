@@ -432,6 +432,7 @@
       ],
       "player_loop": "Archive a specific eligible equipment instance, lend or restore that same instance, and see its provenance.",
       "source_evidence": [
+        "docs/23-portable-hole-physical-custody.md",
         "Directive requirements; no unique-item archive implementation in this checkout"
       ],
       "manifest_id_needs": [
@@ -451,7 +452,7 @@
         "Never reconstruct an arbitrary item from item_template ID",
         "No direct SQL edits to live core inventory state"
       ],
-      "next_milestone": "After commodity custody, prototype exact-instance custody through supported core hooks with synthetic lifecycle tests."
+      "next_milestone": "Probe the pinned core's async transaction completion and save-queue reconciliation under injected commit failure on disposable data; do not implement transfers until runtime reconciliation and exact-instance recovery gates in docs/23 pass."
     },
     {
       "id": "profession-overlay-and-pins",
