@@ -246,6 +246,16 @@ class PortableHoleMySQL(unittest.TestCase):
 
 
 class PortableHoleStaticContract(unittest.TestCase):
+    def test_addon_parses_under_wotlk_lua_51(self):
+        try:
+            from lupa.lua51 import LuaRuntime
+        except ImportError:
+            self.skipTest("install lupa==2.6 for Lua 5.1 addon syntax validation")
+        source = (helpers.REPO / "server/mod-portable-hole/addon/PortableHole/PortableHole.lua").read_text(
+            encoding="utf-8")
+        compiled = LuaRuntime().eval("loadstring")(source, "@PortableHole.lua")
+        self.assertIsNotNone(compiled)
+
     def test_native_module_and_addon_preserve_server_owned_identity_contract(self):
         source = _MODULE.read_text(encoding="utf-8")
         lua = (helpers.REPO / "server/mod-portable-hole/addon/PortableHole/PortableHole.lua").read_text(
@@ -261,6 +271,19 @@ class PortableHoleStaticContract(unittest.TestCase):
         header = (helpers.REPO / "server/mod-portable-hole/src/mod-portable-hole.h").read_text()
         self.assertIn("PortableHoleCreditFromServer", header)
         self.assertIn("PortableHoleConsumeReservation", header)
+
+    def test_bag_count_is_read_only_server_derived_and_excludes_bank(self):
+        source = _MODULE.read_text(encoding="utf-8")
+        bag_count = source.split("void SendBagCount(", 1)[1].split("void SendBalancePage(", 1)[0]
+        self.assertIn("player->GetItemCount(itemEntry)", bag_count)
+        self.assertNotIn("DestroyItem", bag_count)
+        self.assertNotIn("inBankAlso", bag_count)
+        lua = (helpers.REPO / "server/mod-portable-hole/addon/PortableHole/PortableHole.lua").read_text(
+            encoding="utf-8")
+        self.assertIn('send("BAG", item)', lua)
+        self.assertIn("bank excluded; read-only", lua)
+        self.assertIn('action == "BAG"', source)
+        self.assertIn('SendBagCount(player, itemEntry)', source)
 
     def test_balance_row_is_locked_before_receipt_to_serialize_mutation_order(self):
         source = _MODULE.read_text(encoding="utf-8")

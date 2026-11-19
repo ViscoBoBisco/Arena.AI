@@ -215,6 +215,20 @@ namespace
             receipt.balance, receipt.reserved));
     }
 
+    void SendBagCount(Player* player, uint32 itemEntry)
+    {
+        ItemTemplate const* item = Commodity(itemEntry);
+        if (!item)
+        {
+            SendError(player, "INVALID_COMMODITY");
+            return;
+        }
+
+        uint32 const count = player->GetItemCount(itemEntry);
+        Send(player, Acore::StringFormat("{}BAG\t{}\t{}\t{}",
+            PREFIX, itemEntry, count, SafeLabel(item->Name1)));
+    }
+
     void SendBalancePage(Player* player, uint32 page)
     {
         uint32 const guid = player->GetGUID().GetCounter();
@@ -399,6 +413,15 @@ namespace
                 Send(player, std::string(PREFIX) + "OK\t1");
             return true;
         }
+        if (action == "BAG")
+        {
+            uint32 itemEntry = 0;
+            if (fields.size() != 3 || !ParseUnsigned(fields[2], itemEntry))
+                SendError(player, "MALFORMED");
+            else
+                SendBagCount(player, itemEntry);
+            return true;
+        }
         if (action == "LIST")
         {
             uint32 page = 0;
@@ -484,8 +507,9 @@ public:
         std::vector<std::string> fields = SplitTabs(frame);
         if (fields.size() < 2 || fields[0] != PREFIX_TOKEN)
             return;
-        bool const known = fields[1] == "HELLO" || fields[1] == "LIST" || fields[1] == "CREDIT"
-            || fields[1] == "RESERVE" || fields[1] == "RELEASE" || fields[1] == "CONSUME";
+        bool const known = fields[1] == "HELLO" || fields[1] == "LIST" || fields[1] == "BAG"
+            || fields[1] == "CREDIT" || fields[1] == "RESERVE"
+            || fields[1] == "RELEASE" || fields[1] == "CONSUME";
         if (!known)
             return;
         if (!enabled.load())

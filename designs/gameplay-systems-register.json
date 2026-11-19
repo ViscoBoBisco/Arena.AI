@@ -464,7 +464,9 @@
       ],
       "player_loop": "Pin a reagent or recipe, compare bags/shared holdings, see exact shortage and grounded nearest source.",
       "source_evidence": [
-        "Directive requirements; no shared reagent overlay implementation in this checkout"
+        "server/mod-portable-hole/src/PortableHole.cpp",
+        "server/mod-portable-hole/addon/PortableHole/PortableHole.lua",
+        "tests/test_portable_hole_mysql.py"
       ],
       "manifest_id_needs": [
         "item and recipe identity",
@@ -472,18 +474,20 @@
         "vault ACL revision",
         "source confidence/provenance"
       ],
-      "implementation_state": "DESIGN_ONLY",
+      "implementation_state": "SYNTHETIC",
       "outstanding_tests": [
-        "bag versus virtual quantity distinction",
-        "pagination and stale inventory",
+        "bag versus virtual quantity distinction in a booted client/server session",
+        "saved reagent/recipe pins and pagination with stale inventory refresh",
+        "shortage/closest source with provenance and no fabricated vendor/AH/gathering data",
         "withdraw authorization and partial native stack capacity",
         "no invented vendor/AH/gathering source"
       ],
       "risks": [
         "Virtual counts are not craftable bag quantities",
-        "Never claim native TradeSkill UI consumes virtual warehouse stock"
+        "Never claim native TradeSkill UI consumes virtual warehouse stock",
+        "The current count call is carried inventory only; it excludes bank and shared holdings"
       ],
-      "next_milestone": "Deliver read-only count overlay and saved pins before enabling Withdraw Missing."
+      "next_milestone": "Add saved pins and a provenance-backed shortage view; keep withdraw disabled until an authorized, recoverable inventory transfer passes its own gates."
     },
     {
       "id": "expedition-quartermaster",
@@ -768,11 +772,12 @@
     {
       "id": "P1-04",
       "title": "Profession reagent overlay and pins",
-      "status": "not started",
+      "status": "partial: read-only carried-bag count; no pins, shared counts, or withdraw",
       "acceptance": [
-        "read-only bag/shared counts",
-        "shortage/closest owned source",
-        "authorized withdraw only"
+        "server-derived read-only carried count for an eligible item; bank excluded",
+        "bag versus virtual quantity distinction",
+        "saved pins and shortage/closest owned source with provenance",
+        "authorized recoverable withdraw only after separate custody qualification"
       ]
     },
     {

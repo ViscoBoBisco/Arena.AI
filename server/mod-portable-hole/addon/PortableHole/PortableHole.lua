@@ -119,6 +119,12 @@ local function reserve()
     sendMutation("RESERVE", { tostring(item), tostring(amount) })
 end
 
+local function bagCount()
+    local item = uint(itemInput:GetText(), 4294967295)
+    if not item then statusText:SetText("Enter a positive item entry."); return end
+    send("BAG", item)
+end
+
 local function transition(action)
     local reservation = reservationInput:GetText()
     if type(reservation) ~= "string" or not reservation:match("^[%w%._:%-]+$") or #reservation > 64 then
@@ -140,7 +146,13 @@ local function onMessage(_, prefix, message, distribution, sender)
         or not validFrame(message) then return end
     local fields = splitTabs(message)
     if fields[1] ~= PREFIX then return end
-    if fields[2] == "ROW" and #fields == 7 then
+    if fields[2] == "BAG" and #fields == 5 then
+        local item, count = tonumber(fields[3]), tonumber(fields[4])
+        if item and count and item >= 1 and count >= 0 then
+            statusText:SetText("Carried: " .. tostring(count) .. " x " .. fields[5]
+                .. " (bank excluded; read-only)")
+        end
+    elseif fields[2] == "ROW" and #fields == 7 then
         local row = { page = tonumber(fields[3]), item = tonumber(fields[4]),
                       balance = tonumber(fields[5]), reserved = tonumber(fields[6]), name = fields[7] }
         if row.page == page and row.item and row.balance and row.reserved then
@@ -222,14 +234,15 @@ local function createFrame()
     local amountLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     amountLabel:SetPoint("BOTTOMLEFT", amountInput, "TOPLEFT", 0, 2); amountLabel:SetText("Amount")
 
-    local function button(text, x, callback)
+    local function button(text, x, callback, width)
         local b = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-        b:SetSize(90, 24); b:SetPoint("LEFT", amountInput, "RIGHT", x, 0)
+        b:SetSize(width or 90, 24); b:SetPoint("LEFT", amountInput, "RIGHT", x, 0)
         b:SetText(text); b:SetScript("OnClick", callback); return b
     end
     button("Refresh", 15, function() showPage(page) end)
     button("Reserve", 112, reserve)
     button("GM Credit", 209, adminCredit)
+    button("Bag count", 300, bagCount, 74)
 
     for i = 1, 5 do
         local b = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
