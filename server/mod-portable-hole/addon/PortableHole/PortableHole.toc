@@ -1,0 +1,7 @@
+## Interface: 30300
+## Title: Portable Hole
+## Notes: Character-private commodity warehouse and reservations
+## Author: Arena.AI
+## Version: 1.0.0
+## SavedVariables: PortableHoleDB
+PortableHole.lua

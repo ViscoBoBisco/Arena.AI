@@ -1,0 +1,5 @@
+###################################################################################################
+# Portable Hole — character-private virtual commodity warehouse
+###################################################################################################
+# Master switch; disabled mode consumes PH1 messages and sends an explicit disabled response.
+PortableHole.Enable = 1

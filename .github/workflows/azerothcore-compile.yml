@@ -34,6 +34,7 @@ jobs:
         run: |
           python3 tools/foundry.py build specs/vault-terminal.json --out /tmp/vault-terminal
           cp -a /tmp/vault-terminal/server/mod-vault-terminal /tmp/azerothcore/modules/
+          cp -a server/mod-portable-hole /tmp/azerothcore/modules/
           cmake -S /tmp/azerothcore -B /tmp/azerothcore-build \
             -DWITHOUT_GIT=1 -DNOJEM=1 -DUSE_COREPCH=0 -DUSE_SCRIPTPCH=0 \
             -DTOOLS_BUILD=none -DWITH_WARNINGS=0 -DMODULES=static
@@ -56,3 +57,22 @@ jobs:
             exit 1
           fi
           cat /tmp/vault-terminal-compile.log
+
+      - name: Compile Portable Hole warehouse module against the pinned core
+        run: |
+          if ! python3 tools/compile_generated_module.py \
+            --build-dir /tmp/azerothcore-build \
+            --core-source /tmp/azerothcore \
+            --module mod-portable-hole \
+            --registration AddPortableHoleScripts > /tmp/portable-hole-compile.log 2>&1; then
+            cat /tmp/portable-hole-compile.log
+            python3 - <<'PY'
+          from pathlib import Path
+          lines = Path('/tmp/portable-hole-compile.log').read_text(errors='replace').strip().splitlines()
+          detail = '\\n'.join(lines[-40:]) if lines else 'Portable Hole compile command failed'
+          detail = detail.replace('%', '%25').replace('\\r', '%0D').replace('\\n', '%0A')
+          print(f'::error title=Portable Hole compile failure::{detail}')
+          PY
+            exit 1
+          fi
+          cat /tmp/portable-hole-compile.log

@@ -201,6 +201,41 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Qualify Portable Hole commodity reservations on disposable MySQL
+        env:
+          ARENA_MYSQL_HOST: 127.0.0.1
+          ARENA_MYSQL_PORT: 3306
+          ARENA_MYSQL_DATABASE: arena_foundry_disposable_portable_hole_ci
+          ARENA_MYSQL_USER: root
+          ARENA_MYSQL_PASSWORD: arena-foundry-ci-only
+        run: |
+          mysql --defaults-extra-file=/tmp/arena-foundry-mysql.cnf \
+            --execute='CREATE DATABASE arena_foundry_disposable_portable_hole_ci CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'
+          set +e
+          python3 -m unittest tests.test_portable_hole_mysql -v \
+            > /tmp/portable-hole-mysql-test.log 2>&1
+          portable_hole_test_status=$?
+          set -e
+          cat /tmp/portable-hole-mysql-test.log
+          if [ "$portable_hole_test_status" -ne 0 ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+          lines = Path('/tmp/portable-hole-mysql-test.log').read_text(errors='replace').strip().splitlines()
+          detail = '\\n'.join(lines[-45:]) if lines else 'Portable Hole MySQL integration failed without diagnostics'
+          detail = detail.replace('%', '%25').replace('\\r', '%0D').replace('\\n', '%0A')
+          print(f'::error title=Portable Hole disposable MySQL::{detail}')
+          PY
+            exit "$portable_hole_test_status"
+          fi
+          python3 - <<'PY'
+          import os
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              print('## Portable Hole commodity ledger', file=summary)
+              print('', file=summary)
+              print('- MySQL 8.4 InnoDB receipts, private GUID scope, reservations, competing requests and abrupt-process rollback: **PASS**', file=summary)
+              print('- Credits in this slice are GM/server-authorized virtual commodity grants; physical item transfer and Party sharing are not implemented.', file=summary)
+          PY
+
       - name: Assert unsupported World content fails closed
         run: |
           python3 tools/foundry.py verify packages/frost-armory
