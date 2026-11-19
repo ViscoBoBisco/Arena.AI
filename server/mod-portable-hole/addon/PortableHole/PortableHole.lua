@@ -32,6 +32,8 @@ local function savedData()
 end
 local frame, statusText, itemInput, amountInput, reservationInput, rowButtons, pageLabel, pinStatus
 local page = 0
+local pendingPinAdds = {}
+local sortModes, sortIndex = { "ENTRY", "NAME", "BALANCE", "AVAILABLE" }, 1
 
 local function splitTabs(value)
     local result, start = {}, 1
@@ -124,7 +126,7 @@ local function repaint(rows)
 end
 
 local function refresh()
-    send("LIST", page)
+    send("LIST", page, sortModes[sortIndex])
 end
 
 local function reserve()
@@ -162,7 +164,8 @@ local function pinItem()
         if pinned == item then
             data.pinCursor = index
             updatePinStatus(data)
-            statusText:SetText("That item is already pinned for this character.")
+            send("PIN", item, "ADD")
+            statusText:SetText("Already pinned locally; syncing to the server.")
             return
         end
     end
@@ -173,7 +176,28 @@ local function pinItem()
     data.pins[#data.pins + 1] = item
     data.pinCursor = #data.pins
     updatePinStatus(data)
+    send("PIN", item, "ADD")
     statusText:SetText("Saved item " .. tostring(item) .. " to this character's pins.")
+end
+
+local function unpinItem()
+    local item = uint(itemInput:GetText(), 4294967295)
+    if not item then statusText:SetText("Enter a positive item entry to unpin."); return end
+    local data, found = savedData(), false
+    local pins = {}
+    for _, pinned in ipairs(data.pins) do
+        if pinned == item then found = true else pins[#pins + 1] = pinned end
+    end
+    data.pins = pins
+    data.pinCursor = math.min(tonumber(data.pinCursor) or 1, math.max(1, #pins))
+    updatePinStatus(data)
+    send("PIN", item, "REMOVE")
+    statusText:SetText(found and "Removed pin and syncing with server." or "Requested server pin removal.")
+end
+
+local function syncPins()
+    frame.serverPins = {}
+    send("PINS")
 end
 
 local function cyclePin()
@@ -225,6 +249,50 @@ local function onMessage(_, prefix, message, distribution, sender)
             statusText:SetText("Carried: " .. tostring(count) .. " x " .. fields[5]
                 .. " (bank excluded; read-only)")
         end
+    elseif fields[2] == "FINDROW" and #fields == 6 then
+        local item, balance, reserved = tonumber(fields[3]), tonumber(fields[4]), tonumber(fields[5])
+        if item and balance and reserved then
+            statusText:SetText("Match " .. fields[6] .. " (" .. tostring(item) .. "): "
+                .. tostring(balance - reserved) .. " available.")
+        end
+    elseif fields[2] == "FINDEND" and #fields == 4 then
+        if fields[4] == "1" then statusText:SetText("Showing first five matches; narrow the search.")
+        elseif (tonumber(fields[3]) or 0) == 0 then statusText:SetText("No matching ledger entries.") end
+    elseif fields[2] == "PLAN" and #fields == 7 then
+        local item, requested, carried, planned = tonumber(fields[3]), tonumber(fields[4]),
+            tonumber(fields[5]), tonumber(fields[6])
+        if item and requested and carried and planned then
+            statusText:SetText(fields[7] .. ": plan to deposit " .. tostring(planned) .. " of "
+                .. tostring(requested) .. " requested; carried " .. tostring(carried)
+                .. ". PLAN ONLY — no item moved.")
+        end
+    elseif fields[2] == "PINROW" and #fields == 4 then
+        local item = tonumber(fields[3])
+        if item and item >= 1 and item <= 4294967295 then
+            frame.serverPins = frame.serverPins or {}
+            frame.serverPins[#frame.serverPins + 1] = item
+        end
+    elseif fields[2] == "PINEND" and #fields == 3 then
+        local data = savedData()
+        local serverPins = frame.serverPins or {}
+        local combined, seen = {}, {}
+        for _, pinned in ipairs(data.pins) do
+            if not seen[pinned] and #combined < MAX_PINS then
+                combined[#combined + 1] = pinned; seen[pinned] = true
+                local present = false
+                for _, serverPin in ipairs(serverPins) do if serverPin == pinned then present = true end end
+                if not present then pendingPinAdds[#pendingPinAdds + 1] = pinned end
+            end
+        end
+        for _, pinned in ipairs(serverPins) do
+            if not seen[pinned] and #combined < MAX_PINS then
+                combined[#combined + 1] = pinned; seen[pinned] = true
+            end
+        end
+        data.pins = combined
+        updatePinStatus(data)
+        statusText:SetText("Loaded " .. tostring(tonumber(fields[3]) or #serverPins)
+            .. " server-saved pin(s); local pins are syncing.")
     elseif fields[2] == "ROW" and #fields == 7 then
         local row = { page = tonumber(fields[3]), item = tonumber(fields[4]),
                       balance = tonumber(fields[5]), reserved = tonumber(fields[6]), name = fields[7] }
@@ -323,16 +391,47 @@ local function createFrame()
     local nextPinButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
     nextPinButton:SetSize(92, 24); nextPinButton:SetPoint("LEFT", pinButton, "RIGHT", 8, 0)
     nextPinButton:SetText("Next pin"); nextPinButton:SetScript("OnClick", cyclePin)
+    local unpinButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    unpinButton:SetSize(70, 24); unpinButton:SetPoint("LEFT", nextPinButton, "RIGHT", 8, 0)
+    unpinButton:SetText("Unpin"); unpinButton:SetScript("OnClick", unpinItem)
+    local syncPinButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    syncPinButton:SetSize(72, 24); syncPinButton:SetPoint("LEFT", unpinButton, "RIGHT", 6, 0)
+    syncPinButton:SetText("Sync pins"); syncPinButton:SetScript("OnClick", syncPins)
     local compareButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    compareButton:SetSize(92, 24); compareButton:SetPoint("LEFT", nextPinButton, "RIGHT", 8, 0)
+    compareButton:SetSize(92, 24); compareButton:SetPoint("LEFT", syncPinButton, "RIGHT", 6, 0)
     compareButton:SetText("Compare need"); compareButton:SetScript("OnClick", compareNeed)
     pinStatus = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     pinStatus:SetPoint("LEFT", compareButton, "RIGHT", 12, 0)
     updatePinStatus(savedData())
+    local searchInput = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
+    searchInput:SetSize(160, 22); searchInput:SetPoint("TOPLEFT", 20, -126)
+    searchInput:SetAutoFocus(false); searchInput:SetText("")
+    local searchButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    searchButton:SetSize(74, 22); searchButton:SetPoint("LEFT", searchInput, "RIGHT", 8, 0)
+    searchButton:SetText("Search")
+    searchButton:SetScript("OnClick", function()
+        local query = searchInput:GetText()
+        if query and query ~= "" then send("SEARCH", query) end
+    end)
+    local planButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    planButton:SetSize(112, 22); planButton:SetPoint("LEFT", searchButton, "RIGHT", 8, 0)
+    planButton:SetText("Plan deposit")
+    planButton:SetScript("OnClick", function()
+        local item, amount = uint(itemInput:GetText(), 4294967295), uint(amountInput:GetText(), 1000000000)
+        if item and amount then send("PLAN", item, amount) end
+    end)
+    local sortButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    sortButton:SetSize(90, 22); sortButton:SetPoint("LEFT", planButton, "RIGHT", 8, 0)
+    sortButton:SetText("Sort: ENTRY")
+    sortButton:SetScript("OnClick", function()
+        sortIndex = (sortIndex % #sortModes) + 1
+        sortButton:SetText("Sort: " .. sortModes[sortIndex])
+        showPage(page)
+    end)
 
     for i = 1, 5 do
         local b = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-        b:SetSize(570, 26); b:SetPoint("TOPLEFT", 20, -132 - (i - 1) * 31)
+        b:SetSize(570, 26); b:SetPoint("TOPLEFT", 20, -160 - (i - 1) * 31)
         b:SetScript("OnClick", function() if b.itemEntry then itemInput:SetText(tostring(b.itemEntry)) end end)
         b:Hide(); rowButtons[i] = b
     end
@@ -368,6 +467,9 @@ events:SetScript("OnUpdate", function(_, elapsed)
         local pending = savedData().pending
         if frame and frame:IsShown() and pending and GetTime() >= retryAt then
             retryPending()
+        elseif frame and frame:IsShown() and #pendingPinAdds > 0 and GetTime() - lastSend >= MIN_INTERVAL then
+            local item = table.remove(pendingPinAdds, 1)
+            send("PIN", item, "ADD")
         end
     end
 end)

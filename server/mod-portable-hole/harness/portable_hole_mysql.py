@@ -131,6 +131,53 @@ def reserve(guid, item, amount, request_id):
         conn.close()
 
 
+def mutate_pin(guid, item, add):
+    """Apply an idempotent character-local pin change with a locked ten-pin cap."""
+    if not (0 < guid <= 0xFFFFFFFF and 0 < item <= 0xFFFFFFFF):
+        raise ValueError("bad character or item entry")
+    conn = connect(__import__("pymysql"))
+    try:
+        conn.begin()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO portable_hole_pin_state(guid) VALUES(%s) "
+                "ON DUPLICATE KEY UPDATE guid=VALUES(guid)", (guid,))
+            cursor.execute("SELECT guid FROM portable_hole_pin_state WHERE guid=%s FOR UPDATE", (guid,))
+            cursor.fetchone()
+            cursor.execute("SELECT COUNT(*) FROM portable_hole_pins WHERE guid=%s", (guid,))
+            count = cursor.fetchone()[0]
+            cursor.execute("SELECT item_entry FROM portable_hole_pins "
+                           "WHERE guid=%s AND item_entry=%s", (guid, item))
+            exists = cursor.fetchone() is not None
+            if add and not exists and count >= 10:
+                conn.rollback()
+                return False
+            if add:
+                cursor.execute("INSERT IGNORE INTO portable_hole_pins(guid,item_entry) VALUES(%s,%s)",
+                               (guid, item))
+            else:
+                cursor.execute("DELETE FROM portable_hole_pins WHERE guid=%s AND item_entry=%s",
+                               (guid, item))
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def pins(guid):
+    conn = connect(__import__("pymysql"))
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT item_entry FROM portable_hole_pins WHERE guid=%s "
+                           "ORDER BY created_at,item_entry LIMIT 10", (guid,))
+            return [row[0] for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
 def transition(guid, reservation_id, request_id, action):
     if action not in ("RELEASE", "CONSUME"):
         raise ValueError("unsupported transition")

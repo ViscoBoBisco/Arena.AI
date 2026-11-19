@@ -35,6 +35,8 @@ jobs:
           python3 tools/foundry.py build specs/vault-terminal.json --out /tmp/vault-terminal
           cp -a /tmp/vault-terminal/server/mod-vault-terminal /tmp/azerothcore/modules/
           cp -a server/mod-portable-hole /tmp/azerothcore/modules/
+          cp -a server/mod-runic-codex /tmp/azerothcore/modules/
+          cp -a server/mod-argent-commission /tmp/azerothcore/modules/
           cmake -S /tmp/azerothcore -B /tmp/azerothcore-build \
             -DWITHOUT_GIT=1 -DNOJEM=1 -DUSE_COREPCH=0 -DUSE_SCRIPTPCH=0 \
             -DTOOLS_BUILD=none -DWITH_WARNINGS=0 -DMODULES=static
@@ -76,3 +78,19 @@ jobs:
             exit 1
           fi
           cat /tmp/portable-hole-compile.log
+
+      - name: Compile Runic Codex against the pinned core
+        run: |
+          python3 tools/compile_generated_module.py \
+            --build-dir /tmp/azerothcore-build \
+            --core-source /tmp/azerothcore \
+            --module mod-runic-codex \
+            --registration AddRunicCodexScripts
+
+      - name: Compile Argent Commission against the pinned core
+        run: |
+          python3 tools/compile_generated_module.py \
+            --build-dir /tmp/azerothcore-build \
+            --core-source /tmp/azerothcore \
+            --module mod-argent-commission \
+            --registration AddArgentCommissionScripts

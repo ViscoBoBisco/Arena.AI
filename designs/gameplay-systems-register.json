@@ -193,40 +193,43 @@
     },
     {
       "id": "runic-codex",
-      "owner": "Future Runic Codex server module; AzerothCore owns spells/auras and combat",
+      "owner": "Runic Codex AzerothCore module; AzerothCore owns spells/auras and combat",
       "dependencies": [
         "versioned effect registry",
-        "source-verified token/loot ID",
-        "durable entitlement receipt",
-        "server combat hook",
+        "source-verified Arcane Missiles rank chain",
+        "durable character entitlement",
+        "server cast hook",
         "WotLK 3.3.5 addon protocol"
       ],
-      "player_loop": "Discover a natural-looking token, permanently learn a power, equip it, and observe one changed spell behavior after relog.",
+      "player_loop": "Learn Arcane Missiles through normal gameplay to unlock Arcane Echo, equip it in the addon, and receive a bounded refund on successful paid casts.",
       "source_evidence": [
-        "Directive requirements; no Runic Codex implementation in this checkout"
+        "server/mod-runic-codex/src/RunicCodex.cpp",
+        "server/mod-runic-codex/src/ArcaneEchoPolicy.h",
+        "server/mod-runic-codex/addon/RunicCodex/RunicCodex.lua",
+        "server/mod-runic-codex/data/sql/characters/001_runic_codex.sql",
+        "tests/test_runic_codex_mysql.py",
+        "tests/native/runic_codex_policy_test.cpp"
       ],
       "manifest_id_needs": [
         "effect schema/version",
         "verified spell/item/loot IDs",
         "source provenance",
-        "character/account entitlement",
+        "character-scoped entitlement",
         "loadout revision"
       ],
-      "implementation_state": "DESIGN_ONLY",
+      "implementation_state": "SYNTHETIC",
       "outstanding_tests": [
-        "Duplicate learning",
-        "disconnect/relog",
-        "recursion/proc budgets",
-        "cooldown/dispel/death",
-        "target selection and party visibility",
-        "Lua 5.1 packet bounds and malformed frame handling"
+        "Booted-core discovery from spell learning and durable equip state across relog",
+        "Booted test for paid-cost timing when a cast is interrupted after mana deduction",
+        "Lua 5.1 addon behavior and malformed frame handling",
+        "Account/party sharing is not implemented"
       ],
       "risks": [
-        "Native glyphs remain independent",
-        "Altbot capability is unproven",
-        "No guessed IDs or unsupported Spell.dbc rows"
+        "The vertical uses server-side spell learning as discovery; no physical token/loot delivery is included",
+        "A pinned compile and disposable SQL test are not a booted gameplay qualification",
+        "Native glyphs remain independent and Altbot capability is unproven"
       ],
-      "next_milestone": "After source-verified stock-token selection, deliver one server-side loot-to-learn-to-effect vertical with persistence and adversarial tests."
+      "next_milestone": "Boot the pinned public core with DBC data and qualify Arcane Echo discovery, equip persistence, mana accounting, and addon exchange under runtime failure tests."
     },
     {
       "id": "equipment-mastery-relics",
@@ -262,37 +265,39 @@
     },
     {
       "id": "faction-operations-argent",
-      "owner": "Future Faction Operations module; AzerothCore owns native reputation/hostility",
+      "owner": "Argent Commission AzerothCore module; AzerothCore owns native reputation/hostility",
       "dependencies": [
-        "source-verified native faction identity",
-        "separate authority and accord entitlements",
-        "server-side benefit hook",
-        "Campaign Party deployment authorization"
+        "source-verified Argent Crusade faction and championing spell",
+        "persistent character entitlement",
+        "server-side native championing effect",
+        "native AzerothCore reputation rank"
       ],
-      "player_loop": "Earn faction authority, activate one bounded defensive benefit, and access services without globally changing hostility.",
+      "player_loop": "Reach Honored with the Argent Crusade, claim the commission, and retain the native Argent Championing reputation effect without changing hostile-faction rules.",
       "source_evidence": [
-        "foundry/faction_ops.py",
-        "designs/argent-faction-operations-foundation.json",
-        "tests/test_faction_ops_foundation.py"
+        "server/mod-argent-commission/src/ArgentCommission.cpp",
+        "server/mod-argent-commission/addon/ArgentCommission/ArgentCommission.lua",
+        "server/mod-argent-commission/data/sql/characters/001_argent_commission.sql",
+        "tests/test_argent_commission_mysql.py",
+        ".github/workflows/azerothcore-db-qualification.yml",
+        "designs/argent-faction-operations-foundation.json"
       ],
       "manifest_id_needs": [
-        "native faction identity evidence",
-        "authority revision",
-        "personal accord scope",
-        "operation receipt"
+        "native faction and spell IDs with pinned source provenance",
+        "character-scoped entitlement state",
+        "Honored claim evidence",
+        "qualification receipt"
       ],
       "implementation_state": "SYNTHETIC",
       "outstanding_tests": [
-        "Verify faction identity against pinned source/client data",
-        "Implement persistent authority",
-        "Exercise tangible benefit in server runtime",
-        "Prove access does not alter FactionTemplate hostility or party membership"
+        "Booted-core test of Honored claim and login reapplication with real DBC data",
+        "Verify no change to native reputation values, global hostility, or party membership",
+        "Runtime client test of commission addon"
       ],
       "risks": [
-        "Foundation has unresolved stock IDs and no playable/runtime claim",
+        "The entitlement and effect compile/SQL paths are not yet a booted runtime qualification",
         "FactionTemplate and native reputation remain distinct"
       ],
-      "next_milestone": "Verify Argent identity and deliver a server-only, persistent, non-hostile access benefit in a disposable runtime."
+      "next_milestone": "Run a pinned-core runtime test that claims only at REP_HONORED and verifies the core Argent Champion aura preserves native hostility and reputation authority."
     },
     {
       "id": "frontier-operations",
@@ -744,14 +749,14 @@
     },
     {
       "id": "P1-02",
-      "title": "Runic Codex loot-to-learn-to-effect vertical",
-      "status": "blocked on verified stock token/effect source",
+      "title": "Runic Codex discovery-to-equip-to-effect vertical",
+      "status": "executable synthetic vertical; hosted pinned compile/Characters qualification pending",
       "acceptance": [
-        "one token/source",
-        "durable unlock",
-        "one changed spell behavior",
-        "addon list/equip",
-        "relog/duplicate/recursion tests"
+        "source-verified Arcane Missiles learning discovery",
+        "durable character unlock and equip state",
+        "bounded paid-cast mana refund without recursive casts",
+        "WotLK addon state/equip integration",
+        "duplicate/relog/runtime mana accounting tests"
       ]
     },
     {
@@ -772,23 +777,26 @@
     {
       "id": "P1-04",
       "title": "Profession reagent overlay and pins",
-      "status": "partial: carried count, local pins and bag-gap/virtual-availability comparison; no map-source provenance or withdraw",
+      "status": "implemented synthetic client/server paths: carried count, synchronized server-persisted character pins, name search, balance sorting, bag-gap comparison, and read-only bulk-deposit plan; no transfer or recipe integration",
       "acceptance": [
         "server-derived read-only carried count for an eligible item; bank excluded",
         "bag versus virtual quantity distinction",
-        "saved pins and shortage/closest owned source with provenance",
+        "server-persisted per-character pins with locked ten-pin cap",
+        "search and sort owned ledger rows; read-only bulk-deposit plan",
+        "saved shortage/closest owned source with provenance",
         "authorized recoverable withdraw only after separate custody qualification"
       ]
     },
     {
       "id": "P1-05",
-      "title": "Argent authority and tangible benefit",
-      "status": "blocked on source-verified identity",
+      "title": "Argent reputation-gated commission",
+      "status": "executable synthetic vertical; hosted pinned compile/Characters qualification pending",
       "acceptance": [
-        "native identity verified",
-        "persistent authority",
-        "one benefit",
-        "no hostility/party mutation"
+        "source-verified Argent Crusade 1106 and Argent Champion spell 57819",
+        "persistent idempotent entitlement gated at Honored",
+        "existing core championing effect reapplied on login",
+        "no direct reputation, global hostility, or party mutation",
+        "runtime effect test remains required"
       ]
     },
     {

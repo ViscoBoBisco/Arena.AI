@@ -65,9 +65,38 @@ jobs:
           git -C /tmp/acore-pinned remote add origin https://github.com/azerothcore/azerothcore-wotlk.git
           git -C /tmp/acore-pinned fetch --depth=1 --filter=blob:none origin 6ffb62abb867dabb258de6813ff5d06d6b011543
           git -C /tmp/acore-pinned sparse-checkout init --cone
-          git -C /tmp/acore-pinned sparse-checkout set data/sql/base/db_world
+          git -C /tmp/acore-pinned sparse-checkout set \
+            data/sql/base/db_world \
+            src/server/game/Spells \
+            src/server/game/Entities/Player \
+            src/server/scripts/Spells
           git -C /tmp/acore-pinned checkout --detach FETCH_HEAD
           test "$(git -C /tmp/acore-pinned rev-parse HEAD)" = 6ffb62abb867dabb258de6813ff5d06d6b011543
+
+      - name: Verify new gameplay IDs against the exact pinned AzerothCore source
+        run: |
+          grep -F 'SPELL_MAGE_ARCANE_MISSILES_R1                = 5143' \
+            /tmp/acore-pinned/src/server/scripts/Spells/spell_mage.cpp
+          grep -F 'ApplySpellFix({ 5143, 5144, 5145, 8416, 8417, 10211, 10212, 25345, 27075, 38699, 38704, 42843, 42846 }' \
+            /tmp/acore-pinned/src/server/game/Spells/SpellInfoCorrections.cpp
+          python3 - <<'PY'
+          from pathlib import Path
+          aura_cpp = Path('/tmp/acore-pinned/src/server/game/Spells/Auras/SpellAuraEffects.cpp').read_text()
+          start = aura_cpp.index('case 57819: // Argent Champion')
+          end = aura_cpp.index('// LK Intro VO', start)
+          champion_handler = aura_cpp[start:end]
+          assert 'case 57819:' in champion_handler and 'FactionID = 1106;' in champion_handler
+          assert 'SetChampioningFaction(FactionID)' in champion_handler
+          spell_cpp = Path('/tmp/acore-pinned/src/server/game/Spells/Spell.cpp').read_text()
+          hook = spell_cpp.index('sScriptMgr->OnPlayerSpellCast(playerCaster, this, skipCheck);')
+          assert spell_cpp.index('TakePower();', hook) > hook, 'cast hook must precede paid resource deduction'
+          assert 'cast(true);' in spell_cpp, 'pinned core uses skipCheck=true on validated cast paths'
+          player_cpp = Path('/tmp/acore-pinned/src/server/game/Entities/Player/PlayerUpdates.cpp').read_text()
+          unit_update = player_cpp.index('Unit::Update(p_time);')
+          script_update = player_cpp.index('sScriptMgr->OnPlayerUpdate(this, p_time);', unit_update)
+          assert script_update > unit_update, 'refund observer must run after Unit spell processing'
+          print('Pinned cast hook precedes power deduction; player update follows Unit spell processing.')
+          PY
 
       - name: Initialize exact pinned World DDL and exercise process-crash recovery
         env:
@@ -235,6 +264,24 @@ jobs:
               print('- MySQL 8.4 InnoDB receipts, private GUID scope, reservations, competing requests and abrupt-process rollback: **PASS**', file=summary)
               print('- Credits in this slice are GM/server-authorized virtual commodity grants; physical item transfer and Party sharing are not implemented.', file=summary)
           PY
+
+      - name: Qualify Runic Codex persistence on disposable MySQL
+        env:
+          ARENA_MYSQL_HOST: 127.0.0.1
+          ARENA_MYSQL_PORT: 3306
+          ARENA_MYSQL_DATABASE: arena_foundry_disposable_portable_hole_ci
+          ARENA_MYSQL_USER: root
+          ARENA_MYSQL_PASSWORD: arena-foundry-ci-only
+        run: python3 -m unittest tests.test_runic_codex_mysql -v
+
+      - name: Qualify Argent Commission persistence on disposable MySQL
+        env:
+          ARENA_MYSQL_HOST: 127.0.0.1
+          ARENA_MYSQL_PORT: 3306
+          ARENA_MYSQL_DATABASE: arena_foundry_disposable_portable_hole_ci
+          ARENA_MYSQL_USER: root
+          ARENA_MYSQL_PASSWORD: arena-foundry-ci-only
+        run: python3 -m unittest tests.test_argent_commission_mysql -v
 
       - name: Assert unsupported World content fails closed
         run: |

@@ -1,5 +1,19 @@
 -- Portable Hole commodity ledger — Characters DB, InnoDB only.
 -- Character-scoped by design. No account, party, or item-instance ownership is inferred.
+-- Pins are server-persisted character preferences; pin_state serializes the ten-pin cap.
+CREATE TABLE IF NOT EXISTS `portable_hole_pin_state` (
+  `guid` int unsigned NOT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`guid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `portable_hole_pins` (
+  `guid` int unsigned NOT NULL,
+  `item_entry` int unsigned NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`guid`, `item_entry`),
+  KEY `idx_portable_hole_pins_order` (`guid`, `created_at`, `item_entry`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 CREATE TABLE IF NOT EXISTS `portable_hole_commodities` (
   `guid` int unsigned NOT NULL,
   `item_entry` int unsigned NOT NULL,
